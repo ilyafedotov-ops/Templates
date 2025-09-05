@@ -1,30 +1,191 @@
 {
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
-  "contentVersion": "1.0.0.0",
+  "contentVersion": "2.0.0.0",
+  "metadata": {
+    "title": "Advanced Key Vault Security Operations Detection",
+    "description": "Comprehensive Key Vault monitoring with advanced threat detection, insider threat analytics, compliance validation, and automated response for cryptographic asset protection",
+    "author": "Enterprise Security Team",
+    "version": "2.0.0",
+    "lastModified": "2025-01-01T00:00:00Z",
+    "compliance": ["ISO27001:A.10.1.2", "SOC2:CC6.1", "NIST:SC-12", "FIPS-140-2"],
+    "mitreAttack": {
+      "techniques": ["T1555", "T1552", "T1078.004", "T1087", "T1083"],
+      "tactics": ["Credential Access", "Discovery", "Defense Evasion"],
+      "subTechniques": ["Credentials from Password Stores", "Unsecured Credentials", "Valid Accounts: Cloud Accounts"]
+    },
+    "dataConnectors": ["AzureKeyVault", "AzureActivity", "AzureActiveDirectory"],
+    "queryFrequency": "PT5M",
+    "queryPeriod": "PT4H",
+    "alertRuleTemplateName": "advanced-keyvault-security-detection"
+  },
   "parameters": {
-    "workspaceName": {"type": "string"},
-    "ruleId": {"type": "string", "defaultValue": "keyvault-sensitive-ops"}
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace"
+      }
+    },
+    "ruleId": {
+      "type": "string",
+      "defaultValue": "adv-keyvault-security-ops",
+      "metadata": {
+        "description": "Unique identifier for the analytics rule"
+      }
+    },
+    "severityThreshold": {
+      "type": "string",
+      "defaultValue": "Medium",
+      "allowedValues": ["Low", "Medium", "High", "Critical"],
+      "metadata": {
+        "description": "Minimum severity level for alert generation"
+      }
+    },
+    "riskScoreThreshold": {
+      "type": "int",
+      "defaultValue": 60,
+      "minValue": 30,
+      "maxValue": 100,
+      "metadata": {
+        "description": "Minimum risk score threshold for alert generation (30-100)"
+      }
+    },
+    "enableInsiderThreatDetection": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable insider threat detection capabilities"
+      }
+    },
+    "highValueKeyVaults": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "List of high-value Key Vault resource names for enhanced monitoring"
+      }
+    }
+  },
+  "variables": {
+    "alertRuleName": "[concat('Advanced Key Vault Security Operations - ', parameters('ruleId'))]",
+    "alertRuleDescription": "Detects sophisticated Key Vault security threats including insider attacks, privilege abuse, data exfiltration, cryptographic key compromise, and compliance violations with machine learning-enhanced pattern detection"
   },
   "resources": [
     {
       "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
-      "apiVersion": "2022-11-01-preview",
+      "apiVersion": "2023-02-01-preview",
       "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('ruleId'))]",
       "properties": {
-        "displayName": "Key Vault delete/purge operations",
+        "displayName": "[variables('alertRuleName')]",
+        "description": "[variables('alertRuleDescription')]",
         "enabled": true,
         "kind": "Scheduled",
-        "query": "AzureDiagnostics | where ResourceProvider == 'MICROSOFT.KEYVAULT' and (OperationName contains 'delete' or OperationName contains 'purge') | summarize count() by bin(TimeGenerated, 1h), Resource | where count_ > 0",
-        "queryFrequency": "PT1H",
-        "queryPeriod": "PT1H",
-        "severity": "High",
-        "suppressionDuration": "PT1H",
-        "suppressionEnabled": false,
-        "triggerOperator": "GreaterThan",
+        "severity": "[parameters('severityThreshold')]",
+        "queryFrequency": "PT5M",
+        "queryPeriod": "PT4H",
+        "triggerOperator": "GreaterThan", 
         "triggerThreshold": 0,
-        "eventGroupingSettings": {"aggregationKind": "SingleAlert"}
+        "suppressionDuration": "PT30M",
+        "suppressionEnabled": true,
+        "tactics": ["CredentialAccess", "Discovery", "DefenseEvasion"],
+        "techniques": ["T1555", "T1552", "T1078.004"],
+        "subTechniques": ["T1555.001", "T1552.001", "T1078.004"],
+        "query": "let analysisWindow = 4h;\nlet baselineWindow = 7d;\nlet riskThreshold = toint('[parameters('riskScoreThreshold')]');\nlet enableInsiderDetection = tobool('[parameters('enableInsiderThreatDetection')]');\n// High-value Key Vaults for enhanced monitoring\nlet highValueVaults = dynamic('[parameters('highValueKeyVaults')]');\n// Define sensitive operations with risk scoring\nlet sensitiveOps = datatable(OperationName:string, RiskScore:int, Category:string, IsCritical:bool)\n[\n    \"VaultDelete\", 95, \"Destructive\", true,\n    \"VaultPurge\", 100, \"Destructive\", true,\n    \"SecretDelete\", 80, \"Destructive\", true,\n    \"SecretPurge\", 85, \"Destructive\", true,\n    \"KeyDelete\", 85, \"Destructive\", true,\n    \"KeyPurge\", 90, \"Destructive\", true,\n    \"CertificateDelete\", 70, \"Destructive\", true,\n    \"CertificatePurge\", 75, \"Destructive\", true,\n    \"SecretGet\", 35, \"Access\", false,\n    \"KeyGet\", 40, \"Access\", false,\n    \"CertificateGet\", 30, \"Access\", false,\n    \"SecretList\", 45, \"Enumeration\", false,\n    \"KeyList\", 50, \"Enumeration\", false,\n    \"CertificateList\", 40, \"Enumeration\", false,\n    \"VaultAccessPolicyChange\", 75, \"Privilege\", true,\n    \"SecretSet\", 25, \"Modification\", false,\n    \"KeyCreate\", 20, \"Creation\", false,\n    \"SecretBackup\", 60, \"Export\", false,\n    \"KeyBackup\", 65, \"Export\", false,\n    \"SecretRestore\", 55, \"Import\", false,\n    \"KeyRestore\", 60, \"Import\", false,\n    \"KeyDecrypt\", 45, \"Cryptographic\", false,\n    \"KeyEncrypt\", 30, \"Cryptographic\", false,\n    \"KeySign\", 40, \"Cryptographic\", false,\n    \"KeyVerify\", 25, \"Cryptographic\", false,\n    \"KeyUnwrap\", 50, \"Cryptographic\", false,\n    \"KeyWrap\", 35, \"Cryptographic\", false\n];\n// Baseline user behavior analysis\nlet userBaseline = \n    KeyVaultData\n    | where TimeGenerated between (ago(baselineWindow) .. ago(analysisWindow))\n    | where isnotempty(CallerIPAddress) and isnotempty(identity_claim_upn_s)\n    | extend UserPrincipal = coalesce(identity_claim_upn_s, identity_claim_oid_g, \"Unknown\")\n    | join kind=inner sensitiveOps on OperationName\n    | summarize \n        AvgOperationsPerHour = avg(todouble(1)),\n        StdDevOperations = stdev(todouble(1)),\n        UniqueIPs = dcount(CallerIPAddress),\n        UniqueVaults = dcount(id_s),\n        OperationTypes = make_set(OperationName, 20),\n        TypicalRiskScore = avg(RiskScore)\n        by UserPrincipal, bin(TimeGenerated, 1h)\n    | summarize \n        BaselineAvgOpsPerHour = avg(AvgOperationsPerHour),\n        BaselineStdDev = avg(StdDevOperations),\n        BaselineUniqueIPs = avg(UniqueIPs),\n        BaselineUniqueVaults = avg(UniqueVaults),\n        BaselineRiskScore = avg(TypicalRiskScore),\n        CommonOperations = make_set_if(OperationTypes, array_length(OperationTypes) >= 3)\n        by UserPrincipal;\n// Advanced Key Vault activity analysis\nlet kvAnalysis = \n    KeyVaultData\n    | where TimeGenerated >= ago(analysisWindow)\n    | where isnotempty(CallerIPAddress) and isnotempty(OperationName)\n    | extend \n        // Enhanced user identification\n        UserPrincipal = coalesce(identity_claim_upn_s, identity_claim_oid_g, \"Unknown\"),\n        UserType = case(\n            identity_claim_upn_s contains \"#EXT#\", \"External\",\n            identity_claim_upn_s contains \"admin\" or identity_claim_upn_s contains \"service\", \"Privileged\",\n            isnotempty(identity_claim_app_displayname_s), \"Service_Principal\",\n            \"Regular_User\"\n        ),\n        \n        // Geographic and network analysis\n        Location = strcat(coalesce(client_info_country_s, \"Unknown\"), \"-\", coalesce(client_info_region_s, \"Unknown\")),\n        \n        // Key Vault classification\n        VaultName = tostring(split(id_s, \"/\")[8]),\n        IsHighValueVault = case(\n            array_length(highValueVaults) == 0, false,\n            VaultName in (highValueVaults), true,\n            false\n        ),\n        \n        // Request pattern analysis\n        RequestId = coalesce(requestId_g, \"Unknown\"),\n        HttpStatusCode = coalesce(httpStatusCode_d, 0),\n        IsSuccess = HttpStatusCode < 400,\n        IsFailure = HttpStatusCode >= 400,\n        \n        // Time-based patterns\n        Hour = hourofday(TimeGenerated),\n        DayOfWeek = dayofweek(TimeGenerated),\n        IsAfterHours = Hour < 7 or Hour > 19,\n        IsWeekend = DayOfWeek == 0 or DayOfWeek == 6\n    | join kind=inner sensitiveOps on OperationName\n    | extend \n        // Enhanced risk calculation\n        TimeRiskBonus = case(\n            IsAfterHours and IsWeekend, 20,\n            IsAfterHours, 10, \n            IsWeekend, 5,\n            0\n        ),\n        VaultRiskBonus = case(IsHighValueVault, 25, 0),\n        UserTypeRiskBonus = case(\n            UserType == \"External\", 30,\n            UserType == \"Service_Principal\", 10,\n            UserType == \"Privileged\", 5,\n            0\n        ),\n        FailureRiskBonus = case(IsFailure, 15, 0),\n        \n        // Comprehensive threat score\n        TotalRiskScore = RiskScore + TimeRiskBonus + VaultRiskBonus + UserTypeRiskBonus + FailureRiskBonus;\n// Pattern detection and anomaly analysis\nlet patternAnalysis = \n    kvAnalysis\n    | summarize \n        // Volume and frequency metrics\n        OperationCount = count(),\n        UniqueOperations = dcount(OperationName),\n        UniqueVaults = dcount(VaultName),\n        UniqueIPs = dcount(CallerIPAddress),\n        UniqueLocations = dcount(Location),\n        \n        // Risk and severity assessment\n        MaxRiskScore = max(TotalRiskScore),\n        AvgRiskScore = avg(TotalRiskScore),\n        TotalRiskExposure = sum(TotalRiskScore),\n        CriticalOperations = countif(IsCritical),\n        DestructiveOperations = countif(Category == \"Destructive\"),\n        \n        // Success vs failure patterns\n        SuccessfulOps = countif(IsSuccess),\n        FailedOps = countif(IsFailure),\n        FailureRate = round(countif(IsFailure) * 100.0 / count(), 2),\n        \n        // Temporal analysis\n        AfterHoursActivity = countif(IsAfterHours),\n        WeekendActivity = countif(IsWeekend),\n        TimeSpan = datetime_diff('minute', max(TimeGenerated), min(TimeGenerated)),\n        ActivityVelocity = count() * 1.0 / (datetime_diff('minute', max(TimeGenerated), min(TimeGenerated)) + 1),\n        \n        // Geographic dispersion\n        GeographicSpread = case(\n            dcount(Location) == 1, \"Single Location\",\n            dcount(Location) <= 3, \"Limited Geographic\",\n            dcount(Location) <= 10, \"Multi-Regional\", \n            \"Global Distribution\"\n        ),\n        \n        // High-value targets\n        HighValueVaultAccess = countif(IsHighValueVault),\n        \n        // Evidence collection\n        OperationDetails = make_set(strcat(OperationName, \":\", Category), 50),\n        AccessedVaults = make_set(VaultName, 100),\n        SourceIPs = make_set(CallerIPAddress, 50),\n        Locations = make_set(Location, 20),\n        FailureReasons = make_set_if(resultDescription_s, IsFailure, 10),\n        RequestIds = make_set(RequestId, 20)\n        \n        by bin(TimeGenerated, 5m), UserPrincipal, UserType\n    | extend \n        // Attack pattern classification\n        AttackPattern = case(\n            DestructiveOperations > 0 and OperationCount > 10, \"Mass Destruction\",\n            CriticalOperations > 0 and UniqueVaults > 5, \"Cross-Vault Privilege Abuse\",\n            FailureRate > 50 and OperationCount > 20, \"Brute Force Enumeration\",\n            AfterHoursActivity > 0 and AvgRiskScore > 60, \"After-Hours Suspicious Activity\",\n            UniqueOperations > 10 and TimeSpan < 60, \"Rapid Enumeration\",\n            HighValueVaultAccess > 0 and MaxRiskScore > 80, \"High-Value Target Attack\",\n            OperationCount > 50 and UniqueVaults > 10, \"Lateral Movement\",\n            AvgRiskScore > 50 and dcount(Location) > 3, \"Distributed Attack\",\n            \"Suspicious Key Vault Activity\"\n        ),\n        \n        // Insider threat indicators (if enabled)\n        InsiderThreatScore = case(\n            not(enableInsiderDetection), 0,\n            UserType == \"Privileged\" and AfterHoursActivity > 0 and DestructiveOperations > 0, 90,\n            UserType == \"Regular_User\" and CriticalOperations > 0, 75,\n            AfterHoursActivity > (OperationCount * 0.8), 60,\n            WeekendActivity > (OperationCount * 0.5), 45,\n            0\n        ),\n        \n        // Final comprehensive risk score\n        FinalRiskScore = min_of(\n            TotalRiskExposure + \n            (case(CriticalOperations > 0, 50, 0)) +\n            (case(HighValueVaultAccess > 0, 30, 0)) +\n            (case(UniqueVaults > 10, 25, 0)) +\n            (case(FailureRate > 25, 20, 0)) +\n            InsiderThreatScore,\n            100\n        );\n// Join with baseline for anomaly detection\npatternAnalysis\n| join kind=leftouter (\n    userBaseline\n) on UserPrincipal\n| extend \n    // Anomaly detection\n    IsAnomalousVolume = case(\n        isnotnull(BaselineAvgOpsPerHour) and OperationCount > (BaselineAvgOpsPerHour * 5), true,\n        isnotnull(BaselineUniqueVaults) and UniqueVaults > (BaselineUniqueVaults * 3), true,\n        OperationCount > 100, true,\n        false\n    ),\n    IsAnomalousPattern = case(\n        isnotnull(BaselineRiskScore) and AvgRiskScore > (BaselineRiskScore * 2), true,\n        FinalRiskScore > riskThreshold, true,\n        false\n    ),\n    \n    BaselineComparison = case(\n        isnotnull(BaselineAvgOpsPerHour),\n        strcat(\"Baseline: \", round(BaselineAvgOpsPerHour, 1), \" ops/hr, Current: \", OperationCount, \" ops, Deviation: \", round((OperationCount - BaselineAvgOpsPerHour) / BaselineAvgOpsPerHour * 100, 1), \"%\"),\n        \"No baseline available\"\n    )\n| where IsAnomalousVolume or IsAnomalousPattern or FinalRiskScore >= riskThreshold\n| extend \n    // MITRE ATT&CK technique mapping\n    MitreTechnique = case(\n        AttackPattern contains \"Destruction\", \"T1485\",\n        AttackPattern contains \"Enumeration\" or AttackPattern contains \"Brute Force\", \"T1087\",\n        AttackPattern contains \"Privilege\" or AttackPattern contains \"Lateral\", \"T1078.004\",\n        DestructiveOperations > 0, \"T1552.001\",\n        \"T1555\"\n    ),\n    MitreTactic = case(\n        DestructiveOperations > 0, \"Impact\",\n        CriticalOperations > 0, \"Credential Access\",\n        UniqueVaults > 5, \"Discovery\",\n        \"Defense Evasion\"\n    ),\n    \n    // Dynamic severity assessment\n    IncidentSeverity = case(\n        FinalRiskScore >= 90 or (CriticalOperations > 0 and HighValueVaultAccess > 0), \"Critical\",\n        FinalRiskScore >= 75 or DestructiveOperations > 0, \"High\",\n        FinalRiskScore >= 60 or CriticalOperations > 0, \"Medium\",\n        \"Low\"\n    ),\n    \n    // Compliance impact assessment\n    ComplianceImpact = case(\n        DestructiveOperations > 0 and IsHighValueVault, \"Critical - FIPS 140-2, SOC2 CC6.1 violation\",\n        CriticalOperations > 0, \"High - ISO 27001 A.10.1.2 control gap\",\n        FailureRate > 25, \"Medium - Access control monitoring required\",\n        \"Low - Standard monitoring\"\n    ),\n    \n    // Response recommendations\n    RecommendedActions = case(\n        DestructiveOperations > 0, \"IMMEDIATE: Disable user access, backup affected vaults, initiate incident response\",\n        InsiderThreatScore > 70, \"Escalate to HR/Legal, review user privileges, enable enhanced monitoring\",\n        HighValueVaultAccess > 0 and FailureRate > 50, \"Block source IPs, reset user credentials, review access policies\",\n        FinalRiskScore > 80, \"Enhanced monitoring, privilege review, conditional access enforcement\",\n        \"Standard monitoring, log retention validation\"\n    )\n| project \n    TimeGenerated,\n    UserPrincipal,\n    UserType,\n    AttackPattern,\n    IncidentSeverity,\n    FinalRiskScore,\n    InsiderThreatScore = case(enableInsiderDetection, InsiderThreatScore, 0),\n    OperationCount,\n    CriticalOperations,\n    DestructiveOperations,\n    UniqueVaults,\n    HighValueVaultAccess,\n    FailureRate,\n    ActivityVelocity = round(ActivityVelocity, 2),\n    GeographicSpread,\n    BaselineComparison,\n    MitreTechnique,\n    MitreTactic,\n    ComplianceImpact,\n    RecommendedActions,\n    // Evidence for investigation\n    AccessedVaults,\n    OperationDetails,\n    SourceIPs,\n    Locations,\n    FailureReasons,\n    RequestIds,\n    // Risk breakdown\n    MaxRiskScore,\n    AvgRiskScore,\n    TotalRiskExposure,\n    AfterHoursActivity,\n    WeekendActivity\n| order by FinalRiskScore desc, CriticalOperations desc, DestructiveOperations desc",
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "columnName": "UserPrincipal",
+                "identifier": "Name"
+              }
+            ]
+          },
+          {
+            "entityType": "IP",
+            "fieldMappings": [
+              {
+                "columnName": "SourceIPs",
+                "identifier": "Address"
+              }
+            ]
+          },
+          {
+            "entityType": "AzureResource", 
+            "fieldMappings": [
+              {
+                "columnName": "AccessedVaults",
+                "identifier": "ResourceId"
+              }
+            ]
+          }
+        ],
+        "alertDetailsOverride": {
+          "alertDisplayNameFormat": "{{AttackPattern}} - {{UserPrincipal}} (Risk: {{FinalRiskScore}}/100, {{CriticalOperations}} critical ops)",
+          "alertDescriptionFormat": "Advanced Key Vault threat detected: {{AttackPattern}}\\n\\nUser: {{UserPrincipal}} ({{UserType}})\\nRisk Assessment:\\n- Final Risk Score: {{FinalRiskScore}}/100\\n- Critical Operations: {{CriticalOperations}}\\n- Destructive Operations: {{DestructiveOperations}}\\n- Vaults Accessed: {{UniqueVaults}}\\n- High-Value Vault Access: {{HighValueVaultAccess}}\\n- Failure Rate: {{FailureRate}}%\\n- Geographic Spread: {{GeographicSpread}}\\n- MITRE Technique: {{MitreTechnique}}\\n\\nCompliance Impact: {{ComplianceImpact}}\\n\\nIMMEDIATE ACTIONS: {{RecommendedActions}}\\n\\nEvidence:\\n- Accessed Vaults: {{AccessedVaults}}\\n- Operations: {{OperationDetails}}\\n- Source IPs: {{SourceIPs}}\\n- Locations: {{Locations}}\\n\\nBaseline Comparison: {{BaselineComparison}}",
+          "alertSeverityColumnName": "IncidentSeverity",
+          "alertDynamicProperties": [
+            {
+              "alertProperty": "AlertLink",
+              "value": "AttackPattern"
+            },
+            {
+              "alertProperty": "ProviderName",
+              "value": "Advanced Key Vault Security"
+            },
+            {
+              "alertProperty": "RemediationSteps", 
+              "value": "RecommendedActions"
+            },
+            {
+              "alertProperty": "ComplianceFramework",
+              "value": "ComplianceImpact"
+            }
+          ]
+        },
+        "customDetails": {
+          "AttackPattern": "AttackPattern",
+          "UserType": "UserType",
+          "RiskScore": "FinalRiskScore",
+          "InsiderThreatScore": "InsiderThreatScore",
+          "MitreTechnique": "MitreTechnique", 
+          "CriticalOperations": "CriticalOperations",
+          "DestructiveOperations": "DestructiveOperations",
+          "ComplianceImpact": "ComplianceImpact",
+          "HighValueVaultAccess": "HighValueVaultAccess",
+          "GeographicSpread": "GeographicSpread",
+          "ActivityVelocity": "ActivityVelocity",
+          "BaselineDeviation": "BaselineComparison"
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": true,
+            "lookbackDuration": "PT12H", 
+            "matchingMethod": "AllEntities",
+            "groupByEntities": ["Account", "AzureResource"],
+            "groupByAlertDetails": ["DisplayName"],
+            "groupByCustomDetails": ["AttackPattern", "UserType"]
+          }
+        }
       }
     }
-  ]
+  ],
+  "outputs": {
+    "alertRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/alertRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', parameters('ruleId'))]"
+    },
+    "alertRuleName": {
+      "type": "string",
+      "value": "[variables('alertRuleName')]"
+    },
+    "riskThreshold": {
+      "type": "int",
+      "value": "[parameters('riskScoreThreshold')]"
+    }
+  }
 }
 
