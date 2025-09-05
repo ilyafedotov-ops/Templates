@@ -164,7 +164,6 @@ For detailed deployment instructions, see [Scripts/README.md](Scripts/README.md)
 
 | Document | Description |
 |----------|-------------|
-| [CLAUDE.md](CLAUDE.md) | Repository guidance for AI assistants |
 | [Scripts/README.md](Scripts/README.md) | Deployment script documentation |
 | [Pipelines/README.md](Pipelines/README.md) | CI/CD pipeline configuration |
 | [Compliance/README.md](Compliance/README.md) | Compliance framework guidance |
