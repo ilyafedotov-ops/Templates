@@ -1,0 +1,67 @@
+# Gitleaks configuration for comprehensive secret detection
+title = "Enterprise Security Scanning Configuration"
+
+[extend]
+# Extend default ruleset
+useDefault = true
+
+[[rules]]
+# Custom rule for Azure credentials
+id = "azure-client-secret"
+description = "Azure Client Secret"
+regex = '''(?i)(azure[_-]?client[_-]?secret|AZURE[_-]?CLIENT[_-]?SECRET)\s*[:=]\s*["\']?([a-zA-Z0-9\.\-~_]{34,})["\']?'''
+secretGroup = 2
+keywords = ["azure", "client", "secret"]
+tags = ["azure", "secret"]
+
+[[rules]]
+# Custom rule for API keys
+id = "api-key-generic"
+description = "Generic API Key"
+regex = '''(?i)(api[_-]?key|apikey|API[_-]?KEY)\s*[:=]\s*["\']?([a-zA-Z0-9]{20,})["\']?'''
+secretGroup = 2
+keywords = ["api", "key"]
+tags = ["api", "key"]
+
+[[rules]]
+# Database connection strings
+id = "database-connection-string"
+description = "Database Connection String"
+regex = '''(?i)(connection[_-]?string|connectionstring)\s*[:=]\s*["\']?(.*password.*)["\']?'''
+secretGroup = 2
+keywords = ["connection", "string", "password"]
+tags = ["database", "connection"]
+
+[allowlist]
+# Allow example/template values
+regexes = [
+  '''(?i)example''',
+  '''(?i)template''',
+  '''(?i)placeholder''',
+  '''(?i)dummy''',
+  '''(?i)fake''',
+  '''(?i)test[_-]?key''',
+  '''(?i)your[_-]?key[_-]?here''',
+  '''(?i)replace[_-]?with''',
+  '''(?i)xxx+''',
+  '''(?i)\*{3,}''',
+]
+
+# Allow paths that should be ignored
+paths = [
+  '''\.git/''',
+  '''node_modules/''',
+  '''vendor/''',
+  '''\.vscode/''',
+  '''\.idea/''',
+  '''coverage/''',
+  '''dist/''',
+  '''build/''',
+  '''target/''',
+  '''\.terraform/''',
+  '''test/fixtures/''',
+  '''testdata/''',
+]
+
+# Allow specific commits (useful for historical false positives)
+commits = []

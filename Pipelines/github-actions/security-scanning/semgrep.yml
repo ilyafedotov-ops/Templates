@@ -1,0 +1,142 @@
+# Semgrep configuration for SAST scanning
+
+# Rule sources - enterprise security rulesets
+rules:
+  # Core security rulesets
+  - p/security-audit      # General security issues
+  - p/secrets             # Secret detection
+  - p/owasp-top-ten      # OWASP Top 10 vulnerabilities
+  - p/r2c-CI             # R2C's curated CI ruleset
+  - p/r2c-security-audit # Additional security rules
+  
+  # Language-specific security rules
+  - p/javascript         # JavaScript security
+  - p/typescript         # TypeScript security  
+  - p/python            # Python security
+  - p/java              # Java security
+  - p/go                # Go security
+  - p/csharp            # C# security
+  - p/php               # PHP security
+  - p/ruby              # Ruby security
+  
+  # Framework-specific rules
+  - p/react             # React security
+  - p/django            # Django security
+  - p/flask             # Flask security
+  - p/nodejs            # Node.js security
+  - p/express           # Express.js security
+  - p/spring            # Spring security
+  - p/dotnet            # .NET security
+  
+  # Infrastructure and DevOps
+  - p/docker            # Docker security
+  - p/kubernetes        # Kubernetes security
+  - p/terraform         # Terraform security
+
+# Output configuration
+output:
+  format: sarif
+  destination: semgrep-results.sarif
+
+# Severity configuration  
+severity:
+  error: ["HIGH", "CRITICAL"]
+  warning: ["MEDIUM"] 
+  info: ["LOW", "INFO"]
+
+# Paths to scan
+include:
+  - "src/"
+  - "lib/"
+  - "app/"
+  - "server/"
+  - "client/"
+  - "api/"
+  - "services/"
+  - "components/"
+  - "pages/"
+  - "routes/"
+  - "controllers/"
+  - "models/"
+  - "views/"
+  - "*.py"
+  - "*.js"
+  - "*.ts"
+  - "*.jsx"
+  - "*.tsx" 
+  - "*.java"
+  - "*.cs"
+  - "*.go"
+  - "*.php"
+  - "*.rb"
+  - "*.scala"
+  - "*.kt"
+  - "*.swift"
+  - "*.cpp"
+  - "*.c"
+  - "*.h"
+  - "*.rs"
+  - "Dockerfile*"
+  - "*.tf"
+  - "*.yml"
+  - "*.yaml"
+
+# Paths to exclude
+exclude:
+  - "test/"
+  - "tests/"
+  - "*test*"
+  - "*spec*"
+  - "node_modules/"
+  - "vendor/" 
+  - "third_party/"
+  - "external/"
+  - ".git/"
+  - "coverage/"
+  - "dist/"
+  - "build/"
+  - "target/"
+  - "out/"
+  - "bin/"
+  - "obj/"
+  - "__pycache__/"
+  - ".pytest_cache/"
+  - ".vscode/"
+  - ".idea/"
+  - "*.min.js"
+  - "*.min.css"
+  - "*.bundle.js"
+  - "*.bundle.css"
+
+# Performance settings
+max_target_bytes: 1000000  # 1MB max file size
+timeout: 30                # 30 second timeout per file
+max_memory: 5000          # 5GB max memory
+
+# Enable experimental features
+experimental: true
+
+# Disable specific rules (if needed)
+disable_rules:
+  # Disable noisy rules that might not apply
+  # - "python.lang.security.audit.dangerous-subprocess-use"
+  # - "javascript.lang.security.audit.path-traversal"
+
+# Custom rule directories (if you have custom rules)  
+# custom_rules:
+#   - "./custom-semgrep-rules/"
+
+# Autofix configuration (use with caution)
+autofix: false
+
+# Baseline configuration for managing findings over time
+# baseline_commit: "HEAD~1"
+
+# Metrics and telemetry
+metrics: "off"
+
+# Verbose output for debugging
+verbose: false
+
+# Configuration for CI/CD integration
+ci: true

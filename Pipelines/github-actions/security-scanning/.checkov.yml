@@ -1,0 +1,102 @@
+# Checkov configuration for Infrastructure as Code security scanning
+
+# Framework support
+framework: 
+  - terraform
+  - bicep
+  - arm
+  - kubernetes
+  - dockerfile
+  - github_actions
+  - secrets
+
+# Output configuration
+output: cli
+quiet: false
+compact: false
+soft-fail: false
+
+# Severity settings
+check:
+  - CKV_DOCKER_2  # Ensure HEALTHCHECK is used
+  - CKV_DOCKER_3  # Ensure USER is not root
+  - CKV_K8S_8     # Ensure Liveness Probe is configured
+  - CKV_K8S_9     # Ensure Readiness Probe is configured
+  - CKV_AZURE_1   # Ensure Azure Instance does not use basic authentication
+  - CKV_AZURE_2   # Ensure that Activity Log Retention is set 365 days or greater
+  - CKV_AZURE_3   # Ensure that 'Secure transfer required' is enabled
+  - CKV_AZURE_4   # Ensure default network access rule for Storage Accounts is set to deny
+  - CKV_AZURE_13  # Ensure App Service Authentication is set up
+  - CKV_AZURE_14  # Ensure web app redirects all HTTP traffic to HTTPS
+  - CKV_AZURE_15  # Ensure web app is using the latest version of TLS encryption
+  - CKV_AZURE_16  # Ensure that Register with Azure Active Directory is enabled
+  - CKV_AZURE_17  # Ensure the web app has 'Client Certificates (Incoming client certificates)' set
+  - CKV_AZURE_18  # Ensure that 'HTTP Version' is the latest if used to run the web app
+  - CKV_AZURE_44  # Ensure Storage Account is using the latest version of TLS encryption
+  - CKV_AZURE_59  # Ensure that logging for Azure KeyVault is 'Enabled'
+  - CKV_AZURE_109 # Ensure that key vault allows firewall rules settings
+  - CKV_AZURE_110 # Ensure that key vault enables purge protection
+  - CKV_AZURE_112 # Ensure that key vault enables soft delete
+
+# Skip specific checks
+skip-check:
+  # Skip checks that might not apply to your environment
+  - CKV_DOCKER_1   # Skip if you need to ADD files
+  - CKV_K8S_43     # Skip if you need privileged containers for specific use cases
+
+# Custom policies directory (if you have custom Checkov policies)
+# external-checks-dir: 
+#   - ./custom-policies
+
+# Directory scanning
+directory:
+  - .
+
+# File scanning patterns  
+file:
+  - "*.tf"
+  - "*.yml"
+  - "*.yaml"
+  - "*.json"
+  - "Dockerfile*"
+  - "*.bicep"
+
+# Exclude patterns
+skip-path:
+  - .git/
+  - .terraform/
+  - node_modules/
+  - vendor/
+  - .vscode/
+  - .idea/
+  - coverage/
+  - dist/
+  - build/
+  - target/
+  - test/
+  - tests/
+  - __pycache__/
+  - "*.pyc"
+
+# Enable experimental features
+enable-secret-scan-all-files: true
+
+# Output format options
+# Available formats: cli, json, junitxml, github_failed_only, sarif
+create-sarif-output: true
+sarif-file-name: checkov-results.sarif
+
+# Baseline file for managing findings over time
+# baseline: .checkov.baseline
+
+# Custom certificate bundle (if needed for corporate environments)
+# ca-certificate: /path/to/cacert.pem
+
+# Suppress specific findings by CKV ID and file path
+# suppress:
+#   - id: "CKV_AWS_20"
+#     file_path: "example.tf"
+#     justification: "This is a temporary fix"
+
+# Enable performance profiling
+# profile: true

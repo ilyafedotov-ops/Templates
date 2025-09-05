@@ -1,0 +1,155 @@
+# CodeQL configuration for enhanced security analysis
+
+name: "Enterprise Security Analysis"
+
+# Disable default queries to use only security-focused queries
+disable-default-queries: false
+
+# Query selection
+queries:
+  - uses: security-extended
+  - uses: security-and-quality
+  
+# Additional query packs
+packs:
+  - codeql/cpp-queries:cwe-079  # Cross-site scripting
+  - codeql/cpp-queries:cwe-089  # SQL injection  
+  - codeql/cpp-queries:cwe-022  # Path traversal
+  - codeql/java-queries:cwe-079
+  - codeql/java-queries:cwe-089
+  - codeql/java-queries:cwe-022
+  - codeql/javascript-queries:cwe-079
+  - codeql/javascript-queries:cwe-089
+  - codeql/javascript-queries:cwe-022
+  - codeql/python-queries:cwe-079
+  - codeql/python-queries:cwe-089
+  - codeql/python-queries:cwe-022
+  - codeql/csharp-queries:cwe-079
+  - codeql/csharp-queries:cwe-089
+  - codeql/csharp-queries:cwe-022
+
+# Path filtering
+paths-ignore:
+  - "test/**"
+  - "tests/**"
+  - "**/*test*"
+  - "**/*spec*" 
+  - "node_modules/**"
+  - "vendor/**"
+  - "third_party/**"
+  - "external/**"
+  - ".git/**"
+  - "coverage/**"
+  - "dist/**"
+  - "build/**"
+  - "target/**"
+  - "out/**"
+  - "bin/**"
+  - "obj/**"
+  - "__pycache__/**"
+  - ".pytest_cache/**"
+  - ".vscode/**"
+  - ".idea/**"
+  - "*.min.js"
+  - "*.min.css"
+
+# Include only source code paths
+paths:
+  - "src/**"
+  - "lib/**"
+  - "app/**"
+  - "server/**"
+  - "client/**"
+  - "api/**"
+  - "services/**"
+  - "components/**"
+  - "pages/**"
+  - "routes/**"
+  - "controllers/**"
+  - "models/**"
+  - "views/**"
+  - "**/*.py"
+  - "**/*.js"
+  - "**/*.ts"
+  - "**/*.jsx"
+  - "**/*.tsx"
+  - "**/*.java"
+  - "**/*.cs"
+  - "**/*.cpp"
+  - "**/*.c"
+  - "**/*.h"
+  - "**/*.go"
+  - "**/*.rs"
+  - "**/*.php"
+  - "**/*.rb"
+  - "**/*.scala"
+  - "**/*.kt"
+  - "**/*.swift"
+
+# Query configuration
+query-filters:
+  # Include high and medium precision queries
+  - include:
+      precision: 
+        - "high"
+        - "medium"
+  
+  # Include security-related queries
+  - include:
+      tags:
+        - "security"
+        - "external/cwe/cwe-079"  # XSS
+        - "external/cwe/cwe-089"  # SQL injection
+        - "external/cwe/cwe-022"  # Path traversal
+        - "external/cwe/cwe-078"  # Command injection  
+        - "external/cwe/cwe-094"  # Code injection
+        - "external/cwe/cwe-327"  # Broken crypto
+        - "external/cwe/cwe-798"  # Hard-coded credentials
+        - "external/cwe/cwe-502"  # Deserialization
+        - "external/cwe/cwe-611"  # XXE
+        - "external/cwe/cwe-918"  # SSRF
+
+  # Exclude noisy or low-value queries
+  - exclude:
+      tags:
+        - "maintainability" 
+        - "correctness"
+      precision: "low"
+
+# Language-specific configuration
+languages:
+  javascript:
+    # Include TypeScript files
+    extensions:
+      - ".js"
+      - ".jsx" 
+      - ".ts"
+      - ".tsx"
+      - ".mjs"
+      - ".cjs"
+    
+  python:
+    # Python-specific settings
+    extensions:
+      - ".py"
+      - ".pyw"
+    
+  java:
+    # Java/Kotlin settings  
+    extensions:
+      - ".java"
+      - ".kt"
+      - ".kts"
+    
+  csharp:
+    # .NET languages
+    extensions:
+      - ".cs"
+      - ".vb"
+      - ".fs"
+
+# External configuration
+external-repository-token: ${{ secrets.GITHUB_TOKEN }}
+
+# Compilation configuration for compiled languages
+build-mode: "none"  # Use "autobuild" if you need to build the project

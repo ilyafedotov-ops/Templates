@@ -1,0 +1,25 @@
+{
+  "allowlist": [
+  ],
+  "moderate": true,
+  "high": true,
+  "critical": true,
+  "low": false,
+  "package-manager": ["npm", "yarn", "pnpm"],
+  "path": "./",
+  "report-type": "full",
+  "retry": {
+    "count": 2,
+    "factor": 2,
+    "maxTimeout": 10000,
+    "minTimeout": 1000
+  },
+  "advisories": [],
+  "whitelist": [],
+  "registry": "https://registry.npmjs.org/",
+  "show-found": true,
+  "show-not-found": false,
+  "skip-dev": false,
+  "summary-mode": false,
+  "output-format": "text"
+}

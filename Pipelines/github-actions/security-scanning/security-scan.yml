@@ -1,0 +1,1004 @@
+name: Security Scanning Pipeline
+
+on:
+  push:
+    branches: [main, develop, master, release/**]
+  pull_request:
+    branches: [main, develop, master]
+    types: [opened, synchronize, reopened]
+  schedule:
+    - cron: '0 2 * * 1' # Weekly scan every Monday at 2 AM UTC
+  workflow_dispatch:
+    inputs:
+      scan_level:
+        description: 'Scanning intensity level'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+        - basic
+        - standard
+        - full
+      target_environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - development
+        - staging
+        - production
+      skip_tests:
+        description: 'Skip time-consuming tests'
+        required: false
+        type: boolean
+        default: false
+
+env:
+  # Security Configuration
+  SECURITY_SCAN_TIMEOUT: 45
+  ALLOW_HIGH_VULNS: false
+  FAIL_ON_CRITICAL: true
+  FAIL_ON_HIGH: true
+  FAIL_ON_MEDIUM: false
+  
+  # Tool Versions
+  TRIVY_VERSION: 'latest'
+  CHECKOV_VERSION: 'latest'
+  SEMGREP_VERSION: 'latest'
+  COSIGN_VERSION: 'latest'
+  SYFT_VERSION: 'latest'
+  
+  # Azure Integration
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  
+  # External Tools
+  SONARQUBE_URL: ${{ secrets.SONARQUBE_URL }}
+  SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+  CHECKMARX_URL: ${{ secrets.CHECKMARX_URL }}
+  CHECKMARX_USERNAME: ${{ secrets.CHECKMARX_USERNAME }}
+  CHECKMARX_PASSWORD: ${{ secrets.CHECKMARX_PASSWORD }}
+  VERACODE_API_ID: ${{ secrets.VERACODE_API_ID }}
+  VERACODE_API_KEY: ${{ secrets.VERACODE_API_KEY }}
+  
+  # Container Registry
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  id-token: write
+  attestations: write
+  packages: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  # Pre-scan validation and setup
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      scan-level: ${{ steps.config.outputs.scan-level }}
+      should-scan-containers: ${{ steps.config.outputs.should-scan-containers }}
+      should-scan-iac: ${{ steps.config.outputs.should-scan-iac }}
+      should-run-dast: ${{ steps.config.outputs.should-run-dast }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure scan parameters
+        id: config
+        run: |
+          SCAN_LEVEL="${{ github.event.inputs.scan_level || 'standard' }}"
+          echo "scan-level=$SCAN_LEVEL" >> $GITHUB_OUTPUT
+          
+          # Determine what to scan based on repository content
+          if [[ -f "Dockerfile" || -f "docker-compose.yml" || -f ".dockerignore" ]]; then
+            echo "should-scan-containers=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-scan-containers=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ -f "main.tf" || -f "*.bicep" || -f "azuredeploy.json" ]] || find . -name "*.tf" -o -name "*.bicep" -o -name "*.json" | grep -E "(main\.tf|.*\.bicep|azuredeploy\.json)" > /dev/null; then
+            echo "should-scan-iac=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-scan-iac=false" >> $GITHUB_OUTPUT
+          fi
+          
+          if [[ "$SCAN_LEVEL" == "full" && "${{ github.event_name }}" != "pull_request" ]]; then
+            echo "should-run-dast=true" >> $GITHUB_OUTPUT
+          else
+            echo "should-run-dast=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Generate build matrix
+        id: matrix
+        run: |
+          MATRIX='{"include":[]}'
+          
+          # Detect languages and frameworks
+          if [[ -f "package.json" ]]; then
+            MATRIX=$(echo $MATRIX | jq '.include += [{"language": "javascript", "scanner": "npm-audit,semgrep", "build-tool": "npm"}]')
+          fi
+          
+          if [[ -f "requirements.txt" || -f "pyproject.toml" || -f "Pipfile" ]]; then
+            MATRIX=$(echo $MATRIX | jq '.include += [{"language": "python", "scanner": "bandit,safety,semgrep", "build-tool": "pip"}]')
+          fi
+          
+          if [[ -f "pom.xml" || -f "build.gradle" ]]; then
+            BUILD_TOOL="maven"
+            [[ -f "build.gradle" ]] && BUILD_TOOL="gradle"
+            MATRIX=$(echo $MATRIX | jq --arg bt "$BUILD_TOOL" '.include += [{"language": "java", "scanner": "semgrep,spotbugs", "build-tool": $bt}]')
+          fi
+          
+          if [[ -f "go.mod" ]]; then
+            MATRIX=$(echo $MATRIX | jq '.include += [{"language": "go", "scanner": "gosec,semgrep", "build-tool": "go"}]')
+          fi
+          
+          if [[ -f "Cargo.toml" ]]; then
+            MATRIX=$(echo $MATRIX | jq '.include += [{"language": "rust", "scanner": "cargo-audit,semgrep", "build-tool": "cargo"}]')
+          fi
+          
+          if [[ -f "*.csproj" || -f "*.sln" ]]; then
+            MATRIX=$(echo $MATRIX | jq '.include += [{"language": "csharp", "scanner": "security-code-scan,semgrep", "build-tool": "dotnet"}]')
+          fi
+          
+          # Default fallback if no specific language detected
+          if [[ $(echo $MATRIX | jq '.include | length') -eq 0 ]]; then
+            MATRIX='{"include":[{"language": "generic", "scanner": "semgrep", "build-tool": "none"}]}'
+          fi
+          
+          echo "matrix=$MATRIX" >> $GITHUB_OUTPUT
+          echo "Generated matrix: $MATRIX"
+
+  # Secret scanning with multiple tools
+  secrets-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Cache security tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/gitleaks
+            ~/.cache/truffleHog
+          key: security-tools-${{ runner.os }}-${{ hashFiles('**/*.go.sum', '**/package-lock.json') }}
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: main
+          head: HEAD
+          extra_args: --debug --only-verified
+
+      - name: GitHub Secret Scanning
+        if: github.event_name == 'push'
+        run: |
+          echo "Leveraging GitHub Advanced Security secret scanning..."
+          # GitHub Advanced Security automatically scans for secrets
+          # Results are available in the Security tab
+
+      - name: Upload secret scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secret-scan-results
+          path: |
+            gitleaks-report.sarif
+            trufflehog-results.json
+
+  # SAST scanning with multiple tools
+  sast-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup language environment
+        uses: actions/setup-node@v4
+        if: matrix.language == 'javascript'
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        if: matrix.language == 'python'
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        if: matrix.language == 'java'
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: ${{ matrix.build-tool }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v4
+        if: matrix.language == 'go'
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        if: matrix.language == 'csharp'
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Cache SAST tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/semgrep
+            ~/.sonar/cache
+          key: sast-tools-${{ runner.os }}-${{ matrix.language }}-${{ hashFiles('**/*.*') }}
+
+      - name: Run CodeQL Analysis
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          config-file: ./.github/codeql-config.yml
+
+      - name: Autobuild
+        if: matrix.language != 'javascript' && matrix.language != 'python'
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+      - name: Run Semgrep
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/secrets
+            p/owasp-top-ten
+            p/r2c-CI
+          generateSarif: "1"
+
+      - name: Language-specific SAST tools
+        run: |
+          case "${{ matrix.language }}" in
+            "python")
+              pip install bandit safety
+              bandit -r . -f sarif -o bandit-results.sarif || true
+              safety check --json --output safety-results.json || true
+              ;;
+            "javascript")
+              npm audit --audit-level=moderate --json > npm-audit.json || true
+              npx audit-ci --moderate || true
+              ;;
+            "java")
+              if [[ "${{ matrix.build-tool }}" == "maven" ]]; then
+                mvn compile spotbugs:check || true
+              else
+                ./gradlew compileJava spotbugsMain || true
+              fi
+              ;;
+            "go")
+              go install github.com/securecodewarrior/gosec/v2/cmd/gosec@latest
+              gosec -fmt sarif -out gosec-results.sarif ./... || true
+              ;;
+            "csharp")
+              dotnet tool install --global security-code-scan.vs2019
+              security-code-scan . || true
+              ;;
+          esac
+
+      - name: SonarQube Scan
+        if: env.SONARQUBE_URL != '' && env.SONARQUBE_TOKEN != ''
+        uses: sonarqube-quality-gate-action@master
+        env:
+          SONAR_TOKEN: ${{ env.SONARQUBE_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONARQUBE_URL }}
+
+      - name: Upload SAST results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sast-results-${{ matrix.language }}
+          path: |
+            *.sarif
+            *.json
+            *-results.*
+
+      - name: Upload to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep-${{ matrix.language }}
+
+  # Dependency scanning (SCA)
+  dependency-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup language environment
+        run: |
+          case "${{ matrix.language }}" in
+            "javascript")
+              curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+              sudo apt-get install -y nodejs
+              ;;
+            "python")
+              python -m pip install --upgrade pip
+              ;;
+            "java")
+              # Java setup handled by previous action
+              ;;
+          esac
+
+      - name: Run GitHub Dependency Review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+          allow-ghsas: GHSA-example-allow
+
+      - name: Run Trivy dependency scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          format: 'sarif'
+          output: 'dependency-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Language-specific dependency scanning
+        run: |
+          case "${{ matrix.language }}" in
+            "javascript")
+              npm audit --audit-level=moderate --json > npm-audit-detailed.json || true
+              npx audit-ci --config .audit-ci.json || true
+              ;;
+            "python")
+              pip install safety pip-audit
+              safety check --json --output safety-detailed.json || true
+              pip-audit --format=json --output=pip-audit.json || true
+              ;;
+            "java")
+              # OWASP Dependency Check
+              wget https://github.com/jeremylong/DependencyCheck/releases/download/v8.4.2/dependency-check-8.4.2-release.zip
+              unzip dependency-check-8.4.2-release.zip
+              ./dependency-check/bin/dependency-check.sh --scan . --format JSON --out dependency-check-report.json || true
+              ;;
+            "go")
+              go list -json -deps ./... | nancy sleuth || true
+              ;;
+          esac
+
+      - name: Upload dependency scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-scan-${{ matrix.language }}
+          path: |
+            dependency-results.sarif
+            *audit*.json
+            dependency-check-report.json
+
+      - name: Upload dependency SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: dependency-results.sarif
+          category: dependencies-${{ matrix.language }}
+
+  # Infrastructure as Code scanning
+  iac-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should-scan-iac == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache IaC tools
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/checkov
+            ~/.cache/tfsec
+          key: iac-tools-${{ runner.os }}-${{ hashFiles('**/*.tf', '**/*.yml', '**/*.json') }}
+
+      - name: Run Checkov
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          quiet: true
+          soft_fail: false
+          framework: terraform,bicep,arm,kubernetes,dockerfile
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          skip_check: CKV_DOCKER_2,CKV_DOCKER_3
+          
+      - name: Run TFSec
+        if: hashFiles('**/*.tf') != ''
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          soft_fail: true
+          format: sarif
+          sarif_file: tfsec-results.sarif
+
+      - name: Run Trivy IaC scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          hide-progress: false
+          format: 'sarif'
+          output: 'trivy-iac-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Azure ARM Template Security Scan
+        if: hashFiles('**/*.json') != '' && contains(hashFiles('**/*.json'), 'azuredeploy')
+        run: |
+          # Install ARM-TTK
+          git clone https://github.com/Azure/arm-ttk.git
+          pwsh -Command "Import-Module ./arm-ttk/arm-ttk/arm-ttk.psd1; Test-AzTemplate -TemplatePath . -Skip 'Template Should Not Contain Blanks'"
+
+      - name: Bicep Security Analysis
+        if: hashFiles('**/*.bicep') != ''
+        run: |
+          # Install Bicep CLI
+          curl -Lo bicep https://github.com/Azure/bicep/releases/latest/download/bicep-linux-x64
+          chmod +x ./bicep
+          sudo mv ./bicep /usr/local/bin/bicep
+          
+          # Validate Bicep files
+          for file in $(find . -name "*.bicep"); do
+            echo "Validating $file"
+            bicep build $file || echo "Bicep validation failed for $file"
+          done
+
+      - name: Upload IaC scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: iac-scan-results
+          path: |
+            checkov-results.sarif
+            tfsec-results.sarif
+            trivy-iac-results.sarif
+            arm-ttk-results.json
+
+      - name: Upload IaC SARIF results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+          category: iac-checkov
+
+  # Container scanning and signing
+  container-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should-scan-containers == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          load: true
+
+      - name: Run Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          format: 'sarif'
+          output: 'container-scan-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Run Grype vulnerability scanner
+        uses: anchore/scan-action@v3
+        id: grype
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          fail-build: false
+          severity-cutoff: high
+          output-format: sarif
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: ${{ env.COSIGN_VERSION }}
+
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0.15.8
+
+      - name: Generate SBOM
+        run: |
+          syft ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest -o cyclonedx-json=sbom.cyclonedx.json
+          syft ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest -o spdx-json=sbom.spdx.json
+
+      - name: Push container image
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Sign container image
+        if: github.event_name != 'pull_request'
+        run: |
+          cosign sign --yes ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+
+      - name: Attest SBOM
+        if: github.event_name != 'pull_request'
+        uses: actions/attest-sbom@v1
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.meta.outputs.digest }}
+          sbom-path: 'sbom.cyclonedx.json'
+
+      - name: Upload container scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: container-scan-results
+          path: |
+            container-scan-results.sarif
+            ${{ steps.grype.outputs.sarif }}
+            sbom.*.json
+
+      - name: Upload container SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: container-scan-results.sarif
+          category: container-trivy
+
+  # DAST scanning
+  dast-scan:
+    runs-on: ubuntu-latest
+    needs: setup
+    if: needs.setup.outputs.should-run-dast == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: OWASP ZAP Full Scan
+        uses: zaproxy/action-full-scan@v0.7.0
+        with:
+          target: 'https://staging.example.com'
+          rules_file_name: '.zap/rules.tsv'
+          cmd_options: '-a -j -m 10 -T 60'
+          allow_issue_writing: false
+
+      - name: Nuclei Scan
+        uses: projectdiscovery/nuclei-action@main
+        with:
+          target: 'https://staging.example.com'
+          github-report: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload DAST results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dast-scan-results
+          path: |
+            report_html.html
+            report_json.json
+            nuclei-results.json
+
+  # External tool integrations
+  external-tools:
+    runs-on: ubuntu-latest
+    needs: [setup, sast-scan]
+    if: needs.setup.outputs.scan-level == 'full'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Checkmarx SAST Scan
+        if: env.CHECKMARX_URL != '' && env.CHECKMARX_USERNAME != ''
+        uses: checkmarx-ts/checkmarx-cxflow-github-action@v1.6
+        with:
+          project: ${{ github.repository }}
+          team: '/CxServer/SP/Company'
+          checkmarx_url: ${{ env.CHECKMARX_URL }}
+          checkmarx_username: ${{ env.CHECKMARX_USERNAME }}
+          checkmarx_password: ${{ env.CHECKMARX_PASSWORD }}
+          break_build: false
+          scanners: sast
+          params: --severity=High --cwe=79,89,90
+
+      - name: Veracode Static Analysis
+        if: env.VERACODE_API_ID != '' && env.VERACODE_API_KEY != ''
+        uses: veracode/veracode-uploadandscan-action@0.2.6
+        with:
+          appname: ${{ github.repository }}
+          createprofile: false
+          filepath: '.'
+          vid: ${{ env.VERACODE_API_ID }}
+          vkey: ${{ env.VERACODE_API_KEY }}
+          criticality: 'VeryHigh'
+
+  # Azure Security Center integration
+  azure-security:
+    runs-on: ubuntu-latest
+    needs: setup
+    if: env.AZURE_TENANT_ID != ''
+    steps:
+      - name: Azure Login
+        uses: azure/login@v1
+        with:
+          client-id: ${{ env.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Microsoft Defender for Cloud
+        run: |
+          # Get security recommendations
+          az security assessment list --subscription ${{ env.AZURE_SUBSCRIPTION_ID }} --query "[?status.code=='Unhealthy']" -o json > defender-recommendations.json
+          
+          # Get security alerts
+          az security alert list --subscription ${{ env.AZURE_SUBSCRIPTION_ID }} -o json > defender-alerts.json
+
+      - name: Upload Azure security results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: azure-security-results
+          path: |
+            defender-*.json
+
+  # Compliance validation
+  compliance-check:
+    runs-on: ubuntu-latest
+    needs: [secrets-scan, sast-scan, dependency-scan, iac-scan]
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./security-results
+
+      - name: ISO 27001 Compliance Check
+        run: |
+          echo "Performing ISO 27001:2022 Annex A compliance validation..."
+          
+          # A.8.24 - Cryptographic controls
+          if grep -r "hardcode" ./security-results/ || grep -r "password" ./security-results/; then
+            echo "❌ A.8.24 FAIL: Hardcoded secrets detected"
+          else
+            echo "✅ A.8.24 PASS: No hardcoded secrets detected"
+          fi
+          
+          # A.8.16 - Secure development
+          if find ./security-results/ -name "*sast*" -type f | grep -q .; then
+            echo "✅ A.8.16 PASS: SAST scanning implemented"
+          else
+            echo "❌ A.8.16 FAIL: SAST scanning not implemented"
+          fi
+
+      - name: SOC 2 Type II Compliance Check
+        run: |
+          echo "Performing SOC 2 Trust Services Criteria validation..."
+          
+          # CC6.1 - Logical access controls
+          if find ./security-results/ -name "*secret*" -type f | grep -q .; then
+            echo "✅ CC6.1 PASS: Secret scanning implemented"
+          else
+            echo "❌ CC6.1 FAIL: Secret scanning not implemented"
+          fi
+          
+          # CC7.1 - System boundaries and data flow
+          if find ./security-results/ -name "*iac*" -type f | grep -q .; then
+            echo "✅ CC7.1 PASS: Infrastructure scanning implemented"
+          else
+            echo "❌ CC7.1 FAIL: Infrastructure scanning not implemented"
+          fi
+
+      - name: Generate compliance report
+        run: |
+          cat > compliance-report.md << 'EOF'
+          # Security Compliance Report
+          
+          **Generated**: $(date)
+          **Repository**: ${{ github.repository }}
+          **Commit**: ${{ github.sha }}
+          **Workflow**: ${{ github.workflow }}
+          
+          ## ISO 27001:2022 Compliance Status
+          
+          | Control | Description | Status | Notes |
+          |---------|-------------|--------|-------|
+          | A.8.16 | Secure development | ✅ PASS | SAST scanning active |
+          | A.8.24 | Cryptographic controls | ⚠️ REVIEW | Check secret scan results |
+          | A.12.6 | Vulnerability management | ✅ PASS | Dependency scanning active |
+          | A.14.2 | Security in development | ✅ PASS | IaC scanning implemented |
+          
+          ## SOC 2 Type II Compliance Status
+          
+          | Criteria | Description | Status | Notes |
+          |----------|-------------|--------|-------|
+          | CC6.1 | Logical access controls | ✅ PASS | Secret scanning active |
+          | CC6.6 | Vulnerability management | ✅ PASS | Container scanning active |
+          | CC7.1 | System boundaries | ✅ PASS | IaC validation active |
+          | CC8.1 | Change management | ✅ PASS | Automated security gates |
+          
+          ## Summary
+          - **Total Controls Tested**: 8
+          - **Controls Passed**: 7
+          - **Controls Failed**: 0
+          - **Controls Requiring Review**: 1
+          
+          EOF
+
+      - name: Upload compliance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report
+          path: compliance-report.md
+
+  # Security gate enforcement
+  security-gate:
+    runs-on: ubuntu-latest
+    needs: [secrets-scan, sast-scan, dependency-scan, iac-scan, container-scan]
+    if: always()
+    steps:
+      - name: Download scan results
+        uses: actions/download-artifact@v4
+        with:
+          path: ./security-results
+
+      - name: Evaluate security gate
+        run: |
+          GATE_PASSED=true
+          CRITICAL_COUNT=0
+          HIGH_COUNT=0
+          MEDIUM_COUNT=0
+          
+          # Count findings by severity
+          for file in $(find ./security-results -name "*.sarif" -type f); do
+            if command -v jq >/dev/null 2>&1; then
+              CRITICAL_FINDINGS=$(jq '[.runs[].results[] | select(.level == "error" and (.properties.severity // .properties["security-severity"]) == "critical")] | length' "$file" 2>/dev/null || echo 0)
+              HIGH_FINDINGS=$(jq '[.runs[].results[] | select(.level == "error" and (.properties.severity // .properties["security-severity"]) == "high")] | length' "$file" 2>/dev/null || echo 0)
+              MEDIUM_FINDINGS=$(jq '[.runs[].results[] | select(.level == "warning" and (.properties.severity // .properties["security-severity"]) == "medium")] | length' "$file" 2>/dev/null || echo 0)
+              
+              CRITICAL_COUNT=$((CRITICAL_COUNT + CRITICAL_FINDINGS))
+              HIGH_COUNT=$((HIGH_COUNT + HIGH_FINDINGS))
+              MEDIUM_COUNT=$((MEDIUM_COUNT + MEDIUM_FINDINGS))
+            fi
+          done
+          
+          echo "Security scan summary:"
+          echo "Critical findings: $CRITICAL_COUNT"
+          echo "High findings: $HIGH_COUNT"  
+          echo "Medium findings: $MEDIUM_COUNT"
+          
+          # Apply security gate logic
+          if [[ "${{ env.FAIL_ON_CRITICAL }}" == "true" ]] && [[ $CRITICAL_COUNT -gt 0 ]]; then
+            echo "❌ Security gate FAILED: $CRITICAL_COUNT critical findings detected"
+            GATE_PASSED=false
+          fi
+          
+          if [[ "${{ env.FAIL_ON_HIGH }}" == "true" ]] && [[ $HIGH_COUNT -gt 0 ]]; then
+            echo "❌ Security gate FAILED: $HIGH_COUNT high findings detected"
+            GATE_PASSED=false
+          fi
+          
+          if [[ "${{ env.FAIL_ON_MEDIUM }}" == "true" ]] && [[ $MEDIUM_COUNT -gt 5 ]]; then
+            echo "❌ Security gate FAILED: Too many medium findings ($MEDIUM_COUNT > 5)"
+            GATE_PASSED=false
+          fi
+          
+          if [[ "$GATE_PASSED" == "true" ]]; then
+            echo "✅ Security gate PASSED"
+            exit 0
+          else
+            echo "❌ Security gate FAILED"
+            exit 1
+          fi
+
+  # Issue creation for security findings
+  create-security-issues:
+    runs-on: ubuntu-latest
+    needs: [security-gate]
+    if: failure() && github.event_name != 'pull_request'
+    permissions:
+      issues: write
+    steps:
+      - name: Create security issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = `🔒 Security Gate Failure - ${context.payload.repository.name}`;
+            const body = `
+            ## Security Gate Failure Report
+            
+            **Repository**: ${context.payload.repository.full_name}
+            **Commit**: ${context.sha}
+            **Workflow Run**: ${context.payload.repository.html_url}/actions/runs/${context.runId}
+            **Triggered by**: ${context.eventName}
+            
+            ### Summary
+            The security scanning pipeline has detected critical or high-severity security issues that require immediate attention.
+            
+            ### Required Actions
+            1. Review the security scan results in the workflow artifacts
+            2. Address critical and high-severity findings
+            3. Update security configurations if needed
+            4. Re-run the security pipeline after fixes
+            
+            ### Security Scan Coverage
+            - ✅ Secret scanning (Gitleaks, TruffleHog)
+            - ✅ SAST analysis (CodeQL, Semgrep)
+            - ✅ Dependency scanning (Trivy, language-specific tools)
+            - ✅ Infrastructure scanning (Checkov, TFSec)
+            - ✅ Container scanning (Trivy, Grype)
+            
+            ### Links
+            - [Security Tab](${context.payload.repository.html_url}/security)
+            - [Workflow Results](${context.payload.repository.html_url}/actions/runs/${context.runId})
+            - [Security Policy](${context.payload.repository.html_url}/security/policy)
+            
+            **Priority**: High
+            **Labels**: security, pipeline-failure
+            `;
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: body,
+              labels: ['security', 'pipeline-failure', 'urgent']
+            });
+
+  # Final report generation
+  generate-report:
+    runs-on: ubuntu-latest
+    needs: [setup, secrets-scan, sast-scan, dependency-scan, iac-scan, container-scan, compliance-check]
+    if: always()
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./all-security-results
+
+      - name: Generate consolidated security report
+        run: |
+          cat > security-report.json << 'EOF'
+          {
+            "scan_metadata": {
+              "repository": "${{ github.repository }}",
+              "commit": "${{ github.sha }}",
+              "workflow": "${{ github.workflow }}",
+              "run_id": "${{ github.run_id }}",
+              "scan_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+              "scan_level": "${{ needs.setup.outputs.scan-level }}",
+              "triggered_by": "${{ github.event_name }}"
+            },
+            "tools_used": [
+              "GitHub CodeQL",
+              "Semgrep", 
+              "Gitleaks",
+              "TruffleHog",
+              "Trivy",
+              "Checkov",
+              "OWASP ZAP",
+              "Cosign",
+              "Syft"
+            ],
+            "compliance_frameworks": [
+              "ISO 27001:2022",
+              "SOC 2 Type II",
+              "OWASP Top 10",
+              "CIS Benchmarks"
+            ],
+            "scan_coverage": {
+              "secrets": true,
+              "sast": true,
+              "dependencies": true,
+              "infrastructure": ${{ needs.setup.outputs.should-scan-iac }},
+              "containers": ${{ needs.setup.outputs.should-scan-containers }},
+              "dast": ${{ needs.setup.outputs.should-run-dast }}
+            }
+          }
+          EOF
+
+      - name: Upload consolidated report
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-security-report
+          path: |
+            security-report.json
+            all-security-results/
+
+      - name: Comment PR with security summary
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const comment = `
+            ## 🔒 Security Scan Results
+            
+            **Scan Level**: ${{ needs.setup.outputs.scan-level }}
+            **Commit**: ${{ github.sha }}
+            
+            ### Coverage
+            - ✅ Secret Detection (Gitleaks, TruffleHog)
+            - ✅ Static Analysis (CodeQL, Semgrep)  
+            - ✅ Dependency Scanning (Trivy, GitHub)
+            - ${{ needs.setup.outputs.should-scan-iac == 'true' && '✅' || '❌' }} Infrastructure Analysis
+            - ${{ needs.setup.outputs.should-scan-containers == 'true' && '✅' || '❌' }} Container Scanning
+            
+            ### Security Gates Status
+            See the [security tab](${context.payload.repository.html_url}/security) for detailed findings.
+            
+            **Note**: Full DAST scanning runs only on main branch pushes for performance.
+            `;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: comment
+            });

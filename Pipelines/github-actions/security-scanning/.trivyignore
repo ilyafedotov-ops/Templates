@@ -1,0 +1,30 @@
+# Trivy ignore file for vulnerability scanning
+# This file allows you to ignore specific vulnerabilities
+
+# Example: Ignore specific CVEs that are not applicable to your environment
+# CVE-2021-44228
+# CVE-2021-45046
+
+# Ignore low severity vulnerabilities in development dependencies
+# CVE-2022-0155 # Example: Development only vulnerability
+
+# Ignore vulnerabilities in base images that cannot be fixed
+# Format: <vulnerability-id> <reason>
+
+# Python vulnerabilities
+# CVE-2022-40899 # Future version required, breaking change
+
+# Node.js vulnerabilities  
+# CVE-2022-3517 # Minimist vulnerability in dev dependencies only
+
+# Java vulnerabilities
+# CVE-2022-42003 # Jackson vulnerability, patched in runtime
+
+# .NET vulnerabilities
+# CVE-2022-41032 # System.Text.Json, not used in production
+
+# Container base image vulnerabilities that cannot be updated
+# CVE-2022-1304 # e2fsprogs in base image, minimal risk
+
+# Add your specific ignores below with justification comments
+# Format: CVE-ID # Justification for ignoring

@@ -1,0 +1,255 @@
+# Example usage of the reusable security scanning workflow
+name: Application Security Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  schedule:
+    - cron: '0 2 * * 1' # Weekly full scan
+
+jobs:
+  # Development/PR scanning with relaxed gates
+  dev-security-scan:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/security-scan-reusable.yml
+    with:
+      scan-level: 'basic'
+      target-environment: 'development'
+      fail-on-high: false
+      fail-on-medium: false
+      create-issues: false
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+
+  # Staging deployment with standard security gates
+  staging-security-scan:
+    if: |
+      github.event_name == 'push' && 
+      github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/security-scan-reusable.yml
+    with:
+      scan-level: 'standard'
+      target-environment: 'staging'
+      fail-on-high: true
+      fail-on-medium: false
+      create-issues: true
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+
+  # Production deployment with strict security gates
+  production-security-scan:
+    if: |
+      github.event_name == 'push' && 
+      github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/security-scan-reusable.yml
+    with:
+      scan-level: 'full'
+      target-environment: 'production'
+      fail-on-high: true
+      fail-on-medium: true
+      create-issues: true
+      scan-containers: true
+      scan-iac: true
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+      CHECKMARX_USERNAME: ${{ secrets.CHECKMARX_USERNAME }}
+      CHECKMARX_PASSWORD: ${{ secrets.CHECKMARX_PASSWORD }}
+
+  # Scheduled comprehensive security assessment
+  scheduled-security-scan:
+    if: github.event_name == 'schedule'
+    uses: ./.github/workflows/security-scan-reusable.yml
+    with:
+      scan-level: 'full'
+      target-environment: 'production'
+      fail-on-high: false  # Don't fail scheduled scans, just report
+      fail-on-medium: false
+      create-issues: true
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+      CHECKMARX_USERNAME: ${{ secrets.CHECKMARX_USERNAME }}
+      CHECKMARX_PASSWORD: ${{ secrets.CHECKMARX_PASSWORD }}
+
+  # Post-security scan actions based on results
+  post-scan-actions:
+    runs-on: ubuntu-latest
+    needs: [dev-security-scan, staging-security-scan, production-security-scan, scheduled-security-scan]
+    if: always() && !cancelled()
+    steps:
+      - name: Process scan results
+        run: |
+          echo "Processing security scan results..."
+          
+          # Determine which scan ran
+          if [[ "${{ needs.dev-security-scan.result }}" != "skipped" ]]; then
+            SCAN_RESULT="${{ needs.dev-security-scan.outputs.security-gate-result }}"
+            CRITICAL_COUNT="${{ needs.dev-security-scan.outputs.critical-findings }}"
+            HIGH_COUNT="${{ needs.dev-security-scan.outputs.high-findings }}"
+            SCAN_TYPE="Development"
+          elif [[ "${{ needs.staging-security-scan.result }}" != "skipped" ]]; then
+            SCAN_RESULT="${{ needs.staging-security-scan.outputs.security-gate-result }}"
+            CRITICAL_COUNT="${{ needs.staging-security-scan.outputs.critical-findings }}"
+            HIGH_COUNT="${{ needs.staging-security-scan.outputs.high-findings }}"
+            SCAN_TYPE="Staging"
+          elif [[ "${{ needs.production-security-scan.result }}" != "skipped" ]]; then
+            SCAN_RESULT="${{ needs.production-security-scan.outputs.security-gate-result }}"
+            CRITICAL_COUNT="${{ needs.production-security-scan.outputs.critical-findings }}"
+            HIGH_COUNT="${{ needs.production-security-scan.outputs.high-findings }}"
+            SCAN_TYPE="Production"
+          elif [[ "${{ needs.scheduled-security-scan.result }}" != "skipped" ]]; then
+            SCAN_RESULT="${{ needs.scheduled-security-scan.outputs.security-gate-result }}"
+            CRITICAL_COUNT="${{ needs.scheduled-security-scan.outputs.critical-findings }}"
+            HIGH_COUNT="${{ needs.scheduled-security-scan.outputs.high-findings }}"
+            SCAN_TYPE="Scheduled"
+          fi
+          
+          echo "Scan Type: $SCAN_TYPE"
+          echo "Result: $SCAN_RESULT"
+          echo "Critical Findings: $CRITICAL_COUNT"
+          echo "High Findings: $HIGH_COUNT"
+          
+          # Set outputs for downstream jobs
+          echo "scan-type=$SCAN_TYPE" >> $GITHUB_OUTPUT
+          echo "scan-result=$SCAN_RESULT" >> $GITHUB_OUTPUT
+          echo "critical-count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+          echo "high-count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+
+      - name: Send Slack notification
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ steps.process-results.outputs.scan-result == 'passed' && 'success' || 'failure' }}
+          fields: repo,message,commit,author,action,eventName,ref,workflow
+          webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          custom_payload: |
+            {
+              "text": "Security scan completed",
+              "attachments": [
+                {
+                  "color": "${{ steps.process-results.outputs.scan-result == 'passed' && 'good' || 'danger' }}",
+                  "fields": [
+                    {
+                      "title": "Repository",
+                      "value": "${{ github.repository }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Scan Type", 
+                      "value": "${{ steps.process-results.outputs.scan-type }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Result",
+                      "value": "${{ steps.process-results.outputs.scan-result }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Critical Findings",
+                      "value": "${{ steps.process-results.outputs.critical-count }}",
+                      "short": true
+                    },
+                    {
+                      "title": "High Findings", 
+                      "value": "${{ steps.process-results.outputs.high-count }}",
+                      "short": true
+                    },
+                    {
+                      "title": "Commit",
+                      "value": "${{ github.sha }}",
+                      "short": true
+                    }
+                  ],
+                  "actions": [
+                    {
+                      "type": "button",
+                      "text": "View Results",
+                      "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                    },
+                    {
+                      "type": "button", 
+                      "text": "Security Tab",
+                      "url": "${{ github.server_url }}/${{ github.repository }}/security"
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Update security dashboard
+        if: steps.process-results.outputs.scan-result == 'failed'
+        run: |
+          # Update external security dashboard or SIEM
+          echo "Updating security dashboard with failure..."
+          
+          # Example: Send to Azure Log Analytics
+          if [[ -n "${{ secrets.AZURE_CLIENT_ID }}" ]]; then
+            # curl -X POST \
+            #   "$LOG_ANALYTICS_ENDPOINT/api/logs" \
+            #   -H "Authorization: Bearer $AZURE_TOKEN" \
+            #   -H "Content-Type: application/json" \
+            #   -d '{
+            #     "event_type": "security_scan_failure",
+            #     "repository": "${{ github.repository }}",
+            #     "critical_findings": "${{ steps.process-results.outputs.critical-count }}",
+            #     "high_findings": "${{ steps.process-results.outputs.high-count }}",
+            #     "timestamp": "'$(date -u +%Y-%m-%dT%H:%M:%SZ)'"
+            #   }'
+            echo "Would send security event to Azure Log Analytics"
+          fi
+
+  # Block deployment if production security scan fails
+  deployment-gate:
+    runs-on: ubuntu-latest
+    needs: production-security-scan
+    if: |
+      github.event_name == 'push' && 
+      github.ref == 'refs/heads/main' &&
+      needs.production-security-scan.outputs.security-gate-result == 'failed'
+    steps:
+      - name: Block deployment
+        run: |
+          echo "🚫 Deployment blocked due to security scan failures"
+          echo "Critical findings: ${{ needs.production-security-scan.outputs.critical-findings }}"
+          echo "High findings: ${{ needs.production-security-scan.outputs.high-findings }}"
+          echo ""
+          echo "Please address security findings before deploying to production."
+          echo "Review findings in the GitHub Security tab:"
+          echo "${{ github.server_url }}/${{ github.repository }}/security"
+          exit 1
+
+  # Example of conditional deployment based on security results
+  conditional-deployment:
+    runs-on: ubuntu-latest
+    needs: [staging-security-scan, production-security-scan]
+    if: |
+      always() && !cancelled() &&
+      (
+        (github.ref == 'refs/heads/develop' && needs.staging-security-scan.outputs.security-gate-result == 'passed') ||
+        (github.ref == 'refs/heads/main' && needs.production-security-scan.outputs.security-gate-result == 'passed')
+      )
+    steps:
+      - name: Deploy application
+        run: |
+          ENVIRONMENT="staging"
+          [[ "${{ github.ref }}" == "refs/heads/main" ]] && ENVIRONMENT="production"
+          
+          echo "🚀 Deploying to $ENVIRONMENT environment"
+          echo "Security gate passed, deployment authorized"
+          
+          # Your deployment logic here
+          # e.g., call Azure DevOps pipeline, Terraform, ARM templates, etc.
+          
+          echo "Deployment completed successfully"
