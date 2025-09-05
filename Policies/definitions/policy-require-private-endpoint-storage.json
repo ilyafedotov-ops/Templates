@@ -1,0 +1,22 @@
+{
+  "properties": {
+    "displayName": "Audit: Storage accounts without private endpoints",
+    "description": "Audit storage accounts that do not have any approved private endpoint connections.",
+    "policyType": "Custom",
+    "mode": "All",
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {"field": "type", "equals": "Microsoft.Storage/storageAccounts"}
+        ]
+      },
+      "then": {
+        "effect": "auditIfNotExists",
+        "details": {
+          "type": "Microsoft.Storage/storageAccounts/privateEndpointConnections"
+        }
+      }
+    }
+  }
+}
+

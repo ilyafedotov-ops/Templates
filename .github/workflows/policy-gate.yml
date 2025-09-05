@@ -1,0 +1,55 @@
+name: policy-gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: 'Azure scope (subscription or management group resource ID)'
+        required: true
+      maxNonCompliant:
+        description: 'Maximum allowed noncompliant resource count'
+        required: false
+        default: '0'
+  workflow_call:
+    inputs:
+      scope:
+        required: true
+        type: string
+      maxNonCompliant:
+        required: false
+        type: string
+        default: '0'
+    secrets:
+      AZURE_CLIENT_ID:
+        required: true
+      AZURE_TENANT_ID:
+        required: true
+      AZURE_SUBSCRIPTION_ID:
+        required: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID || inputs.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID || inputs.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID || inputs.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check Policy Compliance
+        run: |
+          az account show
+          az provider register -n Microsoft.PolicyInsights --wait
+          scope="${{ github.event.inputs.scope || inputs.scope }}"
+          echo "Checking policy compliance at $scope"
+          summary=$(az policy state summarize --scope "$scope")
+          echo "$summary" | jq '.'
+          non=$(echo "$summary" | jq -r '.value[].results.nonCompliantResources // 0' | awk '{s+=$1} END {print s}')
+          echo "Noncompliant resources: $non"
+          max=${{ github.event.inputs.maxNonCompliant || inputs.maxNonCompliant }}
+          if [ "$non" -gt "$max" ]; then echo "Policy gate failed: noncompliant=$non > max=$max"; exit 1; fi

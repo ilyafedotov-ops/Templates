@@ -1,0 +1,11 @@
+Criteria,Description,Azure Implementation,Evidence,Owner,Status,Notes
+CC1.1,Control environment,Security org, policies, roles,Policies, org chart,CISO,Planned,
+CC2.1,Communication and information,Central log/alerting and process docs,Runbooks, alerts,SecOps,In Progress,
+CC3.2,Risk assessment,IS risk process; cloud risk register,Risk register export,GRC,In Progress,
+CC4.1,Monitoring activities,Defender for Cloud/Sentinel monitoring,Dashboards,SecOps,Implemented,
+CC6.1,Logical access,MFA/CA, least privilege, PIM,Entra reports,IAM,Implemented,
+CC6.6,Change management,Change control in CI/CD; approvals,Pipeline + change tickets,DevOps,In Progress,
+CC7.2,Security incident response,IR plan; Sentinel incidents and SOAR,IR plan + incident logs,SecOps,In Progress,
+CC8.1,Availability,BCDR plans; backups; DR tests,DR exercise report,IT Ops,In Progress,
+PI1.2,Confidentiality,Encryption at rest/in transit; key mgmt,Key inventory + config,SecArch,Implemented,
+

@@ -1,0 +1,8 @@
+{
+  "parameters": {
+    "allowedLocations": {"value": ["westeurope", "northeurope"]},
+    "requiredTagName": {"value": "owner"},
+    "tagEffect": {"value": "Audit"}
+  }
+}
+

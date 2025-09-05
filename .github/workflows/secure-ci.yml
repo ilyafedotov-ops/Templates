@@ -1,0 +1,182 @@
+name: secure-ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ 'javascript', 'python', 'go', 'java', 'csharp' ]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  build-and-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      security-events: write
+      actions: read
+    env:
+      IMAGE_NAME: ghcr.io/${{ github.repository }}:pr-${{ github.run_number }}
+      REGISTRY: ghcr.io
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      ACR_IMAGE: ${{ vars.ACR_NAME && format('{0}.azurecr.io/{1}:{2}', vars.ACR_NAME, github.repository, github.run_number) || '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies (if applicable)
+        run: |
+          if [ -f package.json ]; then npm ci; fi
+
+      - name: Build (if applicable)
+        run: |
+          if [ -f package.json ]; then npm run build --if-present; fi
+
+      - name: Checkov IaC scan
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: .
+          quiet: true
+          framework: terraform,bicep,arm,kubernetes
+          output_format: sarif
+          output_file_path: checkov.sarif
+
+      - name: Upload Checkov SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov.sarif
+
+      - name: Trivy FS scan
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          format: sarif
+          output: trivy-fs.sarif
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy FS SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs.sarif
+
+      - name: Gitleaks secret scan
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: "detect --report-format sarif --report-path gitleaks.sarif --no-git"
+
+      - name: Upload Gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+
+      - name: Build container (if Dockerfile exists)
+        run: |
+          if [ -f Dockerfile ]; then docker build -t "$IMAGE_NAME" .; fi
+
+      - name: Trivy image scan (if image built)
+        if: ${{ hashFiles('Dockerfile') != '' }}
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}
+          format: sarif
+          output: trivy-image.sarif
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+
+      - name: Upload Trivy image SARIF
+        if: ${{ hashFiles('Dockerfile') != '' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+
+      - name: Login to GHCR (if image built)
+        if: ${{ hashFiles('Dockerfile') != '' }}
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login $REGISTRY -u ${{ github.actor }} --password-stdin
+
+      - name: Push image to GHCR (if image built)
+        if: ${{ hashFiles('Dockerfile') != '' }}
+        run: docker push "$IMAGE_NAME"
+
+      - name: Azure login (OIDC) for ACR (optional)
+        if: ${{ hashFiles('Dockerfile') != '' && env.ACR_NAME != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Push image to ACR (optional)
+        if: ${{ hashFiles('Dockerfile') != '' && env.ACR_NAME != '' }}
+        run: |
+          az acr login -n "$ACR_NAME"
+          docker tag "$IMAGE_NAME" "$ACR_IMAGE"
+          docker push "$ACR_IMAGE"
+
+      - name: Generate SBOM (CycloneDX with Syft)
+        uses: anchore/sbom-action@v0.17.5
+        with:
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign container image (keyless)
+        if: ${{ hashFiles('Dockerfile') != '' }}
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign sign --yes $IMAGE_NAME
+          if [ -n "$ACR_IMAGE" ]; then cosign sign --yes "$ACR_IMAGE"; fi
+
+      - name: Gate - Fail on CRITICAL/HIGH vulns (SARIF)
+        if: always()
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y jq
+          fail=0
+          parse_count() {
+            file="$1"
+            if [ -f "$file" ]; then
+              cnt=$(jq '[.runs[]?.results[]? | select(.level=="error" or .level=="warning")] | length' "$file" 2>/dev/null || echo 0)
+              echo "$file findings: $cnt"
+              if [ "$cnt" -gt 0 ] && [ "${ALLOW_HIGH_VULNS:-false}" != "true" ]; then fail=1; fi
+            fi
+          }
+          parse_count checkov.sarif
+          parse_count trivy-fs.sarif
+          parse_count trivy-image.sarif
+          if [ "$fail" -eq 1 ]; then echo "Security findings detected (set ALLOW_HIGH_VULNS=true to override)"; exit 1; fi

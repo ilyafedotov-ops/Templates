@@ -1,0 +1,41 @@
+name: deploy-gated
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to deploy (e.g., ghcr.io/owner/repo:tag)'
+        required: true
+      scope:
+        description: 'Azure scope for policy gate'
+        required: true
+      maxNonCompliant:
+        description: 'Max noncompliant resources allowed'
+        required: false
+        default: '0'
+
+jobs:
+  verify:
+    uses: ./.github/workflows/deploy-verify.yml
+    with:
+      image: ${{ github.event.inputs.image }}
+
+  policy:
+    needs: verify
+    uses: ./.github/workflows/policy-gate.yml
+    with:
+      scope: ${{ github.event.inputs.scope }}
+      maxNonCompliant: ${{ github.event.inputs.maxNoncompliant || '0' }}
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+  deploy:
+    needs: [verify, policy]
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy placeholder
+        run: echo "All gates passed. Deploy your app here."
+

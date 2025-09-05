@@ -1,0 +1,109 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  IMAGE_NAME: '$(Build.Repository.Name):$(Build.BuildId)'
+
+stages:
+  - stage: Scan
+    jobs:
+      - job: Scans
+        steps:
+          - checkout: self
+
+          - task: Bash@3
+            displayName: Install tools
+            inputs:
+              targetType: 'inline'
+              script: |
+                sudo apt-get update -y
+                sudo apt-get install -y python3-pip jq
+                curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin
+                pip3 install checkov
+                curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sudo sh -s -- -b /usr/local/bin
+                curl -sSfL https://raw.githubusercontent.com/sigstore/cosign/main/install.sh | sudo sh -s -- -b /usr/local/bin
+
+          - task: Bash@3
+            displayName: Checkov IaC scan
+            inputs:
+              targetType: 'inline'
+              script: |
+                checkov -d . -o junitxml > checkov.xml || true
+            continueOnError: true
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'checkov.xml'
+              testRunTitle: 'Checkov Results'
+
+          - task: Bash@3
+            displayName: Trivy FS scan
+            inputs:
+              targetType: 'inline'
+              script: |
+                trivy fs --severity CRITICAL,HIGH --format sarif -o trivy-fs.sarif . || true
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: 'trivy-fs.sarif'
+              ArtifactName: 'trivy-fs'
+
+          - task: Bash@3
+            displayName: Build container if Dockerfile
+            inputs:
+              targetType: 'inline'
+              script: |
+                if [ -f Dockerfile ]; then docker build -t $(IMAGE_NAME) .; fi
+
+          - task: Bash@3
+            displayName: Trivy image scan
+            inputs:
+              targetType: 'inline'
+              script: |
+                if [ -f Dockerfile ]; then trivy image --severity CRITICAL,HIGH --format sarif -o trivy-image.sarif $(IMAGE_NAME) || true; fi
+            continueOnError: true
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: 'trivy-image.sarif'
+              ArtifactName: 'trivy-image'
+
+          - task: Bash@3
+            displayName: Generate SBOM (CycloneDX)
+            inputs:
+              targetType: 'inline'
+              script: |
+                syft packages dir:. -o cyclonedx-json > sbom.cdx.json || true
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              PathtoPublish: 'sbom.cdx.json'
+              ArtifactName: 'sbom'
+
+          - task: Bash@3
+            displayName: Sign image with Cosign (keyless)
+            inputs:
+              targetType: 'inline'
+              script: |
+                if [ -f Dockerfile ]; then COSIGN_EXPERIMENTAL=1 cosign sign --yes $(IMAGE_NAME); fi
+
+          - task: Bash@3
+            displayName: Gate - Fail on CRITICAL/HIGH / policy drift
+            inputs:
+              targetType: 'inline'
+              script: |
+                set -e
+                echo "Evaluating SARIF results..."
+                FS_CNT=$(jq '[.runs[]?.results[]?] | length' trivy-fs.sarif 2>/dev/null || echo 0)
+                IMG_CNT=$(jq '[.runs[]?.results[]?] | length' trivy-image.sarif 2>/dev/null || echo 0)
+                CKV_CNT=$(jq '[.runs[]?.results[]?] | length' checkov.sarif 2>/dev/null || echo 0)
+                echo "Trivy FS: $FS_CNT, Image: $IMG_CNT, Checkov: $CKV_CNT"
+                ALLOW=${ALLOW_HIGH_VULNS:-false}
+                if [ "$ALLOW" != "true" ] && [ $((FS_CNT+IMG_CNT+CKV_CNT)) -gt 0 ]; then echo "Failing due to security findings"; exit 1; fi

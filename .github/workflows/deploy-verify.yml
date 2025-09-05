@@ -1,0 +1,39 @@
+name: deploy-verify
+
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: 'Image to verify (e.g., ghcr.io/owner/repo:tag)'
+        required: true
+  workflow_call:
+    inputs:
+      image:
+        required: true
+        type: string
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify signature (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign verify ${{ github.event.inputs.image }}
+          
+      - name: Verify signature (keyless, called)
+        if: ${{ inputs.image != '' }}
+        env:
+          COSIGN_EXPERIMENTAL: 1
+        run: |
+          cosign verify ${{ inputs.image }}
+
+      - name: Deploy (placeholder)
+        run: echo "Verified. Add your deploy steps here."

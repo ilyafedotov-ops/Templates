@@ -1,0 +1,357 @@
+{
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json",
+  "version": "Notebook/1.0",
+  "displayName": "Enterprise Security Operations Center Dashboard",
+  "description": "Comprehensive SOC dashboard with KPIs, compliance metrics, threat intelligence, and operational analytics aligned to ISO 27001 and SOC 2 requirements",
+  "tags": ["security", "soc", "compliance", "iso27001", "soc2", "mitre", "enterprise"],
+  "metadata": {
+    "version": "2.0.0",
+    "author": "Enterprise Security Team",
+    "category": "security",
+    "compliance": ["ISO27001", "SOC2", "MITRE"],
+    "lastUpdated": "2025-01-01",
+    "refreshInterval": "PT5M"
+  },
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Enterprise Security Operations Center Dashboard\n## Real-time Security Posture & Compliance Monitoring\n\n**Dashboard Overview:**\n- **MITRE ATT&CK Coverage:** Technique detection and response metrics\n- **Compliance Status:** ISO 27001 and SOC 2 control effectiveness\n- **Threat Intelligence:** IOC matching and campaign tracking\n- **Operational Metrics:** MTTD, MTTR, and analyst performance\n- **Risk Assessment:** Real-time risk scoring and heat mapping"
+      }
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeRange",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "Time Range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000,
+              "createdTime": "2024-01-01T00:00:00.000Z",
+              "isInitialTime": false,
+              "grain": 1,
+              "useDashboardTimeRange": false
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 1800000,
+                  "createdTime": "2024-01-01T00:00:00.000Z",
+                  "isInitialTime": false,
+                  "grain": 1,
+                  "useDashboardTimeRange": false
+                },
+                {
+                  "durationMs": 3600000,
+                  "createdTime": "2024-01-01T00:00:00.000Z",
+                  "isInitialTime": false,
+                  "grain": 1,
+                  "useDashboardTimeRange": false
+                },
+                {
+                  "durationMs": 86400000,
+                  "createdTime": "2024-01-01T00:00:00.000Z",
+                  "isInitialTime": false,
+                  "grain": 1,
+                  "useDashboardTimeRange": false
+                },
+                {
+                  "durationMs": 604800000,
+                  "createdTime": "2024-01-01T00:00:00.000Z",
+                  "isInitialTime": false,
+                  "grain": 1,
+                  "useDashboardTimeRange": false
+                }
+              ],
+              "allowCustom": true
+            }
+          },
+          {
+            "id": "severityFilter",
+            "version": "KqlParameterItem/1.0",
+            "name": "SeverityFilter",
+            "label": "Alert Severity",
+            "type": 2,
+            "isRequired": false,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "query": "SecurityAlert\r\n| distinct AlertSeverity\r\n| order by AlertSeverity asc",
+            "value": ["High", "Medium", "Low", "Informational"],
+            "typeSettings": {
+              "additionalResourceOptions": ["value::all"],
+              "selectAllValue": "*"
+            },
+            "resourceType": "microsoft.operationalinsights/workspaces"
+          }
+        ]
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let timeRange = {TimeRange};\nlet criticalKPIs = \n    SecurityIncident\n    | where TimeGenerated {TimeRange}\n    | extend IncidentAge = datetime_diff('hour', now(), TimeGenerated)\n    | summarize \n        TotalIncidents = count(),\n        HighSevIncidents = countif(Severity == \"High\"),\n        CriticalIncidents = countif(Severity == \"Critical\"),\n        AvgResolutionTime = avg(IncidentAge),\n        OpenIncidents = countif(Status in (\"New\", \"Active\"))\n    | extend ComplianceScore = round((TotalIncidents - OpenIncidents) * 100.0 / TotalIncidents, 1);\nlet alertMetrics = \n    SecurityAlert\n    | where TimeGenerated {TimeRange}\n    | summarize \n        TotalAlerts = count(),\n        UniqueAlerts = dcount(SystemAlertId),\n        FalsePositives = countif(ProcessedBySentinel == true and Status == \"Dismissed\"),\n        TruePositives = countif(ProcessedBySentinel == true and Status == \"Closed\")\n    | extend AlertAccuracy = round(TruePositives * 100.0 / (TruePositives + FalsePositives), 1);\nlet threatIntel = \n    ThreatIntelligenceIndicator\n    | where TimeGenerated {TimeRange} and Active == true\n    | summarize \n        ActiveIOCs = count(),\n        HighConfidenceIOCs = countif(ConfidenceScore >= 75),\n        RecentMatches = countif(LastReportedDateTime >= ago(24h));\ncriticalKPIs\n| extend dummy = 1\n| join kind=inner (alertMetrics | extend dummy = 1) on dummy\n| join kind=inner (threatIntel | extend dummy = 1) on dummy\n| project \n    TotalIncidents, HighSevIncidents, CriticalIncidents, ComplianceScore,\n    TotalAlerts, AlertAccuracy, ActiveIOCs, HighConfidenceIOCs,\n    AvgResolutionTime = round(AvgResolutionTime, 1)\n| evaluate pivot(dummy, sum(TotalIncidents), sum(HighSevIncidents), sum(CriticalIncidents), \n                avg(ComplianceScore), sum(TotalAlerts), avg(AlertAccuracy), \n                sum(ActiveIOCs), sum(HighConfidenceIOCs), avg(AvgResolutionTime))",
+        "size": 4,
+        "title": "Security Operations KPIs",
+        "timeContextFromParameter": "TimeRange",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Column",
+            "formatter": 1,
+            "formatOptions": {
+              "showIcon": true
+            }
+          },
+          "leftContent": {
+            "columnMatch": "Value",
+            "formatter": 12,
+            "formatOptions": {
+              "palette": "auto"
+            },
+            "numberFormat": {
+              "unit": 17,
+              "options": {
+                "maximumSignificantDigits": 3,
+                "maximumFractionDigits": 2
+              }
+            }
+          },
+          "showBorder": true
+        }
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "SecurityIncident\n| where TimeGenerated {TimeRange}\n| extend IncidentAge = datetime_diff('minute', now(), CreatedTime)\n| extend AgeBucket = case(\n    IncidentAge <= 60, \"0-1h\",\n    IncidentAge <= 240, \"1-4h\", \n    IncidentAge <= 1440, \"4-24h\",\n    IncidentAge <= 4320, \"1-3d\",\n    \"3d+\"\n)\n| extend ComplianceStatus = case(\n    Severity == \"Critical\" and IncidentAge > 240, \"Non-Compliant (SLA Breach)\",\n    Severity == \"High\" and IncidentAge > 480, \"Non-Compliant (SLA Breach)\",\n    Status == \"Closed\", \"Compliant (Resolved)\",\n    \"Compliant (Within SLA)\"\n)\n| summarize \n    IncidentCount = count(),\n    AvgMTTR = avg(IncidentAge),\n    ComplianceRate = round(countif(ComplianceStatus contains \"Compliant\") * 100.0 / count(), 1)\n    by bin(TimeGenerated, case(datetime_diff('day', {TimeRange:end}, {TimeRange:start}) <= 1, 1h, 1d)), Severity\n| order by TimeGenerated asc",
+        "size": 1,
+        "title": "Incident Trend Analysis with SLA Compliance",
+        "timeContextFromParameter": "TimeRange",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "linechart",
+        "chartSettings": {
+          "xAxis": "TimeGenerated",
+          "yAxis": ["IncidentCount"],
+          "group": "Severity",
+          "createOtherGroup": false,
+          "showLegend": true,
+          "yAxisSettings": {
+            "min": 0
+          }
+        }
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let mitreMapping = datatable(TechniqueName:string, TechniqueID:string, Tactic:string)\n[\n    \"Brute Force\", \"T1110\", \"Credential Access\",\n    \"Valid Accounts\", \"T1078\", \"Defense Evasion\",\n    \"Data Exfiltration\", \"T1041\", \"Exfiltration\",\n    \"PowerShell\", \"T1059.001\", \"Execution\",\n    \"Credential Dumping\", \"T1003\", \"Credential Access\",\n    \"Lateral Movement\", \"T1021\", \"Lateral Movement\",\n    \"Persistence\", \"T1053\", \"Persistence\",\n    \"Privilege Escalation\", \"T1068\", \"Privilege Escalation\"\n];\nSecurityAlert\n| where TimeGenerated {TimeRange}\n| where AlertSeverity in ({SeverityFilter}) or '*' in ({SeverityFilter})\n| extend MitreTechnique = case(\n    AlertName contains \"brute\" or AlertName contains \"password\", \"Brute Force\",\n    AlertName contains \"valid\" or AlertName contains \"account\", \"Valid Accounts\", \n    AlertName contains \"data\" or AlertName contains \"exfil\", \"Data Exfiltration\",\n    AlertName contains \"powershell\" or AlertName contains \"script\", \"PowerShell\",\n    AlertName contains \"credential\" or AlertName contains \"dump\", \"Credential Dumping\",\n    AlertName contains \"lateral\" or AlertName contains \"movement\", \"Lateral Movement\",\n    AlertName contains \"persist\" or AlertName contains \"startup\", \"Persistence\",\n    AlertName contains \"privilege\" or AlertName contains \"elevat\", \"Privilege Escalation\",\n    \"Other\"\n)\n| join kind=leftouter mitreMapping on $left.MitreTechnique == $right.TechniqueName\n| summarize \n    AlertCount = count(),\n    UniqueEntities = dcount(CompromisedEntity),\n    HighSeverity = countif(AlertSeverity == \"High\"),\n    CriticalSeverity = countif(AlertSeverity == \"Critical\")\n    by MitreTechnique, TechniqueID, Tactic\n| extend RiskScore = case(\n    CriticalSeverity > 0, 90 + (CriticalSeverity * 2),\n    HighSeverity > 0, 70 + (HighSeverity * 3),\n    AlertCount > 10, 50 + (AlertCount * 2),\n    AlertCount > 5, 30 + (AlertCount * 3),\n    20\n)\n| order by RiskScore desc, AlertCount desc",
+        "size": 0,
+        "title": "MITRE ATT&CK Technique Coverage & Risk Assessment",
+        "timeContextFromParameter": "TimeRange",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "RiskScore",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "redGreen",
+                "aggregation": "Average"
+              },
+              "numberFormat": {
+                "unit": 1,
+                "options": {
+                  "style": "decimal",
+                  "maximumFractionDigits": 0
+                }
+              }
+            },
+            {
+              "columnMatch": "AlertCount",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "blue"
+              }
+            },
+            {
+              "columnMatch": "CriticalSeverity",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "redBright"
+              }
+            },
+            {
+              "columnMatch": "HighSeverity", 
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "orange"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let complianceControls = datatable(ControlID:string, Framework:string, Description:string, DataSource:string)\n[\n    \"A.12.6.1\", \"ISO27001\", \"Management of technical vulnerabilities\", \"SecurityAlert\",\n    \"A.12.1.2\", \"ISO27001\", \"Change management\", \"AzureActivity\", \n    \"A.16.1.4\", \"ISO27001\", \"Assessment and decision on information security events\", \"SecurityIncident\",\n    \"CC6.1\", \"SOC2\", \"Logical and physical access controls\", \"SigninLogs\",\n    \"CC6.2\", \"SOC2\", \"Authentication and authorization\", \"AuditLogs\",\n    \"CC7.2\", \"SOC2\", \"System monitoring\", \"SecurityAlert\"\n];\nlet iso27001Compliance = \n    SecurityAlert\n    | where TimeGenerated {TimeRange}\n    | summarize \n        VulnAlerts = countif(AlertName contains \"vulnerabil\" or AlertName contains \"cve\"),\n        TotalSecurityAlerts = count()\n    | extend A_12_6_1_Compliance = case(VulnAlerts == 0, 100, VulnAlerts <= 5, 80, VulnAlerts <= 15, 60, 40);\nlet changeManagement =\n    AzureActivity \n    | where TimeGenerated {TimeRange} and CategoryValue == \"Administrative\"\n    | summarize \n        UnauthorizedChanges = countif(ActivityStatusValue == \"Failure\" and Level == \"Error\"),\n        TotalChanges = count()\n    | extend A_12_1_2_Compliance = case(UnauthorizedChanges == 0, 100, UnauthorizedChanges <= 3, 85, 70);\nlet incidentResponse =\n    SecurityIncident\n    | where TimeGenerated {TimeRange}\n    | extend ResponseTime = datetime_diff('hour', FirstModifiedTime, CreatedTime)\n    | summarize \n        OverdueIncidents = countif(ResponseTime > 24 and Severity in (\"High\", \"Critical\")),\n        TotalIncidents = count()\n    | extend A_16_1_4_Compliance = case(OverdueIncidents == 0, 100, OverdueIncidents <= 2, 85, 70);\nlet soc2Access =\n    SigninLogs\n    | where TimeGenerated {TimeRange}\n    | summarize \n        FailedLogins = countif(ResultType != 0),\n        SuspiciousLogins = countif(RiskLevelDuringSignIn in (\"high\", \"medium\")),\n        TotalLogins = count()\n    | extend CC6_1_Compliance = case(\n        FailedLogins * 100.0 / TotalLogins < 5 and SuspiciousLogins == 0, 100,\n        FailedLogins * 100.0 / TotalLogins < 10, 85,\n        75\n    );\niso27001Compliance\n| extend dummy = 1\n| join kind=inner (changeManagement | extend dummy = 1) on dummy\n| join kind=inner (incidentResponse | extend dummy = 1) on dummy  \n| join kind=inner (soc2Access | extend dummy = 1) on dummy\n| project \n    Control = \"A.12.6.1 - Vulnerability Management\", Framework = \"ISO27001\", ComplianceScore = A_12_6_1_Compliance\n| union (\n    iso27001Compliance | extend dummy = 1 | join kind=inner (changeManagement | extend dummy = 1) on dummy\n    | project Control = \"A.12.1.2 - Change Management\", Framework = \"ISO27001\", ComplianceScore = A_12_1_2_Compliance\n)\n| union (\n    iso27001Compliance | extend dummy = 1 | join kind=inner (incidentResponse | extend dummy = 1) on dummy\n    | project Control = \"A.16.1.4 - Incident Response\", Framework = \"ISO27001\", ComplianceScore = A_16_1_4_Compliance\n)\n| union (\n    iso27001Compliance | extend dummy = 1 | join kind=inner (soc2Access | extend dummy = 1) on dummy\n    | project Control = \"CC6.1 - Access Controls\", Framework = \"SOC2\", ComplianceScore = CC6_1_Compliance\n)\n| extend ComplianceStatus = case(\n    ComplianceScore >= 95, \"Fully Compliant\",\n    ComplianceScore >= 85, \"Mostly Compliant\", \n    ComplianceScore >= 70, \"Partially Compliant\",\n    \"Non-Compliant\"\n)\n| order by ComplianceScore desc",
+        "size": 0,
+        "title": "ISO 27001 & SOC 2 Compliance Status",
+        "timeContextFromParameter": "TimeRange", 
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "ComplianceScore",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "greenRed",
+                "aggregation": "Average"
+              },
+              "numberFormat": {
+                "unit": 1,
+                "options": {
+                  "style": "decimal",
+                  "maximumFractionDigits": 0
+                }
+              }
+            },
+            {
+              "columnMatch": "ComplianceStatus",
+              "formatter": 18,
+              "formatOptions": {
+                "thresholdsOptions": "colors",
+                "thresholdsGrid": [
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Fully Compliant",
+                    "representation": "green",
+                    "text": "✓ Fully Compliant"
+                  },
+                  {
+                    "operator": "==", 
+                    "thresholdValue": "Mostly Compliant",
+                    "representation": "yellow",
+                    "text": "~ Mostly Compliant"
+                  },
+                  {
+                    "operator": "==",
+                    "thresholdValue": "Partially Compliant", 
+                    "representation": "orange",
+                    "text": "⚠ Partially Compliant"
+                  },
+                  {
+                    "operator": "Default",
+                    "representation": "redBright",
+                    "text": "✗ Non-Compliant"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0", 
+        "query": "let threatIntelMatches = \n    ThreatIntelligenceIndicator\n    | where TimeGenerated {TimeRange} and Active == true\n    | join kind=inner (\n        CommonSecurityLog\n        | where TimeGenerated {TimeRange}\n        | extend IndicatorValue = coalesce(SourceIP, DestinationIP, FileHash)\n    ) on $left.NetworkIP == $right.IndicatorValue or $left.FileHashValue == $right.IndicatorValue\n    | summarize \n        MatchCount = count(),\n        UniqueIndicators = dcount(IndicatorId),\n        HighConfidenceMatches = countif(ConfidenceScore >= 75),\n        ThreatTypes = make_set(ThreatType)\n        by bin(TimeGenerated, 1h), ThreatType\n    | extend ThreatScore = case(\n        HighConfidenceMatches > 10, 95,\n        HighConfidenceMatches > 5, 80, \n        HighConfidenceMatches > 0, 65,\n        MatchCount > 20, 60,\n        MatchCount > 10, 45,\n        30\n    );\nlet campaignTracking =\n    SecurityAlert\n    | where TimeGenerated {TimeRange}\n    | extend Campaign = case(\n        AlertName contains \"APT\" or AlertName contains \"campaign\", extract(\"([A-Z0-9-]+)\", 1, AlertName),\n        AlertName contains \"Lazarus\", \"Lazarus Group\",\n        AlertName contains \"Carbanak\", \"Carbanak Group\", \n        AlertName contains \"Emotet\", \"Emotet Campaign\",\n        \"Unknown Campaign\"\n    )\n    | where Campaign != \"Unknown Campaign\"\n    | summarize \n        AlertVolume = count(),\n        AffectedEntities = dcount(CompromisedEntity),\n        MaxSeverity = max(case(AlertSeverity == \"Critical\", 4, AlertSeverity == \"High\", 3, AlertSeverity == \"Medium\", 2, 1))\n        by bin(TimeGenerated, 6h), Campaign\n    | extend CampaignRisk = AlertVolume * MaxSeverity * AffectedEntities;\nthreatIntelMatches\n| union (\n    campaignTracking\n    | extend ThreatType = Campaign, MatchCount = AlertVolume, ThreatScore = min_of(CampaignRisk, 100)\n    | project TimeGenerated, ThreatType, MatchCount, ThreatScore\n)\n| summarize \n    TotalMatches = sum(MatchCount),\n    MaxThreatScore = max(ThreatScore),\n    ActiveThreats = dcount(ThreatType)\n    by bin(TimeGenerated, 6h)\n| order by TimeGenerated desc",
+        "size": 0,
+        "title": "Threat Intelligence Matches & Campaign Tracking",
+        "timeContextFromParameter": "TimeRange",
+        "resourceType": "microsoft.operationalinsights/workspaces", 
+        "visualization": "areachart",
+        "chartSettings": {
+          "xAxis": "TimeGenerated",
+          "yAxis": ["TotalMatches", "MaxThreatScore"],
+          "showLegend": true,
+          "yAxisSettings": {
+            "min": 0
+          }
+        }
+      }
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let analystMetrics = \n    SecurityIncident\n    | where TimeGenerated {TimeRange}\n    | extend \n        AssignedAnalyst = coalesce(Owner.assignedTo, \"Unassigned\"),\n        ResolutionTime = datetime_diff('hour', LastModifiedTime, CreatedTime),\n        EscalationTime = datetime_diff('hour', FirstModifiedTime, CreatedTime)\n    | where Status in (\"Closed\", \"Resolved\")\n    | summarize \n        CasesHandled = count(),\n        AvgResolutionTime = round(avg(ResolutionTime), 1), \n        AvgEscalationTime = round(avg(EscalationTime), 1),\n        SLABreaches = countif(ResolutionTime > case(Severity == \"Critical\", 4, Severity == \"High\", 8, 24)),\n        FalsePositives = countif(Classification == \"FalsePositive\")\n        by AssignedAnalyst\n    | extend \n        SLACompliance = round((CasesHandled - SLABreaches) * 100.0 / CasesHandled, 1),\n        Accuracy = round((CasesHandled - FalsePositives) * 100.0 / CasesHandled, 1),\n        Efficiency = case(\n            AvgResolutionTime <= 2, 100,\n            AvgResolutionTime <= 4, 90,\n            AvgResolutionTime <= 8, 80,\n            AvgResolutionTime <= 12, 70,\n            60\n        )\n    | where AssignedAnalyst != \"Unassigned\" and CasesHandled >= 3;\nlet alertTriage = \n    SecurityAlert\n    | where TimeGenerated {TimeRange}\n    | extend TriageTime = datetime_diff('minute', ProcessedBySentinel_Timestamp, AlertGenerated_TimeGenerated)\n    | where isnotnull(TriageTime) and TriageTime >= 0\n    | summarize \n        AvgTriageTime = round(avg(TriageTime), 1),\n        AlertsTriaged = count()\n        by bin(TimeGenerated, 1h)\n    | extend TriageEfficiency = case(\n        AvgTriageTime <= 15, \"Excellent\",\n        AvgTriageTime <= 30, \"Good\", \n        AvgTriageTime <= 60, \"Acceptable\",\n        \"Needs Improvement\"\n    );\nanalystMetrics\n| project AssignedAnalyst, CasesHandled, AvgResolutionTime, SLACompliance, Accuracy, Efficiency\n| order by Efficiency desc, SLACompliance desc",
+        "size": 0,
+        "title": "SOC Analyst Performance Metrics",
+        "timeContextFromParameter": "TimeRange",
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table", 
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "SLACompliance",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "greenRed"
+              },
+              "numberFormat": {
+                "unit": 1,
+                "options": {
+                  "maximumFractionDigits": 1
+                }
+              }
+            },
+            {
+              "columnMatch": "Accuracy", 
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "greenRed"
+              },
+              "numberFormat": {
+                "unit": 1,
+                "options": {
+                  "maximumFractionDigits": 1
+                }
+              }
+            },
+            {
+              "columnMatch": "Efficiency",
+              "formatter": 8,
+              "formatOptions": {
+                "palette": "greenRed"
+              }
+            },
+            {
+              "columnMatch": "AvgResolutionTime",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 26,
+                "options": {
+                  "maximumFractionDigits": 1
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "fallbackResourceIds": [
+    "/subscriptions/{subscription-id}/resourceGroups/{resource-group}/providers/Microsoft.OperationalInsights/workspaces/{workspace-name}"
+  ],
+  "styleSettings": {
+    "spacingStyle": "narrow",
+    "showBorder": true
+  }
+}
+

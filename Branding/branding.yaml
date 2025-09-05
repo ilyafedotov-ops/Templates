@@ -1,0 +1,607 @@
+# ===============================================================================
+# ENTERPRISE SECURITY ASSESSMENT BRANDING CONFIGURATION
+# ===============================================================================
+# Version: 2.0.0
+# Last Updated: 2025-01-15
+# Purpose: Comprehensive branding framework for security assessment reports
+# Scope: Multi-client consulting organizations and enterprise security teams
+# ===============================================================================
+
+# SCHEMA VERSION AND METADATA
+# ===============================================================================
+schema_version: "2.0"
+config_metadata:
+  created_date: "2025-01-15"
+  last_modified: "2025-01-15"
+  modified_by: "System Administrator"
+  config_version: "2.0.0"
+  description: "Enterprise branding configuration for security assessment reports"
+  environments: ["production", "staging", "development"]
+  
+# GLOBAL BRANDING DEFAULTS
+# ===============================================================================
+global_defaults:
+  # Primary Organization Identity
+  organization:
+    legal_name: "Contoso Security Services Ltd."
+    trading_name: "Contoso Security"
+    short_name: "CSS"
+    tagline: "Securing Your Digital Future"
+    established_year: "2010"
+    registration_number: "CS123456789"
+    tax_id: "TAX-987654321"
+    duns_number: "123456789"
+    
+  # Corporate Address Information
+  headquarters:
+    address_line1: "1000 Security Plaza"
+    address_line2: "Suite 2500"
+    city: "Seattle"
+    state: "WA"
+    postal_code: "98101"
+    country: "United States"
+    country_code: "US"
+    timezone: "America/Los_Angeles"
+    
+  # Contact Information
+  primary_contact:
+    department: "Security Services"
+    name: "Chief Security Officer"
+    title: "CSO"
+    email: "security@contoso.com"
+    phone: "+1-555-0100"
+    mobile: "+1-555-0101"
+    fax: "+1-555-0102"
+    
+  # Web Presence
+  web_presence:
+    website: "https://www.contoso.com"
+    support_portal: "https://support.contoso.com"
+    linkedin: "https://linkedin.com/company/contoso-security"
+    twitter: "@ContosoSec"
+    
+  # Visual Identity Assets
+  visual_assets:
+    primary_logo: "Branding/logos/contoso-logo-primary.svg"
+    secondary_logo: "Branding/logos/contoso-logo-secondary.svg"
+    white_logo: "Branding/logos/contoso-logo-white.svg"
+    favicon: "Branding/assets/favicon.ico"
+    watermark: "Branding/assets/watermark.png"
+    
+  # Color Palette
+  colors:
+    primary: "#0066CC"           # Contoso Blue
+    secondary: "#004080"         # Dark Blue
+    accent: "#FF6B35"            # Orange
+    success: "#28A745"           # Green
+    warning: "#FFC107"           # Yellow
+    danger: "#DC3545"            # Red
+    light: "#F8F9FA"            # Light Gray
+    dark: "#343A40"             # Dark Gray
+    text_primary: "#212529"      # Primary Text
+    text_secondary: "#6C757D"    # Secondary Text
+    
+  # Typography
+  typography:
+    primary_font: "Arial, sans-serif"
+    secondary_font: "Georgia, serif"
+    monospace_font: "Courier New, monospace"
+    heading_font: "Arial, sans-serif"
+    body_font_size: "11pt"
+    heading_font_size: "14pt"
+    line_height: "1.4"
+
+# MULTI-CLIENT CONFIGURATION
+# ===============================================================================
+clients:
+  # Default client template (inherits from global_defaults)
+  default_client:
+    inherit_global: true
+    customizations: {}
+    
+  # Enterprise Client Example
+  acme_corp:
+    inherit_global: true
+    display_name: "ACME Corporation Security Assessment"
+    client_info:
+      legal_name: "ACME Corporation"
+      industry: "Manufacturing"
+      sector: "Industrial"
+      classification: "Large Enterprise"
+      engagement_code: "ENG-2025-001"
+      contract_reference: "MSA-2024-ACME-001"
+      
+    # Client-specific contact overrides
+    contacts:
+      primary:
+        name: "Jane Smith"
+        title: "Chief Information Security Officer"
+        email: "jane.smith@acmecorp.com"
+        phone: "+1-555-1000"
+        department: "Information Security"
+      secondary:
+        name: "Bob Johnson"
+        title: "IT Director"
+        email: "bob.johnson@acmecorp.com"
+        phone: "+1-555-1001"
+        department: "Information Technology"
+        
+    # Visual customizations
+    visual_overrides:
+      accent_color: "#FF0000"     # ACME Red
+      show_client_logo: true
+      client_logo: "Branding/clients/acme/acme-logo.png"
+      co_branding: true
+      
+    # Report customizations
+    report_settings:
+      show_executive_summary: true
+      include_methodology: true
+      detailed_findings: true
+      remediation_roadmap: true
+      custom_appendices: ["glossary", "references"]
+      
+  # Government Client Example
+  fed_agency:
+    inherit_global: true
+    display_name: "Federal Agency Cybersecurity Assessment"
+    classification_level: "CUI"
+    client_info:
+      legal_name: "Department of Example Services"
+      agency_code: "DES"
+      contract_number: "GS-35F-XXXXX"
+      classification: "Federal Agency"
+      
+    # Government-specific requirements
+    compliance_frameworks:
+      - "NIST Cybersecurity Framework"
+      - "FedRAMP"
+      - "FISMA"
+      - "NIST SP 800-53"
+      
+    visual_overrides:
+      colors:
+        primary: "#1F4E79"       # Government Blue
+        accent: "#C5282F"        # Government Red
+      show_classification_banner: true
+      classification_color: "#FFD700"
+      
+# REPORT STYLING AND FORMATTING
+# ===============================================================================
+report_styling:
+  # Page Layout
+  page_layout:
+    format: "A4"                 # A4, Letter, Legal
+    orientation: "portrait"      # portrait, landscape
+    margins:
+      top: "1.0in"
+      bottom: "1.0in"
+      left: "1.0in"
+      right: "1.0in"
+    header_height: "0.75in"
+    footer_height: "0.5in"
+    
+  # Document Structure
+  document_structure:
+    cover_page: true
+    table_of_contents: true
+    executive_summary: true
+    methodology_section: true
+    findings_section: true
+    recommendations_section: true
+    appendices: true
+    glossary: true
+    
+  # Header Configuration
+  headers:
+    show_logo: true
+    show_classification: true
+    show_page_numbers: true
+    show_document_title: true
+    show_client_name: true
+    layout: "logo_left_title_center_page_right"
+    
+  # Footer Configuration
+  footers:
+    show_company_info: true
+    show_confidentiality: true
+    show_version: true
+    show_date: true
+    layout: "confidentiality_left_company_center_version_right"
+    
+  # Table Styling
+  tables:
+    border_style: "solid"
+    border_width: "1px"
+    border_color: "#CCCCCC"
+    header_background: "#F5F5F5"
+    alternate_row_color: "#FAFAFA"
+    font_size: "10pt"
+    
+  # Chart and Graph Styling
+  charts:
+    color_scheme: "corporate"    # corporate, accessible, monochrome
+    show_gridlines: true
+    show_data_labels: true
+    font_size: "9pt"
+
+# LEGAL DISCLAIMERS AND COMPLIANCE
+# ===============================================================================
+legal_disclaimers:
+  # Standard Disclaimer
+  standard_disclaimer: |
+    CONFIDENTIAL AND PROPRIETARY
+    
+    This document contains confidential and proprietary information of {organization.legal_name}.
+    This document is provided solely for the use of {client_name} and may not be reproduced,
+    distributed, or disclosed to third parties without prior written consent.
+    
+    The information contained in this document is based on our assessment conducted during
+    the specified timeframe and reflects the security posture at the time of testing.
+    Security landscapes change rapidly, and this assessment should be considered a
+    point-in-time evaluation.
+    
+  # Limitation of Liability
+  liability_disclaimer: |
+    LIMITATION OF LIABILITY
+    
+    {organization.legal_name} makes no warranties, express or implied, regarding the
+    completeness, accuracy, or reliability of the information contained in this document.
+    The recommendations provided are advisory in nature and implementation is at the
+    discretion of {client_name}.
+    
+    In no event shall {organization.legal_name} be liable for any direct, indirect,
+    incidental, special, or consequential damages arising from the use of this document
+    or the implementation of recommendations contained herein.
+    
+  # Data Protection Notice
+  data_protection_notice: |
+    DATA PROTECTION AND PRIVACY
+    
+    This assessment was conducted in accordance with applicable data protection laws
+    and regulations. No personal data was accessed, collected, or processed during
+    this security assessment without proper authorization and safeguards.
+    
+    All data collected during this assessment has been handled in accordance with
+    our Data Protection Policy and will be securely disposed of according to
+    established retention schedules.
+    
+  # Professional Standards
+  professional_standards: |
+    PROFESSIONAL STANDARDS AND METHODOLOGY
+    
+    This security assessment was conducted by qualified security professionals
+    following industry-standard methodologies and best practices including:
+    - OWASP Testing Guide
+    - NIST Cybersecurity Framework
+    - ISO/IEC 27001:2022 Standards
+    - SANS Security Testing Methodology
+    
+    All testing was performed with appropriate authorization and in a manner
+    designed to minimize impact to production systems and operations.
+
+# QUALITY ASSURANCE AND APPROVAL WORKFLOW
+# ===============================================================================
+quality_assurance:
+  # Review Stages
+  review_stages:
+    - stage: "technical_review"
+      title: "Technical Review"
+      required_approvers: 1
+      approver_roles: ["Senior Security Consultant", "Principal Consultant"]
+      checklist: "QA/technical-review-checklist.yml"
+      
+    - stage: "quality_review"
+      title: "Quality Assurance Review"
+      required_approvers: 1
+      approver_roles: ["QA Manager", "Practice Lead"]
+      checklist: "QA/quality-review-checklist.yml"
+      
+    - stage: "final_approval"
+      title: "Final Approval"
+      required_approvers: 1
+      approver_roles: ["Practice Director", "Managing Partner"]
+      checklist: "QA/final-approval-checklist.yml"
+      
+  # Approval Tracking
+  approval_tracking:
+    track_review_time: true
+    require_digital_signatures: true
+    maintain_audit_trail: true
+    notification_on_approval: true
+    escalation_threshold_hours: 48
+
+# DOCUMENT CLASSIFICATION AND DISTRIBUTION
+# ===============================================================================
+document_classification:
+  # Classification Levels
+  classification_levels:
+    public:
+      label: "PUBLIC"
+      color: "#28A745"
+      background: "#D4EDDA"
+      distribution: "Unrestricted"
+      retention_years: 7
+      
+    internal:
+      label: "INTERNAL USE ONLY"
+      color: "#FFC107"
+      background: "#FFF3CD"
+      distribution: "Internal Staff Only"
+      retention_years: 7
+      
+    confidential:
+      label: "CONFIDENTIAL"
+      color: "#FF6B35"
+      background: "#FFE6D9"
+      distribution: "Authorized Personnel Only"
+      retention_years: 7
+      
+    restricted:
+      label: "RESTRICTED"
+      color: "#DC3545"
+      background: "#F8D7DA"
+      distribution: "Named Recipients Only"
+      retention_years: 10
+      
+  # Default Classification
+  default_classification: "confidential"
+  
+  # Distribution Controls
+  distribution_controls:
+    track_recipients: true
+    require_acknowledgment: true
+    watermark_documents: true
+    digital_rights_management: false
+    copy_protection: true
+
+# TEMPLATE CUSTOMIZATION AND THEMES
+# ===============================================================================
+templates:
+  # Available Report Templates
+  available_templates:
+    executive_summary:
+      name: "Executive Summary Report"
+      description: "High-level findings for executive audience"
+      max_pages: 10
+      sections: ["cover", "executive_summary", "key_findings", "recommendations"]
+      
+    technical_detailed:
+      name: "Detailed Technical Report"
+      description: "Comprehensive technical findings and remediation"
+      max_pages: 100
+      sections: ["cover", "toc", "methodology", "findings", "recommendations", "appendices"]
+      
+    compliance_assessment:
+      name: "Compliance Assessment Report"
+      description: "Framework-aligned compliance evaluation"
+      max_pages: 50
+      sections: ["cover", "toc", "scope", "methodology", "control_evaluation", "gaps", "roadmap"]
+      
+    penetration_test:
+      name: "Penetration Test Report"
+      description: "Security testing results and vulnerabilities"
+      max_pages: 75
+      sections: ["cover", "toc", "methodology", "vulnerabilities", "risk_analysis", "remediation"]
+      
+  # Theme Options
+  themes:
+    professional:
+      name: "Professional Corporate"
+      description: "Clean, corporate appearance"
+      color_scheme: "blue_corporate"
+      
+    government:
+      name: "Government Standard"
+      description: "Government-compliant formatting"
+      color_scheme: "government_blue"
+      
+    healthcare:
+      name: "Healthcare Sector"
+      description: "Healthcare industry styling"
+      color_scheme: "medical_blue"
+      
+    financial:
+      name: "Financial Services"
+      description: "Financial sector appearance"
+      color_scheme: "finance_green"
+
+# PROFESSIONAL CERTIFICATIONS AND ACCREDITATIONS
+# ===============================================================================
+certifications:
+  # Organizational Certifications
+  organizational:
+    - name: "ISO/IEC 27001:2022 Certified"
+      type: "Information Security Management"
+      issuer: "BSI Group"
+      certificate_number: "ISO27001-2024-001"
+      valid_from: "2024-01-01"
+      valid_until: "2027-01-01"
+      logo: "Branding/certifications/iso27001-logo.png"
+      
+    - name: "SOC 2 Type II Compliant"
+      type: "Service Organization Control"
+      issuer: "AICPA"
+      report_period: "2024-01-01 to 2024-12-31"
+      logo: "Branding/certifications/soc2-logo.png"
+      
+    - name: "FedRAMP Authorized"
+      type: "Federal Risk and Authorization Management Program"
+      issuer: "GSA"
+      authorization_level: "Moderate"
+      valid_until: "2026-12-31"
+      logo: "Branding/certifications/fedramp-logo.png"
+      
+  # Professional Certifications (Team)
+  professional_team:
+    - certification: "CISSP"
+      count: 15
+      description: "Certified Information Systems Security Professional"
+      
+    - certification: "CISM"
+      count: 8
+      description: "Certified Information Security Manager"
+      
+    - certification: "CEH"
+      count: 12
+      description: "Certified Ethical Hacker"
+      
+    - certification: "OSCP"
+      count: 6
+      description: "Offensive Security Certified Professional"
+      
+  # Industry Memberships
+  memberships:
+    - name: "Information Systems Security Association (ISSA)"
+      type: "Professional Organization"
+      member_since: "2010"
+      
+    - name: "(ISC)² Security Professional Community"
+      type: "Professional Organization"
+      member_since: "2010"
+
+# ACCESSIBILITY AND INTERNATIONALIZATION
+# ===============================================================================
+accessibility:
+  # WCAG Compliance
+  wcag_level: "AA"
+  
+  # Color Accessibility
+  color_contrast:
+    minimum_ratio: 4.5
+    large_text_ratio: 3.0
+    
+  # Font Accessibility
+  font_requirements:
+    minimum_size: "10pt"
+    maximum_line_length: "80_characters"
+    line_spacing: "1.4"
+    
+  # Alternative Formats
+  alternative_formats:
+    - "PDF with OCR text layer"
+    - "High contrast version"
+    - "Large print version (14pt minimum)"
+
+# Internationalization Support
+internationalization:
+  # Supported Languages
+  supported_languages:
+    - code: "en-US"
+      name: "English (United States)"
+      default: true
+      
+    - code: "en-GB"
+      name: "English (United Kingdom)"
+      
+    - code: "fr-FR"
+      name: "French (France)"
+      
+    - code: "de-DE"
+      name: "German (Germany)"
+      
+  # Localization Settings
+  localization:
+    date_format: "YYYY-MM-DD"
+    time_format: "24h"
+    number_format: "1,234.56"
+    currency_symbol: "$"
+    
+  # Translation Requirements
+  translation_requirements:
+    professional_translation: true
+    technical_review_required: true
+    cultural_adaptation: true
+
+# VERSION CONTROL AND CHANGE MANAGEMENT
+# ===============================================================================
+version_control:
+  # Versioning Scheme
+  versioning_scheme: "semantic"    # semantic, date, incremental
+  
+  # Version Components
+  version_format: "{major}.{minor}.{patch}"
+  
+  # Change Management
+  change_management:
+    track_changes: true
+    require_approval_for_changes: true
+    change_notification: true
+    rollback_capability: true
+    
+  # Version History
+  version_history:
+    - version: "2.0.0"
+      date: "2025-01-15"
+      author: "System Administrator"
+      changes: ["Initial comprehensive branding framework"]
+      
+    - version: "1.0.0"
+      date: "2024-01-01"
+      author: "Security Team"
+      changes: ["Basic branding configuration"]
+      
+  # Change Approval Process
+  change_approval:
+    minor_changes:
+      required_approvers: 1
+      approver_roles: ["Brand Manager", "Marketing Manager"]
+      
+    major_changes:
+      required_approvers: 2
+      approver_roles: ["Brand Manager", "Marketing Director", "Legal Counsel"]
+
+# INTEGRATION CONFIGURATION
+# ===============================================================================
+integrations:
+  # Report Generation Systems
+  report_generators:
+    - system: "LaTeX"
+      template_path: "Templates/latex/"
+      output_formats: ["PDF"]
+      
+    - system: "Microsoft Word"
+      template_path: "Templates/word/"
+      output_formats: ["DOCX", "PDF"]
+      
+    - system: "Markdown"
+      template_path: "Templates/markdown/"
+      output_formats: ["HTML", "PDF"]
+      
+  # Asset Management Systems
+  asset_management:
+    logo_repository: "Branding/logos/"
+    template_repository: "Templates/"
+    font_repository: "Fonts/"
+    
+  # Quality Management Systems
+  quality_systems:
+    document_approval: "SharePoint/Workflows/"
+    review_tracking: "Azure DevOps/Work Items/"
+    audit_logging: "Azure Monitor/Logs/"
+    
+  # Customer Relationship Management
+  crm_integration:
+    client_data_source: "Dynamics 365"
+    contact_sync: true
+    engagement_tracking: true
+
+# ENVIRONMENT-SPECIFIC OVERRIDES
+# ===============================================================================
+environments:
+  development:
+    visual_assets:
+      primary_logo: "Branding/logos/dev-contoso-logo-primary.svg"
+    confidentiality: "DEVELOPMENT - NOT FOR PRODUCTION USE"
+    watermark: "DEVELOPMENT"
+    
+  staging:
+    visual_assets:
+      primary_logo: "Branding/logos/staging-contoso-logo-primary.svg"
+    confidentiality: "STAGING - FOR TESTING PURPOSES ONLY"
+    watermark: "STAGING"
+    
+  production:
+    # Uses global_defaults
+    inherit_global: true
+

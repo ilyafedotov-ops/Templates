@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {"type": "string"},
+    "ruleId": {"type": "string", "defaultValue": "failed-deployments-activity"}
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('ruleId'))]",
+      "properties": {
+        "displayName": "Multiple failed deployments in short window",
+        "enabled": true,
+        "kind": "Scheduled",
+        "query": "AzureActivity | where OperationNameValue has 'deploy' and ActivityStatusValue == 'Failure' | summarize count() by CorrelationId, bin(TimeGenerated, 30m) | where count_ > 5",
+        "queryFrequency": "PT30M",
+        "queryPeriod": "PT1H",
+        "severity": "Medium",
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "eventGroupingSettings": {"aggregationKind": "SingleAlert"}
+      }
+    }
+  ]
+}
+

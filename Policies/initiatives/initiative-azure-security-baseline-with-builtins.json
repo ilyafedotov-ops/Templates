@@ -1,0 +1,29 @@
+{
+  "properties": {
+    "displayName": "Azure Security Baseline (Custom + Built-ins)",
+    "description": "Guardrails combining custom policies with Azure built-in definitions.",
+    "policyType": "Custom",
+    "parameters": {
+      "allowedLocations": {"type": "Array", "metadata": {"displayName": "Allowed locations"}},
+      "requiredTagName": {"type": "String", "metadata": {"displayName": "Required tag name"}, "defaultValue": "owner"},
+      "tagEffect": {"type": "String", "allowedValues": ["Audit", "Deny"], "defaultValue": "Audit"}
+    },
+    "policyDefinitions": [
+      {"policyDefinitionReferenceId": "diag-audit","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/diag-audit-custom"}},
+      {"policyDefinitionReferenceId": "allowed-locations","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/allowed-locations-custom"},"parameters": {"listOfAllowedLocations": {"value": "[parameters('allowedLocations')]"}}},
+      {"policyDefinitionReferenceId": "require-tags","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/require-tags-custom"},"parameters": {"tagName": {"value": "[parameters('requiredTagName')]"}, "effect": {"value": "[parameters('tagEffect')]"}}},
+      {"policyDefinitionReferenceId": "storage-public-network-deny","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/storage-public-network-deny-custom"}},
+      {"policyDefinitionReferenceId": "storage-private-endpoint-audit","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/storage-private-endpoint-audit-custom"}},
+      {"policyDefinitionReferenceId": "appservice-min-tls","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/appservice-min-tls-custom"}},
+      {"policyDefinitionReferenceId": "storage-secure-transfer","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/storage-secure-transfer-custom"}},
+
+      {"policyDefinitionReferenceId": "builtin-diag-to-la","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/<BUILTIN_ID_DIAGNOSTIC_TO_LA>"}},
+      {"policyDefinitionReferenceId": "builtin-storage-secure-transfer","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/<BUILTIN_ID_STORAGE_SECURE_TRANSFER>"}},
+      {"policyDefinitionReferenceId": "builtin-storage-restrict-network","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/<BUILTIN_ID_STORAGE_RESTRICT_NETWORK>"}},
+      {"policyDefinitionReferenceId": "builtin-keyvault-firewall","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/<BUILTIN_ID_KEYVAULT_FIREWALL>"}},
+      {"policyDefinitionReferenceId": "builtin-appservice-https-only","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/<BUILTIN_ID_APPSVC_HTTPS_ONLY>"}},
+      {"policyDefinitionReferenceId": "builtin-aks-policy-addon","policyDefinition": {"policyDefinitionId": "/providers/Microsoft.Authorization/policyDefinitions/<BUILTIN_ID_AKS_POLICY_ADDON>"}}
+    ]
+  }
+}
+

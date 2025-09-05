@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {"type": "string"},
+    "ruleId": {"type": "string", "defaultValue": "subscription-owner-assignment"}
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('ruleId'))]",
+      "properties": {
+        "displayName": "Subscription Owner role assigned",
+        "enabled": true,
+        "kind": "Scheduled",
+        "query": "AzureActivity | where OperationNameValue =~ 'MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/WRITE' and ActivityStatusValue == 'Succeeded' and (Properties has 'Owner')",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT24H",
+        "severity": "High",
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "eventGroupingSettings": {"aggregationKind": "SingleAlert"}
+      }
+    }
+  ]
+}
+

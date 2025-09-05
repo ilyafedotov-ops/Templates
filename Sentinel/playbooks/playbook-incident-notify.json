@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logicAppName": {"type": "string", "defaultValue": "la-incident-notify"},
+    "teamsWebhookUrl": {"type": "string"}
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "teamsWebhookUrl": {"type": "String"}
+          },
+          "triggers": {
+            "When_a_response_to_an_Azure_Sentinel_alert_is_triggered": {
+              "type": "Request",
+              "kind": "Http",
+              "inputs": {"schema": {}}
+            }
+          },
+          "actions": {
+            "Post_to_Teams": {
+              "type": "Http",
+              "inputs": {
+                "method": "POST",
+                "uri": "@parameters('teamsWebhookUrl')",
+                "headers": {"Content-Type": "application/json"},
+                "body": {
+                  "text": "Sentinel incident notification",
+                  "summary": "Incident",
+                  "title": "Incident from Sentinel",
+                  "sections": [
+                    {"activityTitle": "Severity", "text": "@{triggerBody()?['Severity']}"},
+                    {"activityTitle": "Title", "text": "@{triggerBody()?['AlertRuleName']}"}
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "parameters": {
+          "teamsWebhookUrl": {"value": "[parameters('teamsWebhookUrl')]"}
+        }
+      }
+    }
+  ]
+}
+

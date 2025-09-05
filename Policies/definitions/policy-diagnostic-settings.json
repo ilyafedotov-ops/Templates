@@ -1,0 +1,372 @@
+{
+  "properties": {
+    "displayName": "Enterprise Diagnostic Settings - Comprehensive Monitoring and Compliance",
+    "description": "Enforces comprehensive diagnostic settings configuration for Azure resources to ensure compliance with security monitoring, audit logging, and observability requirements. Supports multiple destination types, retention policies, and log categories for enterprise governance and regulatory compliance including ISO 27001, SOC 2, and Azure Security Benchmark.",
+    "policyType": "Custom",
+    "mode": "All",
+    "metadata": {
+      "version": "2.0.0",
+      "category": "Monitoring",
+      "preview": false,
+      "compliance": {
+        "iso27001": {
+          "controls": ["A.12.4.1", "A.12.4.2", "A.12.4.3", "A.12.4.4"],
+          "description": "Logging and monitoring of information system activities"
+        },
+        "soc2": {
+          "trustServicesCriteria": ["CC6.1", "CC6.2", "CC7.2"],
+          "description": "System monitoring and logging for security incidents"
+        },
+        "azureSecurityBenchmark": {
+          "controls": ["LT-3", "LT-4", "LT-5"],
+          "description": "Enable logging for Azure resources"
+        },
+        "cisAzure": {
+          "controls": ["5.1.1", "5.1.2", "5.1.3"],
+          "description": "Ensure diagnostic settings are configured"
+        }
+      },
+      "implementationGuidance": {
+        "bestPractices": [
+          "Configure diagnostic settings for all supported Azure resources",
+          "Send logs to multiple destinations for redundancy",
+          "Set appropriate retention periods based on compliance requirements",
+          "Enable both logs and metrics collection",
+          "Use Log Analytics workspace for centralized monitoring"
+        ],
+        "costConsiderations": [
+          "Log Analytics ingestion and retention costs",
+          "Storage account costs for long-term retention",
+          "Event Hub throughput unit costs"
+        ]
+      }
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Policy Effect",
+          "description": "The effect determines what happens when the policy rule is evaluated"
+        },
+        "allowedValues": [
+          "AuditIfNotExists",
+          "DeployIfNotExists",
+          "Disabled"
+        ],
+        "defaultValue": "AuditIfNotExists"
+      },
+      "logAnalyticsWorkspaceId": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Log Analytics Workspace Resource ID",
+          "description": "Resource ID of the Log Analytics workspace where logs should be sent",
+          "strongType": "Microsoft.OperationalInsights/workspaces"
+        },
+        "defaultValue": ""
+      },
+      "storageAccountId": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Storage Account Resource ID",
+          "description": "Resource ID of the storage account for long-term log retention",
+          "strongType": "Microsoft.Storage/storageAccounts"
+        },
+        "defaultValue": ""
+      },
+      "eventHubAuthorizationRuleId": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Event Hub Authorization Rule ID",
+          "description": "Resource ID of the Event Hub authorization rule for streaming logs",
+          "strongType": "Microsoft.EventHub/namespaces/eventhubs/authorizationRules"
+        },
+        "defaultValue": ""
+      },
+      "eventHubName": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Event Hub Name",
+          "description": "Name of the Event Hub for streaming logs"
+        },
+        "defaultValue": ""
+      },
+      "requiredLogCategories": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Required Log Categories",
+          "description": "Array of log categories that must be enabled. Leave empty to require at least one category."
+        },
+        "defaultValue": []
+      },
+      "requiredMetricCategories": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Required Metric Categories",
+          "description": "Array of metric categories that must be enabled. Leave empty to require at least one category."
+        },
+        "defaultValue": ["AllMetrics"]
+      },
+      "retentionDays": {
+        "type": "Integer",
+        "metadata": {
+          "displayName": "Retention Days",
+          "description": "Number of days to retain logs (0 = infinite retention)"
+        },
+        "minValue": 0,
+        "maxValue": 365,
+        "defaultValue": 90
+      },
+      "resourceTypesToAudit": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Resource Types to Audit",
+          "description": "Array of resource types to evaluate for diagnostic settings"
+        },
+        "defaultValue": [
+          "Microsoft.KeyVault/vaults",
+          "Microsoft.Storage/storageAccounts",
+          "Microsoft.Sql/servers/databases",
+          "Microsoft.Network/networkSecurityGroups",
+          "Microsoft.Network/applicationGateways",
+          "Microsoft.Network/loadBalancers",
+          "Microsoft.Network/publicIPAddresses",
+          "Microsoft.Web/sites",
+          "Microsoft.ContainerService/managedClusters",
+          "Microsoft.Compute/virtualMachines",
+          "Microsoft.RecoveryServices/vaults",
+          "Microsoft.ServiceBus/namespaces",
+          "Microsoft.EventHub/namespaces",
+          "Microsoft.Logic/workflows",
+          "Microsoft.DataFactory/factories",
+          "Microsoft.Batch/batchAccounts",
+          "Microsoft.Automation/automationAccounts",
+          "Microsoft.ApiManagement/service",
+          "Microsoft.CognitiveServices/accounts",
+          "Microsoft.StreamAnalytics/streamingjobs"
+        ]
+      },
+      "exemptedResourceGroups": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Exempted Resource Groups",
+          "description": "Array of resource group names to exempt from this policy"
+        },
+        "defaultValue": [
+          "NetworkWatcherRG",
+          "AzureBackupRG_*",
+          "LogAnalyticsDefaultResources"
+        ]
+      },
+      "exemptedResources": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Exempted Resources",
+          "description": "Array of resource IDs to exempt from this policy"
+        },
+        "defaultValue": []
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "in": "[parameters('resourceTypesToAudit')]"
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "field": "resourceGroup",
+                  "in": "[parameters('exemptedResourceGroups')]"
+                },
+                {
+                  "field": "id",
+                  "in": "[parameters('exemptedResources')]"
+                },
+                {
+                  "field": "resourceGroup",
+                  "like": "AzureBackupRG_*"
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]",
+        "details": {
+          "type": "Microsoft.Insights/diagnosticSettings",
+          "roleDefinitionIds": [
+            "/providers/microsoft.authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c",
+            "/providers/microsoft.authorization/roleDefinitions/92aaf0da-9dab-42b6-94a3-d43ce8d16293"
+          ],
+          "existenceCondition": {
+            "allOf": [
+              {
+                "anyOf": [
+                  {
+                    "field": "Microsoft.Insights/diagnosticSettings/workspaceId",
+                    "equals": "[parameters('logAnalyticsWorkspaceId')]"
+                  },
+                  {
+                    "field": "Microsoft.Insights/diagnosticSettings/storageAccountId",
+                    "equals": "[parameters('storageAccountId')]"
+                  },
+                  {
+                    "field": "Microsoft.Insights/diagnosticSettings/eventHubAuthorizationRuleId",
+                    "equals": "[parameters('eventHubAuthorizationRuleId')]"
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "count": {
+                      "field": "Microsoft.Insights/diagnosticSettings/logs[*]",
+                      "where": {
+                        "allOf": [
+                          {
+                            "field": "Microsoft.Insights/diagnosticSettings/logs[*].enabled",
+                            "equals": true
+                          },
+                          {
+                            "anyOf": [
+                              {
+                                "value": "[length(parameters('requiredLogCategories'))]",
+                                "equals": 0
+                              },
+                              {
+                                "field": "Microsoft.Insights/diagnosticSettings/logs[*].category",
+                                "in": "[parameters('requiredLogCategories')]"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "greater": 0
+                  },
+                  {
+                    "count": {
+                      "field": "Microsoft.Insights/diagnosticSettings/metrics[*]",
+                      "where": {
+                        "allOf": [
+                          {
+                            "field": "Microsoft.Insights/diagnosticSettings/metrics[*].enabled",
+                            "equals": true
+                          },
+                          {
+                            "anyOf": [
+                              {
+                                "value": "[length(parameters('requiredMetricCategories'))]",
+                                "equals": 0
+                              },
+                              {
+                                "field": "Microsoft.Insights/diagnosticSettings/metrics[*].category",
+                                "in": "[parameters('requiredMetricCategories')]"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "greater": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "deployment": {
+            "properties": {
+              "mode": "incremental",
+              "template": {
+                "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+                "contentVersion": "1.0.0.0",
+                "parameters": {
+                  "resourceName": {
+                    "type": "string"
+                  },
+                  "resourceId": {
+                    "type": "string"
+                  },
+                  "logAnalyticsWorkspaceId": {
+                    "type": "string"
+                  },
+                  "storageAccountId": {
+                    "type": "string"
+                  },
+                  "eventHubAuthorizationRuleId": {
+                    "type": "string"
+                  },
+                  "eventHubName": {
+                    "type": "string"
+                  },
+                  "retentionDays": {
+                    "type": "int"
+                  },
+                  "requiredLogCategories": {
+                    "type": "array"
+                  },
+                  "requiredMetricCategories": {
+                    "type": "array"
+                  }
+                },
+                "variables": {
+                  "diagnosticSettingsName": "[concat(parameters('resourceName'), '-diagnostics')]"
+                },
+                "resources": [
+                  {
+                    "type": "Microsoft.Insights/diagnosticSettings",
+                    "apiVersion": "2021-05-01-preview",
+                    "scope": "[parameters('resourceId')]",
+                    "name": "[variables('diagnosticSettingsName')]",
+                    "properties": {
+                      "workspaceId": "[if(empty(parameters('logAnalyticsWorkspaceId')), json('null'), parameters('logAnalyticsWorkspaceId'))]",
+                      "storageAccountId": "[if(empty(parameters('storageAccountId')), json('null'), parameters('storageAccountId'))]",
+                      "eventHubAuthorizationRuleId": "[if(empty(parameters('eventHubAuthorizationRuleId')), json('null'), parameters('eventHubAuthorizationRuleId'))]",
+                      "eventHubName": "[if(empty(parameters('eventHubName')), json('null'), parameters('eventHubName'))]",
+                      "logs": "[if(greater(length(parameters('requiredLogCategories')), 0), json(concat('[', string(map(parameters('requiredLogCategories'), lambda('category', json(concat('{\"category\":\"', lambdaVariables('category'), '\",\"enabled\":true,\"retentionPolicy\":{\"enabled\":true,\"days\":', string(parameters('retentionDays')), '}}')))), ']')), createArray())]",
+                      "metrics": "[if(greater(length(parameters('requiredMetricCategories')), 0), json(concat('[', string(map(parameters('requiredMetricCategories'), lambda('category', json(concat('{\"category\":\"', lambdaVariables('category'), '\",\"enabled\":true,\"retentionPolicy\":{\"enabled\":true,\"days\":', string(parameters('retentionDays')), '}}')))), ']')), createArray(json(concat('{\"category\":\"AllMetrics\",\"enabled\":true,\"retentionPolicy\":{\"enabled\":true,\"days\":', string(parameters('retentionDays')), '}}'))))]"
+                    }
+                  }
+                ],
+                "outputs": {}
+              },
+              "parameters": {
+                "resourceName": {
+                  "value": "[field('name')]"
+                },
+                "resourceId": {
+                  "value": "[field('id')]"
+                },
+                "logAnalyticsWorkspaceId": {
+                  "value": "[parameters('logAnalyticsWorkspaceId')]"
+                },
+                "storageAccountId": {
+                  "value": "[parameters('storageAccountId')]"
+                },
+                "eventHubAuthorizationRuleId": {
+                  "value": "[parameters('eventHubAuthorizationRuleId')]"
+                },
+                "eventHubName": {
+                  "value": "[parameters('eventHubName')]"
+                },
+                "retentionDays": {
+                  "value": "[parameters('retentionDays')]"
+                },
+                "requiredLogCategories": {
+                  "value": "[parameters('requiredLogCategories')]"
+                },
+                "requiredMetricCategories": {
+                  "value": "[parameters('requiredMetricCategories')]"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

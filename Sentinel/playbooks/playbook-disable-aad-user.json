@@ -1,0 +1,39 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logicAppName": {"type": "string", "defaultValue": "la-disable-aad-user"}
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[resourceGroup().location]",
+      "identity": {"type": "SystemAssigned"},
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "triggers": {
+            "Sentinel_Alert": {"type": "Request", "kind": "Http", "inputs": {"schema": {}}}
+          },
+          "actions": {
+            "Disable_User": {
+              "type": "Http",
+              "inputs": {
+                "method": "PATCH",
+                "uri": "@{concat('https://graph.microsoft.com/v1.0/users/', triggerBody()?['Entities']?[0]?['UPNSuffix'])}",
+                "authentication": {"type": "ManagedServiceIdentity"},
+                "headers": {"Content-Type": "application/json"},
+                "body": {"accountEnabled": false}
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
+

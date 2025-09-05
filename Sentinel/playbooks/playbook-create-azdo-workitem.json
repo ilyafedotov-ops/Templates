@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "logicAppName": {"type": "string", "defaultValue": "la-create-azdo-workitem"},
+    "azdoWorkItemUrl": {"type": "string", "metadata": {"description": "Full URL to create work item, e.g. https://dev.azure.com/{org}/{project}/_apis/wit/workitems/$Issue?api-version=7.0"}},
+    "azdoAuthHeader": {"type": "securestring", "metadata": {"description": "Authorization header value, e.g. Basic <base64PAT> or Bearer <token>"}}
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "azdoAuthHeader": {"type": "SecureString"},
+            "azdoWorkItemUrl": {"type": "String"}
+          },
+          "triggers": {
+            "Sentinel_Alert": {"type": "Request", "kind": "Http", "inputs": {"schema": {}}}
+          },
+          "actions": {
+            "Create_Work_Item": {
+              "type": "Http",
+              "inputs": {
+                "method": "POST",
+                "uri": "@parameters('azdoWorkItemUrl')",
+                "headers": {
+                  "Content-Type": "application/json-patch+json",
+                  "Authorization": "@parameters('azdoAuthHeader')"
+                },
+                "body": [
+                  {"op": "add", "path": "/fields/System.Title", "value": "@{triggerBody()?['AlertRuleName']}"},
+                  {"op": "add", "path": "/fields/System.Description", "value": "@{string(triggerBody())}"}
+                ]
+              }
+            }
+          }
+        },
+        "parameters": {
+          "azdoAuthHeader": {"value": "[parameters('azdoAuthHeader')]"},
+          "azdoWorkItemUrl": {"value": "[parameters('azdoWorkItemUrl')]"}
+        }
+      }
+    }
+  ]
+}
+

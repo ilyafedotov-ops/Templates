@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {"type": "string"},
+    "ruleId": {"type": "string", "defaultValue": "auth-failures-high"}
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2022-11-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('ruleId'))]",
+      "properties": {
+        "displayName": "High volume authentication failures",
+        "enabled": true,
+        "kind": "Scheduled",
+        "query": "SigninLogs | where ResultType != 0 | summarize count() by bin(TimeGenerated, 1h) | where count_ > 500",
+        "queryFrequency": "PT1H",
+        "queryPeriod": "PT1H",
+        "severity": "High",
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": false,
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "eventGroupingSettings": {"aggregationKind": "SingleAlert"}
+      }
+    }
+  ]
+}
+

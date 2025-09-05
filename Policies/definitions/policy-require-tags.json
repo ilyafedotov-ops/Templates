@@ -1,0 +1,329 @@
+{
+  "properties": {
+    "displayName": "Enterprise Resource Tagging - Comprehensive Governance and Compliance Framework",
+    "description": "Enforces comprehensive tagging strategy for Azure resources to ensure proper governance, cost management, compliance tracking, and operational excellence. Supports multiple required tags, tag inheritance from resource groups, validation patterns, and automated tag application. Essential for enterprise governance, FinOps practices, and regulatory compliance requirements.",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "metadata": {
+      "version": "2.0.0",
+      "category": "Tags",
+      "preview": false,
+      "compliance": {
+        "iso27001": {
+          "controls": ["A.8.1.1", "A.8.1.2", "A.12.1.1"],
+          "description": "Asset inventory and management, information classification"
+        },
+        "soc2": {
+          "trustServicesCriteria": ["CC1.4", "CC2.1", "CC6.3"],
+          "description": "Control environment and logical access controls"
+        },
+        "azureSecurityBenchmark": {
+          "controls": ["AM-1", "AM-2", "GS-1"],
+          "description": "Asset management and governance strategy"
+        },
+        "cisAzure": {
+          "controls": ["1.1", "1.17"],
+          "description": "Resource tagging and governance"
+        },
+        "finOps": {
+          "principles": ["Cost Allocation", "Budget Management", "Chargeback"],
+          "description": "Financial operations and cost management"
+        }
+      },
+      "implementationGuidance": {
+        "bestPractices": [
+          "Implement consistent tagging taxonomy across all resources",
+          "Use inheritance to reduce manual tagging overhead",
+          "Apply validation patterns to ensure data quality",
+          "Automate tag application through policies and templates",
+          "Regular review and cleanup of tag values",
+          "Integration with ITSM and asset management systems"
+        ],
+        "governanceConsiderations": [
+          "Tags enable cost allocation and chargeback",
+          "Support compliance and audit requirements",
+          "Enable automated lifecycle management",
+          "Facilitate resource discovery and organization"
+        ]
+      }
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Policy Effect",
+          "description": "The effect determines what happens when the policy rule is evaluated. Use 'Audit' to identify non-compliant resources, 'Deny' to prevent creation, 'Append' to add missing tags, or 'Modify' to remediate existing resources."
+        },
+        "allowedValues": [
+          "Audit",
+          "Deny",
+          "Append",
+          "Modify",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      },
+      "requiredTags": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Required Tags Configuration",
+          "description": "Array of required tag configurations including name, validation pattern, default values, and inheritance settings"
+        },
+        "defaultValue": [
+          {
+            "tagName": "Environment",
+            "tagValues": ["Production", "Staging", "Development", "Test", "Sandbox"],
+            "validationPattern": "^(Production|Staging|Development|Test|Sandbox)$",
+            "required": true,
+            "inheritFromResourceGroup": true,
+            "defaultValue": ""
+          },
+          {
+            "tagName": "CostCenter", 
+            "tagValues": [],
+            "validationPattern": "^CC-[0-9]{4,6}$",
+            "required": true,
+            "inheritFromResourceGroup": true,
+            "defaultValue": ""
+          },
+          {
+            "tagName": "Owner",
+            "tagValues": [],
+            "validationPattern": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
+            "required": true,
+            "inheritFromResourceGroup": false,
+            "defaultValue": ""
+          },
+          {
+            "tagName": "Project",
+            "tagValues": [],
+            "validationPattern": "^[A-Z]{2,4}-[0-9]{4}$",
+            "required": true,
+            "inheritFromResourceGroup": true,
+            "defaultValue": ""
+          },
+          {
+            "tagName": "Criticality",
+            "tagValues": ["Critical", "High", "Medium", "Low"],
+            "validationPattern": "^(Critical|High|Medium|Low)$",
+            "required": false,
+            "inheritFromResourceGroup": true,
+            "defaultValue": "Medium"
+          }
+        ]
+      },
+      "exemptedResourceTypes": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Exempted Resource Types",
+          "description": "Array of resource types to exempt from tagging requirements"
+        },
+        "defaultValue": [
+          "Microsoft.Network/networkWatchers",
+          "Microsoft.Network/networkWatchers/connectionMonitors",
+          "Microsoft.Network/networkWatchers/flowLogs",
+          "Microsoft.Security/assessments",
+          "Microsoft.Security/assessmentMetadata",
+          "Microsoft.AlertsManagement/smartDetectorAlertRules",
+          "Microsoft.OperationalInsights/workspaces/datasources",
+          "Microsoft.Insights/components/ProactiveDetectionConfigs",
+          "Microsoft.Resources/deployments"
+        ]
+      },
+      "exemptedResourceGroups": {
+        "type": "Array",
+        "metadata": {
+          "displayName": "Exempted Resource Groups",
+          "description": "Array of resource group names to exempt from tagging requirements"
+        },
+        "defaultValue": [
+          "NetworkWatcherRG",
+          "AzureBackupRG_*",
+          "LogAnalyticsDefaultResources",
+          "cloud-shell-storage-*",
+          "MC_*"
+        ]
+      },
+      "exemptedResources": {
+        "type": "Array", 
+        "metadata": {
+          "displayName": "Exempted Resources",
+          "description": "Array of specific resource IDs to exempt from tagging requirements"
+        },
+        "defaultValue": []
+      },
+      "inheritanceBehavior": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Tag Inheritance Behavior",
+          "description": "How tags should be inherited from resource groups"
+        },
+        "allowedValues": [
+          "InheritFromResourceGroup",
+          "NoInheritance",
+          "InheritIfMissing"
+        ],
+        "defaultValue": "InheritIfMissing"
+      },
+      "tagValidationMode": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Tag Validation Mode",
+          "description": "Level of validation to apply to tag values"
+        },
+        "allowedValues": [
+          "Strict",
+          "Lenient", 
+          "PatternOnly",
+          "None"
+        ],
+        "defaultValue": "Strict"
+      },
+      "automaticTaggingEnabled": {
+        "type": "Boolean",
+        "metadata": {
+          "displayName": "Enable Automatic Tagging",
+          "description": "Whether to automatically apply default tag values when missing"
+        },
+        "defaultValue": true
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "notIn": "[parameters('exemptedResourceTypes')]"
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "field": "resourceGroup",
+                  "in": "[parameters('exemptedResourceGroups')]"
+                },
+                {
+                  "field": "id",
+                  "in": "[parameters('exemptedResources')]"
+                },
+                {
+                  "field": "resourceGroup",
+                  "like": "NetworkWatcherRG"
+                },
+                {
+                  "field": "resourceGroup",
+                  "like": "AzureBackupRG_*"
+                },
+                {
+                  "field": "resourceGroup",
+                  "like": "cloud-shell-storage-*"
+                },
+                {
+                  "field": "resourceGroup",
+                  "like": "MC_*"
+                }
+              ]
+            }
+          },
+          {
+            "anyOf": [
+              {
+                "count": {
+                  "value": "[parameters('requiredTags')]",
+                  "name": "tagConfig",
+                  "where": {
+                    "allOf": [
+                      {
+                        "value": "[current('tagConfig').required]",
+                        "equals": true
+                      },
+                      {
+                        "anyOf": [
+                          {
+                            "field": "[concat('tags[', current('tagConfig').tagName, ']')]",
+                            "exists": false
+                          },
+                          {
+                            "allOf": [
+                              {
+                                "value": "[parameters('tagValidationMode')]",
+                                "equals": "Strict"
+                              },
+                              {
+                                "value": "[length(current('tagConfig').tagValues)]",
+                                "greater": 0
+                              },
+                              {
+                                "field": "[concat('tags[', current('tagConfig').tagName, ']')]",
+                                "notIn": "[current('tagConfig').tagValues]"
+                              }
+                            ]
+                          },
+                          {
+                            "allOf": [
+                              {
+                                "value": "[parameters('tagValidationMode')]",
+                                "in": ["Strict", "PatternOnly"]
+                              },
+                              {
+                                "value": "[length(current('tagConfig').validationPattern)]",
+                                "greater": 0
+                              },
+                              {
+                                "field": "[concat('tags[', current('tagConfig').tagName, ']')]",
+                                "notMatch": "[current('tagConfig').validationPattern]"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                "greater": 0
+              },
+              {
+                "allOf": [
+                  {
+                    "value": "[parameters('automaticTaggingEnabled')]",
+                    "equals": true
+                  },
+                  {
+                    "count": {
+                      "value": "[parameters('requiredTags')]",
+                      "name": "tagConfig",
+                      "where": {
+                        "allOf": [
+                          {
+                            "field": "[concat('tags[', current('tagConfig').tagName, ']')]",
+                            "exists": false
+                          },
+                          {
+                            "value": "[length(current('tagConfig').defaultValue)]",
+                            "greater": 0
+                          }
+                        ]
+                      }
+                    },
+                    "greater": 0
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]",
+        "details": {
+          "conflictEffect": "audit",
+          "roleDefinitionIds": [
+            "/providers/microsoft.authorization/roleDefinitions/b24988ac-6180-42a0-ab88-20f7382dd24c"
+          ],
+          "operations": "[if(equals(parameters('effect'), 'Modify'), createArray(createObject('operation', 'addOrReplace', 'field', 'tags', 'value', createObject('Environment', if(contains(resourceGroup().tags, 'Environment'), resourceGroup().tags.Environment, 'Development'), 'CostCenter', if(contains(resourceGroup().tags, 'CostCenter'), resourceGroup().tags.CostCenter, 'CC-0000'), 'Owner', if(contains(resourceGroup().tags, 'Owner'), resourceGroup().tags.Owner, 'unknown@company.com'), 'Project', if(contains(resourceGroup().tags, 'Project'), resourceGroup().tags.Project, 'PROJ-0000'), 'Criticality', if(contains(resourceGroup().tags, 'Criticality'), resourceGroup().tags.Criticality, 'Medium'), 'CreatedBy', 'AzurePolicy', 'CreatedDate', utcNow(), 'LastModified', utcNow()))), createArray())]"
+        }
+      }
+    }
+  }
+}
+

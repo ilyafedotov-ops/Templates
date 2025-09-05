@@ -1,0 +1,18 @@
+{
+  "properties": {
+    "displayName": "Deny: App Service min TLS < 1.2",
+    "description": "Enforce minimum TLS version 1.2 for App Service and Function Apps.",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {"field": "type", "in": ["Microsoft.Web/sites", "Microsoft.Web/sites/slots"]},
+          {"field": "Microsoft.Web/sites/siteConfig.minTlsVersion", "notEquals": "1.2"}
+        ]
+      },
+      "then": {"effect": "deny"}
+    }
+  }
+}
+
