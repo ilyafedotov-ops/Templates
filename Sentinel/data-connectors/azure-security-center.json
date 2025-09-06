@@ -1,0 +1,126 @@
+{
+  "kind": "AzureSecurityCenter",
+  "properties": {
+    "subscriptionId": "{{subscriptionId}}",
+    "dataTypes": [
+      {
+        "name": "SecurityAlert",
+        "state": "enabled"
+      },
+      {
+        "name": "SecurityRecommendation",
+        "state": "enabled"
+      },
+      {
+        "name": "SecurityNestedRecommendation",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Microsoft Defender for Cloud",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "Microsoft Defender for Cloud (formerly Azure Security Center) provides unified security management and advanced threat protection across hybrid cloud workloads. Connect to stream security alerts, recommendations, and assessment results.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "SecurityAlert",
+          "baseQuery": "SecurityAlert"
+        },
+        {
+          "metricName": "Total data received",
+          "legend": "SecurityRecommendation", 
+          "baseQuery": "SecurityRecommendation"
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "High severity security alerts",
+          "query": "SecurityAlert | where AlertSeverity == \"High\" | summarize count() by AlertName, bin(TimeGenerated, 1d) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Security recommendations by category",
+          "query": "SecurityRecommendation | summarize count() by Category, RecommendationState | order by count_ desc"
+        },
+        {
+          "description": "Failed security assessments",
+          "query": "SecurityRecommendation | where RecommendationState == \"Unhealthy\" | project TimeGenerated, RecommendationDisplayName, ResourceId, AssessedResourceType"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "SecurityAlert",
+          "lastDataReceivedQuery": "SecurityAlert | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        },
+        {
+          "name": "SecurityRecommendation",
+          "lastDataReceivedQuery": "SecurityRecommendation | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "SentinelKindsV2",
+          "value": ["AzureSecurityCenter"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "customs": [
+          {
+            "name": "Microsoft Defender for Cloud",
+            "description": "Microsoft Defender for Cloud must be enabled on the subscription."
+          }
+        ]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Prerequisites",
+          "description": "Ensure Microsoft Defender for Cloud is enabled on your Azure subscription. Enable the Standard tier for advanced threat protection.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Enable Microsoft Defender for Cloud",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Go to **Microsoft Defender for Cloud** in the Azure portal\n2. Select **Environment settings**\n3. Choose your subscription\n4. Enable **Microsoft Defender for Cloud** with the Standard tier\n5. Configure **Data collection** settings"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Connect Microsoft Defender for Cloud",
+          "description": "Connect your Microsoft Defender for Cloud to stream security data to Microsoft Sentinel.",
+          "instructions": [
+            {
+              "parameters": {
+                "connectorKind": "AzureSecurityCenter",
+                "title": "Microsoft Defender for Cloud",
+                "enable": true
+              },
+              "type": "SentinelResourceProvider"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

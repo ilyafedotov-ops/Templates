@@ -1,0 +1,484 @@
+{
+  "architecture": {
+    "name": "Microsoft Sentinel Reference Architecture",
+    "version": "2.0",
+    "description": "Enterprise-grade Microsoft Sentinel deployment with comprehensive security monitoring, multi-cloud integration, and automated response capabilities",
+    "lastUpdated": "2024-01-15",
+    "components": {
+      "core": {
+        "name": "Core Sentinel Infrastructure",
+        "components": [
+          {
+            "name": "Log Analytics Workspace",
+            "type": "Microsoft.OperationalInsights/workspaces",
+            "purpose": "Central data storage and query engine for security events",
+            "configuration": {
+              "sku": "PerGB2018",
+              "retention": "90-730 days (environment dependent)",
+              "dailyQuota": "Configurable (unlimited by default)",
+              "features": {
+                "publicNetworkAccess": "Enabled",
+                "logAccessUsingResourcePermissions": true,
+                "immediatePurgeDataOn30Days": true
+              }
+            },
+            "security": {
+              "encryption": "Microsoft-managed keys (option for CMK)",
+              "networkAccess": "Public endpoint with firewall rules",
+              "rbac": "Azure AD integrated with custom roles"
+            }
+          },
+          {
+            "name": "Microsoft Sentinel",
+            "type": "Microsoft.SecurityInsights/onboardingStates",
+            "purpose": "SIEM/SOAR capabilities on Log Analytics workspace",
+            "configuration": {
+              "enabledFeatures": [
+                "Analytics Rules",
+                "Workbooks",
+                "Playbooks",
+                "Hunting Queries",
+                "Watchlists",
+                "Threat Intelligence"
+              ]
+            }
+          }
+        ]
+      },
+      "dataIngestion": {
+        "name": "Data Ingestion Layer",
+        "components": [
+          {
+            "name": "Azure Native Connectors",
+            "connectors": [
+              {
+                "name": "Azure Activity Log",
+                "type": "AzureActivityLog",
+                "dataTypes": ["AzureActivity"],
+                "scope": "Subscription level",
+                "latency": "5-10 minutes",
+                "volume": "Medium"
+              },
+              {
+                "name": "Azure Active Directory",
+                "type": "AzureActiveDirectory",
+                "dataTypes": [
+                  "SigninLogs",
+                  "AuditLogs",
+                  "NonInteractiveUserSignInLogs",
+                  "ServicePrincipalSignInLogs",
+                  "ManagedIdentitySignInLogs",
+                  "ProvisioningLogs",
+                  "ADFSSignInLogs",
+                  "RiskyUsers",
+                  "UserRiskEvents"
+                ],
+                "scope": "Tenant level",
+                "latency": "5-15 minutes",
+                "volume": "High"
+              },
+              {
+                "name": "Microsoft Defender for Cloud",
+                "type": "AzureSecurityCenter",
+                "dataTypes": ["SecurityAlert", "SecurityRecommendation"],
+                "scope": "Subscription level",
+                "latency": "Real-time to 30 minutes",
+                "volume": "Low-Medium"
+              },
+              {
+                "name": "Azure Key Vault",
+                "type": "AzureDiagnostics",
+                "dataTypes": ["KeyVaultData"],
+                "scope": "Resource level",
+                "latency": "5-10 minutes",
+                "volume": "Low"
+              },
+              {
+                "name": "Office 365",
+                "type": "Office365",
+                "dataTypes": ["OfficeActivity"],
+                "workloads": ["Exchange", "SharePoint", "Teams"],
+                "scope": "Tenant level",
+                "latency": "5-30 minutes",
+                "volume": "High"
+              }
+            ]
+          },
+          {
+            "name": "Multi-Cloud Connectors",
+            "connectors": [
+              {
+                "name": "AWS CloudTrail",
+                "type": "AmazonWebServicesCloudTrail",
+                "dataTypes": ["AWSCloudTrail"],
+                "scope": "AWS Account",
+                "authentication": "IAM Role",
+                "latency": "10-30 minutes",
+                "volume": "Medium-High"
+              },
+              {
+                "name": "Google Cloud Audit",
+                "type": "GoogleCloudPlatformAuditLogs",
+                "dataTypes": ["GCPAuditLogs"],
+                "scope": "GCP Project",
+                "authentication": "Service Account",
+                "latency": "10-30 minutes",
+                "volume": "Medium"
+              }
+            ]
+          },
+          {
+            "name": "Custom Data Sources",
+            "connectors": [
+              {
+                "name": "Common Event Format (CEF)",
+                "type": "CommonEventsFormat",
+                "dataTypes": ["CommonSecurityLog"],
+                "method": "Syslog forwarder",
+                "supportedDevices": [
+                  "Palo Alto Networks",
+                  "Cisco ASA",
+                  "Check Point",
+                  "Fortinet",
+                  "F5 Networks"
+                ]
+              },
+              {
+                "name": "Syslog",
+                "type": "Syslog",
+                "dataTypes": ["Syslog"],
+                "method": "Direct or forwarder",
+                "facilities": ["auth", "authpriv", "daemon", "kern", "syslog"]
+              },
+              {
+                "name": "Custom Logs",
+                "type": "CustomLogs",
+                "method": "Azure Monitor Agent + Data Collection Rules",
+                "fileTypes": ["Text", "JSON", "XML"],
+                "parsing": "KQL transformations"
+              }
+            ]
+          }
+        ]
+      },
+      "storage": {
+        "name": "Storage and Retention",
+        "components": [
+          {
+            "name": "Hot Storage",
+            "type": "Log Analytics Workspace",
+            "retention": "90-730 days",
+            "performance": "High query performance",
+            "cost": "High per GB",
+            "usage": "Active investigations and monitoring"
+          },
+          {
+            "name": "Long-term Storage",
+            "type": "Azure Storage Account",
+            "retention": "Up to 10 years",
+            "performance": "Archive access",
+            "cost": "Low per GB",
+            "usage": "Compliance and historical analysis",
+            "features": [
+              "Blob versioning",
+              "Change feed",
+              "Lifecycle policies",
+              "Private endpoints"
+            ]
+          }
+        ]
+      },
+      "analytics": {
+        "name": "Analytics and Detection",
+        "components": [
+          {
+            "name": "Analytics Rules",
+            "types": [
+              "Scheduled (KQL-based)",
+              "Microsoft Security",
+              "Fusion (ML-based)",
+              "Anomaly Detection"
+            ],
+            "features": [
+              "Custom detection logic",
+              "Built-in templates",
+              "Machine learning integration",
+              "Threat intelligence correlation"
+            ]
+          },
+          {
+            "name": "Workbooks",
+            "purpose": "Interactive dashboards and reports",
+            "types": [
+              "Overview dashboards",
+              "Investigation workbooks",
+              "Compliance reports",
+              "Custom visualizations"
+            ]
+          },
+          {
+            "name": "Hunting Queries",
+            "purpose": "Proactive threat hunting",
+            "categories": [
+              "Discovery",
+              "Collection",
+              "Command & Control",
+              "Exfiltration",
+              "Impact"
+            ]
+          }
+        ]
+      },
+      "automation": {
+        "name": "Automation and Response",
+        "components": [
+          {
+            "name": "Playbooks",
+            "type": "Azure Logic Apps",
+            "triggers": [
+              "Incident creation",
+              "Alert generation",
+              "Schedule-based",
+              "Manual trigger"
+            ],
+            "actions": [
+              "User/device isolation",
+              "Ticket creation",
+              "Email notifications",
+              "Evidence collection",
+              "Threat intelligence enrichment"
+            ]
+          },
+          {
+            "name": "Automation Rules",
+            "purpose": "Incident triage and assignment",
+            "capabilities": [
+              "Automatic assignment",
+              "Severity adjustment",
+              "Tag application",
+              "Playbook execution"
+            ]
+          }
+        ]
+      },
+      "networking": {
+        "name": "Network Security",
+        "components": [
+          {
+            "name": "Public Endpoints",
+            "services": [
+              "Log Analytics workspace",
+              "Storage account (optional)"
+            ],
+            "security": [
+              "IP-based firewall rules",
+              "Azure AD authentication",
+              "RBAC authorization"
+            ]
+          },
+          {
+            "name": "Private Endpoints",
+            "services": [
+              "Log Analytics workspace",
+              "Storage account",
+              "Key Vault"
+            ],
+            "benefits": [
+              "Private IP connectivity",
+              "Traffic stays on Microsoft backbone",
+              "DNS integration"
+            ]
+          }
+        ]
+      }
+    },
+    "dataFlows": [
+      {
+        "source": "Azure Resources",
+        "destination": "Log Analytics Workspace",
+        "method": "Diagnostic Settings",
+        "encryption": "TLS 1.2+",
+        "authentication": "Managed Identity"
+      },
+      {
+        "source": "On-premises Systems",
+        "destination": "Log Analytics Workspace", 
+        "method": "Azure Monitor Agent / CEF Forwarder",
+        "encryption": "TLS 1.2+",
+        "authentication": "Workspace Key"
+      },
+      {
+        "source": "Multi-cloud Providers",
+        "destination": "Log Analytics Workspace",
+        "method": "API Integration",
+        "encryption": "TLS 1.2+",
+        "authentication": "Service Principal / IAM Role"
+      },
+      {
+        "source": "Log Analytics Workspace",
+        "destination": "Long-term Storage",
+        "method": "Data Export Rules",
+        "encryption": "Storage Service Encryption",
+        "frequency": "Near real-time"
+      }
+    ],
+    "securityControls": {
+      "identity": {
+        "authentication": [
+          "Azure AD integration",
+          "Multi-factor authentication",
+          "Conditional access policies"
+        ],
+        "authorization": [
+          "Role-based access control (RBAC)",
+          "Custom role definitions",
+          "Resource-level permissions"
+        ]
+      },
+      "network": {
+        "isolation": [
+          "Virtual network integration",
+          "Private endpoints",
+          "Service endpoints"
+        ],
+        "filtering": [
+          "IP allowlisting",
+          "Network security groups",
+          "Azure Firewall integration"
+        ]
+      },
+      "data": {
+        "encryption": [
+          "Encryption in transit (TLS 1.2+)",
+          "Encryption at rest (AES-256)",
+          "Customer-managed keys (optional)"
+        ],
+        "protection": [
+          "Data Loss Prevention (DLP)",
+          "Information Protection labels",
+          "Retention policies"
+        ]
+      },
+      "monitoring": {
+        "logging": [
+          "Audit logs for all activities",
+          "Diagnostic settings",
+          "Activity logs"
+        ],
+        "alerting": [
+          "Security alerts",
+          "Operational alerts",
+          "Compliance notifications"
+        ]
+      }
+    },
+    "scalability": {
+      "ingestion": {
+        "limits": "200 GB/day default (configurable)",
+        "burst": "Up to 10x daily limit for short periods",
+        "throttling": "API rate limiting and queuing"
+      },
+      "storage": {
+        "workspace": "Up to 4TB per workspace",
+        "multipleWorkspaces": "Scale across multiple workspaces",
+        "archival": "Unlimited long-term storage"
+      },
+      "query": {
+        "performance": "Optimized for 90-day active queries",
+        "concurrency": "Multiple concurrent queries",
+        "timeouts": "Configurable query timeouts"
+      }
+    },
+    "compliance": {
+      "certifications": [
+        "SOC 2 Type II",
+        "ISO 27001",
+        "FedRAMP High",
+        "HIPAA",
+        "PCI DSS Level 1"
+      ],
+      "dataResidency": {
+        "regions": "50+ Azure regions globally",
+        "sovereignty": "Data stays in selected geography",
+        "governance": "Compliance with local regulations"
+      },
+      "auditability": {
+        "logs": "Complete audit trail",
+        "retention": "Configurable retention periods",
+        "export": "Audit log export capabilities"
+      }
+    },
+    "costOptimization": {
+      "strategies": [
+        "Tiered storage with lifecycle policies",
+        "Data collection rule optimization",
+        "Query performance optimization",
+        "Reserved capacity pricing",
+        "Data retention policies"
+      ],
+      "monitoring": [
+        "Cost per GB ingestion",
+        "Query cost analysis",
+        "Storage cost breakdown",
+        "Budget alerts and limits"
+      ]
+    }
+  },
+  "deploymentPatterns": {
+    "singleTenant": {
+      "description": "Single Log Analytics workspace for entire organization",
+      "benefits": ["Simple management", "Centralized monitoring", "Cost effective"],
+      "drawbacks": ["Limited isolation", "Complex RBAC", "Performance limits"],
+      "suitableFor": ["Small-medium organizations", "Centralized security teams"]
+    },
+    "multiTenant": {
+      "description": "Multiple workspaces for different business units or regions",
+      "benefits": ["Better isolation", "Granular RBAC", "Regional compliance"],
+      "drawbacks": ["Complex management", "Higher costs", "Cross-workspace queries"],
+      "suitableFor": ["Large enterprises", "Distributed organizations", "Regulatory requirements"]
+    },
+    "hybrid": {
+      "description": "Combination of central and distributed workspaces",
+      "benefits": ["Balanced approach", "Flexible governance", "Optimized costs"],
+      "drawbacks": ["Management complexity", "Integration challenges"],
+      "suitableFor": ["Complex organizations", "Mixed requirements"]
+    }
+  },
+  "bestPractices": {
+    "deployment": [
+      "Use Infrastructure as Code (IaC) for all deployments",
+      "Implement proper RBAC from day one",
+      "Configure diagnostic settings for all Azure resources",
+      "Enable Microsoft Defender for Cloud on all subscriptions",
+      "Set up proper alerting and monitoring"
+    ],
+    "dataIngestion": [
+      "Start with built-in connectors before custom solutions",
+      "Optimize data collection rules to reduce costs",
+      "Use CEF format for third-party security devices",
+      "Implement proper log filtering and sampling",
+      "Monitor ingestion volumes and costs regularly"
+    ],
+    "analytics": [
+      "Use built-in analytics rule templates as starting point",
+      "Customize rules based on organizational risk profile",
+      "Implement tiered alerting to reduce noise",
+      "Regularly review and tune detection rules",
+      "Use machine learning detections for advanced threats"
+    ],
+    "automation": [
+      "Start with simple automated responses",
+      "Implement proper approval workflows for critical actions",
+      "Use managed identities for secure authentication",
+      "Test playbooks in development environment first",
+      "Monitor playbook performance and error rates"
+    ],
+    "operations": [
+      "Establish clear incident response procedures",
+      "Train security analysts on KQL query language",
+      "Regularly review and update watchlists",
+      "Perform periodic threat hunting exercises",
+      "Maintain up-to-date documentation"
+    ]
+  }
+}

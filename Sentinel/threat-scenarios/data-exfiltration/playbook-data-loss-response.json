@@ -1,0 +1,809 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "2.0.0.0",
+  "parameters": {
+    "logicAppName": {
+      "type": "string",
+      "defaultValue": "la-data-loss-response",
+      "metadata": {
+        "description": "Name of the Logic App for data loss prevention response"
+      }
+    },
+    "teamsWebhookUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Microsoft Teams webhook URL for notifications"
+      }
+    },
+    "securityGroupEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address of the security team"
+      }
+    },
+    "legalGroupEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address of the legal/compliance team"
+      }
+    },
+    "dataProtectionOfficerEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address of the Data Protection Officer"
+      }
+    },
+    "keyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault name for storing evidence and secrets"
+      }
+    }
+  },
+  "variables": {
+    "azureADConnectionName": "azuread",
+    "office365ConnectionName": "office365",
+    "keyVaultConnectionName": "keyvault",
+    "azureMonitorConnectionName": "azuremonitorlogs",
+    "teamsConnectionName": "teams"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('azureADConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Azure AD Connection", 
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuread')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('office365ConnectionName')]", 
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Office 365 Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('keyVaultConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Key Vault Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/keyvault')]"
+        },
+        "parameterValues": {
+          "vaultName": "[parameters('keyVaultName')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01", 
+      "name": "[variables('azureMonitorConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Azure Monitor Logs Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('teamsConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Microsoft Teams Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/teams')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01",
+      "name": "[parameters('logicAppName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('azureADConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('office365ConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('keyVaultConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('azureMonitorConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "teamsWebhookUrl": {
+              "type": "String"
+            },
+            "securityGroupEmail": {
+              "type": "String"
+            },
+            "legalGroupEmail": {
+              "type": "String"
+            },
+            "dataProtectionOfficerEmail": {
+              "type": "String"
+            }
+          },
+          "triggers": {
+            "When_Azure_Sentinel_incident_is_created": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Initialize_Variables": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "incidentId",
+                    "type": "string",
+                    "value": "@{triggerBody()?['object']?['id']}"
+                  },
+                  {
+                    "name": "userPrincipal",
+                    "type": "string",
+                    "value": "@{triggerBody()?['object']?['properties']?['relatedEntities']?[0]?['properties']?['accountName']}"
+                  },
+                  {
+                    "name": "severity",
+                    "type": "string", 
+                    "value": "@{triggerBody()?['object']?['properties']?['severity']}"
+                  },
+                  {
+                    "name": "title",
+                    "type": "string",
+                    "value": "@{triggerBody()?['object']?['properties']?['title']}"
+                  },
+                  {
+                    "name": "mlExfiltrationScore",
+                    "type": "string",
+                    "value": "@{triggerBody()?['object']?['properties']?['additionalData']?['alertProductNames']?[0]}"
+                  },
+                  {
+                    "name": "responseActions",
+                    "type": "array",
+                    "value": []
+                  },
+                  {
+                    "name": "evidenceCollected",
+                    "type": "object",
+                    "value": {}
+                  },
+                  {
+                    "name": "dataClassification",
+                    "type": "string",
+                    "value": "Unknown"
+                  },
+                  {
+                    "name": "breachAssessment",
+                    "type": "object",
+                    "value": {
+                      "isDataBreach": false,
+                      "gdprNotificationRequired": false,
+                      "dataVolume": 0,
+                      "dataTypes": [],
+                      "affectedRecords": 0
+                    }
+                  }
+                ]
+              },
+              "runAfter": {}
+            },
+            "Check_If_Data_Exfiltration_Incident": {
+              "type": "Condition",
+              "expression": {
+                "or": [
+                  {
+                    "contains": [
+                      "@variables('title')",
+                      "Data Exfiltration"
+                    ]
+                  },
+                  {
+                    "contains": [
+                      "@variables('title')",
+                      "Exfiltration"
+                    ]
+                  },
+                  {
+                    "contains": [
+                      "@variables('title')",
+                      "External Sharing"
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Collect_Data_Exfiltration_Evidence": {
+                  "type": "Parallel",
+                  "branches": {
+                    "File_Access_Logs": {
+                      "actions": {
+                        "Query_File_Access_Activity": {
+                          "type": "ApiConnection",
+                          "inputs": {
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/queryData",
+                            "queries": {
+                              "resourcegroups": "@{resourceGroup().name}",
+                              "resourcename": "sentinel-workspace",
+                              "resourcetype": "Log Analytics Workspace",
+                              "subscriptions": "@{subscription().subscriptionId}",
+                              "timerange": "P1D"
+                            },
+                            "body": {
+                              "query": "OfficeActivity | where UserId == '@{variables('userPrincipal')}' | where TimeGenerated >= ago(24h) | where Operation in ('FileDownloaded', 'FileSyncDownloaded', 'SharingSet', 'FileAccessed') | project TimeGenerated, Operation, SourceFileName, Size, ClientIP, UserAgent, TargetUserOrGroupName | order by TimeGenerated desc | take 200"
+                            }
+                          },
+                          "runAfter": {}
+                        }
+                      }
+                    },
+                    "Email_Activity_Logs": {
+                      "actions": {
+                        "Query_Email_Activity": {
+                          "type": "ApiConnection",
+                          "inputs": {
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/queryData", 
+                            "queries": {
+                              "resourcegroups": "@{resourceGroup().name}",
+                              "resourcename": "sentinel-workspace",
+                              "resourcetype": "Log Analytics Workspace",
+                              "subscriptions": "@{subscription().subscriptionId}",
+                              "timerange": "P1D"
+                            },
+                            "body": {
+                              "query": "OfficeActivity | where UserId == '@{variables('userPrincipal')}' | where TimeGenerated >= ago(24h) | where OfficeWorkload == 'Exchange' and Operation == 'Send' | where AttachmentCount > 0 | project TimeGenerated, Recipients, Subject, AttachmentCount, Size, ClientIPAddress | order by TimeGenerated desc | take 100"
+                            }
+                          },
+                          "runAfter": {}
+                        }
+                      }
+                    },
+                    "Azure_Storage_Access": {
+                      "actions": {
+                        "Query_Storage_Activity": {
+                          "type": "ApiConnection",
+                          "inputs": {
+                            "host": {
+                              "connection": {
+                                "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                              }
+                            },
+                            "method": "post",
+                            "path": "/queryData",
+                            "queries": {
+                              "resourcegroups": "@{resourceGroup().name}",
+                              "resourcename": "sentinel-workspace", 
+                              "resourcetype": "Log Analytics Workspace",
+                              "subscriptions": "@{subscription().subscriptionId}",
+                              "timerange": "P1D"
+                            },
+                            "body": {
+                              "query": "StorageBlobLogs | where RequesterUpn == '@{variables('userPrincipal')}' | where TimeGenerated >= ago(24h) | where OperationName in ('GetBlob', 'PutBlob') | project TimeGenerated, OperationName, Uri, ResponseBodySize, ClientIpAddress | order by TimeGenerated desc | take 100"
+                            }
+                          },
+                          "runAfter": {}
+                        }
+                      }
+                    }
+                  },
+                  "runAfter": {}
+                },
+                "Analyze_Data_Classification": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/queryData",
+                    "queries": {
+                      "resourcegroups": "@{resourceGroup().name}",
+                      "resourcename": "sentinel-workspace",
+                      "resourcetype": "Log Analytics Workspace",
+                      "subscriptions": "@{subscription().subscriptionId}",
+                      "timerange": "P1D"
+                    },
+                    "body": {
+                      "query": "let sensitiveKeywords = dynamic(['confidential', 'secret', 'personal', 'sensitive', 'financial', 'salary', 'ssn', 'credit card', 'private']); OfficeActivity | where UserId == '@{variables('userPrincipal')}' | where TimeGenerated >= ago(24h) | where SourceFileName has_any (sensitiveKeywords) or ObjectId has_any (sensitiveKeywords) | summarize SensitiveFileCount = count(), SensitiveFiles = make_set(SourceFileName, 50), TotalSizeBytes = sum(toint(Size)), DataTypes = make_set(case(SourceFileName contains 'financial' or SourceFileName contains 'salary', 'Financial', SourceFileName contains 'personal' or SourceFileName contains 'ssn', 'PII', SourceFileName contains 'confidential' or SourceFileName contains 'secret', 'Confidential', 'Sensitive'), 20)"
+                    }
+                  },
+                  "runAfter": {
+                    "Collect_Data_Exfiltration_Evidence": ["Succeeded"]
+                  }
+                },
+                "Assess_Data_Breach_Risk": {
+                  "type": "Compose",
+                  "inputs": {
+                    "isDataBreach": "@{if(greater(length(body('Analyze_Data_Classification')?['value']), 0), true, false)}",
+                    "gdprNotificationRequired": "@{if(and(greater(length(body('Analyze_Data_Classification')?['value']), 0), contains(string(body('Analyze_Data_Classification')?['value'][0]?['DataTypes']), 'PII')), true, false)}",
+                    "dataVolume": "@{if(greater(length(body('Analyze_Data_Classification')?['value']), 0), body('Analyze_Data_Classification')?['value'][0]?['TotalSizeBytes'], 0)}",
+                    "dataTypes": "@{if(greater(length(body('Analyze_Data_Classification')?['value']), 0), body('Analyze_Data_Classification')?['value'][0]?['DataTypes'], createArray())}",
+                    "affectedRecords": "@{if(greater(length(body('Analyze_Data_Classification')?['value']), 0), body('Analyze_Data_Classification')?['value'][0]?['SensitiveFileCount'], 0)}",
+                    "riskLevel": "@{if(greater(int(variables('mlExfiltrationScore')), 80), 'Critical', if(greater(int(variables('mlExfiltrationScore')), 60), 'High', 'Medium'))}"
+                  },
+                  "runAfter": {
+                    "Analyze_Data_Classification": ["Succeeded"]
+                  }
+                },
+                "Store_Evidence_Package": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['keyvault']['connectionId']"
+                      }
+                    },
+                    "method": "put",
+                    "path": "/secrets/@{encodeURIComponent(concat('dlp-incident-', variables('incidentId'), '-evidence'))}/value",
+                    "body": {
+                      "value": "@{json(concat('{\"incidentId\":\"', variables('incidentId'), '\",\"userPrincipal\":\"', variables('userPrincipal'), '\",\"fileActivity\":', string(body('Query_File_Access_Activity')), ',\"emailActivity\":', string(body('Query_Email_Activity')), ',\"storageActivity\":', string(body('Query_Storage_Activity')), ',\"dataClassification\":', string(body('Analyze_Data_Classification')), ',\"breachAssessment\":', string(outputs('Assess_Data_Breach_Risk')), ',\"timestamp\":\"', utcNow(), '\"}'))}"
+                    }
+                  },
+                  "runAfter": {
+                    "Assess_Data_Breach_Risk": ["Succeeded"]
+                  }
+                },
+                "Determine_Response_Actions": {
+                  "type": "Condition",
+                  "expression": {
+                    "and": [
+                      {
+                        "equals": [
+                          "@outputs('Assess_Data_Breach_Risk')['isDataBreach']",
+                          true
+                        ]
+                      },
+                      {
+                        "or": [
+                          {
+                            "equals": [
+                              "@variables('severity')",
+                              "Critical"
+                            ]
+                          },
+                          {
+                            "equals": [
+                              "@variables('severity')",
+                              "High"
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "CRITICAL_Block_User_Access": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuread']['connectionId']"
+                          }
+                        },
+                        "method": "patch",
+                        "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}",
+                        "body": {
+                          "accountEnabled": false
+                        }
+                      },
+                      "runAfter": {}
+                    },
+                    "CRITICAL_Revoke_All_Sessions": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuread']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}/revokeSignInSessions"
+                      },
+                      "runAfter": {
+                        "CRITICAL_Block_User_Access": ["Succeeded"]
+                      }
+                    },
+                    "CRITICAL_Revoke_External_Shares": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['office365']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/v2/Mail",
+                        "body": {
+                          "To": "@parameters('securityGroupEmail')",
+                          "Subject": "URGENT: Revoke External Shares for @{variables('userPrincipal')}",
+                          "Body": "DATA BREACH RESPONSE: Please immediately revoke all external sharing permissions for user @{variables('userPrincipal')}. Evidence package stored in Key Vault: dlp-incident-@{variables('incidentId')}-evidence",
+                          "Importance": "High"
+                        }
+                      },
+                      "runAfter": {
+                        "CRITICAL_Revoke_All_Sessions": ["Succeeded"]
+                      }
+                    },
+                    "CRITICAL_Notify_Legal_Team": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['office365']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/v2/Mail",
+                        "body": {
+                          "To": "@parameters('legalGroupEmail')",
+                          "Cc": "@parameters('dataProtectionOfficerEmail')",
+                          "Subject": "CRITICAL: Potential Data Breach - @{variables('incidentId')}",
+                          "Body": "<html><body><h2>🚨 POTENTIAL DATA BREACH DETECTED</h2><p><strong>IMMEDIATE LEGAL REVIEW REQUIRED</strong></p><table border='1'><tr><td><strong>Incident ID:</strong></td><td>@{variables('incidentId')}</td></tr><tr><td><strong>User:</strong></td><td>@{variables('userPrincipal')}</td></tr><tr><td><strong>Severity:</strong></td><td>@{variables('severity')}</td></tr><tr><td><strong>ML Risk Score:</strong></td><td>@{variables('mlExfiltrationScore')}/100</td></tr><tr><td><strong>Data Types:</strong></td><td>@{outputs('Assess_Data_Breach_Risk')['dataTypes']}</td></tr><tr><td><strong>Affected Records:</strong></td><td>@{outputs('Assess_Data_Breach_Risk')['affectedRecords']}</td></tr><tr><td><strong>Data Volume:</strong></td><td>@{outputs('Assess_Data_Breach_Risk')['dataVolume']} bytes</td></tr><tr><td><strong>GDPR Notification Required:</strong></td><td>@{outputs('Assess_Data_Breach_Risk')['gdprNotificationRequired']}</td></tr></table><p><strong>Actions Taken:</strong></p><ul><li>User account disabled</li><li>All sessions revoked</li><li>Evidence preserved in Key Vault</li><li>Security team notified</li></ul><p><strong>Next Steps:</strong></p><ol><li>Legal assessment of breach notification requirements</li><li>Customer/regulator notification timeline</li><li>Forensic investigation coordination</li><li>Public relations impact assessment</li></ol></body></html>",
+                          "Importance": "High"
+                        }
+                      },
+                      "runAfter": {
+                        "CRITICAL_Revoke_External_Shares": ["Succeeded"]
+                      }
+                    },
+                    "CRITICAL_Create_Incident_War_Room": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['teams']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/v1.0/teams",
+                        "body": {
+                          "displayName": "Data Breach Response - @{variables('incidentId')}",
+                          "description": "Emergency response team for data breach incident @{variables('incidentId')} involving user @{variables('userPrincipal')}",
+                          "template@odata.bind": "https://graph.microsoft.com/beta/teamsTemplates('standard')"
+                        }
+                      },
+                      "runAfter": {
+                        "CRITICAL_Notify_Legal_Team": ["Succeeded"]
+                      }
+                    },
+                    "Update_Response_Actions_Critical": {
+                      "type": "AppendToArrayVariable",
+                      "inputs": {
+                        "name": "responseActions",
+                        "value": {
+                          "action": "CRITICAL DATA BREACH RESPONSE",
+                          "timestamp": "@{utcNow()}",
+                          "details": "Account disabled, sessions revoked, legal team notified, evidence preserved"
+                        }
+                      },
+                      "runAfter": {
+                        "CRITICAL_Create_Incident_War_Room": ["Succeeded", "Failed"]
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "STANDARD_Force_MFA_Reset": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['azuread']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}/authentication/methods"
+                        },
+                        "runAfter": {}
+                      },
+                      "STANDARD_Notify_Manager": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['azuread']['connectionId']"
+                            }
+                          },
+                          "method": "get",
+                          "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}/manager"
+                        },
+                        "runAfter": {
+                          "STANDARD_Force_MFA_Reset": ["Succeeded", "Failed"]
+                        }
+                      },
+                      "STANDARD_Send_Manager_Email": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['office365']['connectionId']"
+                            }
+                          },
+                          "method": "post",
+                          "path": "/v2/Mail",
+                          "body": {
+                            "To": "@{body('STANDARD_Notify_Manager')?['mail']}",
+                            "Subject": "Security Alert: Unusual Data Activity - @{variables('userPrincipal')}",
+                            "Body": "Dear Manager,<br><br>We have detected unusual data access activity for your team member @{variables('userPrincipal')}. As a precautionary measure, we have required additional authentication.<br><br>Please contact the Security Team to discuss this activity and confirm it was authorized.<br><br>Incident ID: @{variables('incidentId')}<br>Detection: @{variables('title')}<br><br>Security Team",
+                            "Importance": "Normal"
+                          }
+                        },
+                        "runAfter": {
+                          "STANDARD_Notify_Manager": ["Succeeded"]
+                        }
+                      },
+                      "Update_Response_Actions_Standard": {
+                        "type": "AppendToArrayVariable",
+                        "inputs": {
+                          "name": "responseActions",
+                          "value": {
+                            "action": "Standard DLP Response",
+                            "timestamp": "@{utcNow()}",
+                            "details": "MFA reset required, manager notified, monitoring enabled"
+                          }
+                        },
+                        "runAfter": {
+                          "STANDARD_Send_Manager_Email": ["Succeeded", "Failed"]
+                        }
+                      }
+                    }
+                  },
+                  "runAfter": {
+                    "Store_Evidence_Package": ["Succeeded"]
+                  }
+                },
+                "Send_Security_Team_DLP_Alert": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['office365']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/v2/Mail",
+                    "body": {
+                      "To": "@parameters('securityGroupEmail')",
+                      "Subject": "Data Loss Prevention Response Executed - @{variables('incidentId')}",
+                      "Body": "<html><body><h2>🛡️ DLP Automated Response Completed</h2><p><strong>Incident Details:</strong></p><table border='1'><tr><td><strong>Incident ID:</strong></td><td>@{variables('incidentId')}</td></tr><tr><td><strong>User:</strong></td><td>@{variables('userPrincipal')}</td></tr><tr><td><strong>Severity:</strong></td><td>@{variables('severity')}</td></tr><tr><td><strong>ML Risk Score:</strong></td><td>@{variables('mlExfiltrationScore')}/100</td></tr><tr><td><strong>Detection:</strong></td><td>@{variables('title')}</td></tr></table><p><strong>Data Breach Assessment:</strong></p><ul><li><strong>Is Data Breach:</strong> @{outputs('Assess_Data_Breach_Risk')['isDataBreach']}</li><li><strong>GDPR Notification Required:</strong> @{outputs('Assess_Data_Breach_Risk')['gdprNotificationRequired']}</li><li><strong>Data Types:</strong> @{outputs('Assess_Data_Breach_Risk')['dataTypes']}</li><li><strong>Affected Records:</strong> @{outputs('Assess_Data_Breach_Risk')['affectedRecords']}</li><li><strong>Data Volume:</strong> @{outputs('Assess_Data_Breach_Risk')['dataVolume']} bytes</li></ul><p><strong>Response Actions:</strong></p>@{join(map(variables('responseActions'), lambda('item', concat('<li>', item['action'], ' (', item['timestamp'], ')</li>'))), '')}<p><strong>Evidence Package:</strong></p><ul><li>File access logs (24h)</li><li>Email activity with attachments (24h)</li><li>Azure storage access (24h)</li><li>Data classification analysis</li><li>Stored in Key Vault: dlp-incident-@{variables('incidentId')}-evidence</li></ul><p><strong>Next Steps:</strong></p><ol><li>Review evidence package</li><li>Interview user and validate business justification</li><li>Assess need for regulatory notification</li><li>Update incident status in Sentinel</li><li>Restore access if activity was legitimate</li></ol></body></html>",
+                      "Importance": "High"
+                    }
+                  },
+                  "runAfter": {
+                    "Determine_Response_Actions": ["Succeeded"]
+                  }
+                },
+                "Send_Teams_DLP_Notification": {
+                  "type": "Http",
+                  "inputs": {
+                    "method": "POST",
+                    "uri": "@parameters('teamsWebhookUrl')",
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "body": {
+                      "@type": "MessageCard",
+                      "@context": "http://schema.org/extensions",
+                      "themeColor": "@{if(outputs('Assess_Data_Breach_Risk')['isDataBreach'], 'FF0000', if(equals(variables('severity'), 'High'), 'FF6600', 'FFCC00'))}",
+                      "summary": "Data Loss Prevention Response",
+                      "sections": [
+                        {
+                          "activityTitle": "🛡️ Data Loss Prevention Response",
+                          "activitySubtitle": "@{if(outputs('Assess_Data_Breach_Risk')['isDataBreach'], '🚨 POTENTIAL DATA BREACH DETECTED', 'Suspicious Data Activity Detected')}",
+                          "facts": [
+                            {
+                              "name": "Incident ID",
+                              "value": "@{variables('incidentId')}"
+                            },
+                            {
+                              "name": "User",
+                              "value": "@{variables('userPrincipal')}"
+                            },
+                            {
+                              "name": "Severity",
+                              "value": "@{variables('severity')}"
+                            },
+                            {
+                              "name": "ML Risk Score",
+                              "value": "@{variables('mlExfiltrationScore')}/100"
+                            },
+                            {
+                              "name": "Data Breach",
+                              "value": "@{outputs('Assess_Data_Breach_Risk')['isDataBreach']}"
+                            },
+                            {
+                              "name": "GDPR Notification",
+                              "value": "@{outputs('Assess_Data_Breach_Risk')['gdprNotificationRequired']}"
+                            },
+                            {
+                              "name": "Response Actions",
+                              "value": "@{length(variables('responseActions'))} actions taken"
+                            }
+                          ]
+                        }
+                      ],
+                      "potentialAction": [
+                        {
+                          "@type": "OpenUri",
+                          "name": "View Incident",
+                          "targets": [
+                            {
+                              "os": "default",
+                              "uri": "https://portal.azure.com/#blade/Microsoft_Azure_Security_Insights/IncidentBlade/incidentId/@{variables('incidentId')}"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "runAfter": {
+                    "Send_Security_Team_DLP_Alert": ["Succeeded"]
+                  }
+                },
+                "Update_Incident_with_DLP_Response": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "put",
+                    "path": "/Incidents/subscriptions/@{encodeURIComponent(subscription().subscriptionId)}/resourceGroups/@{encodeURIComponent(resourceGroup().name)}/workspaces/@{encodeURIComponent('sentinel-workspace')}/incidents/@{encodeURIComponent(variables('incidentId'))}/comments/@{encodeURIComponent(guid())}",
+                    "body": {
+                      "message": "🤖 **DATA LOSS PREVENTION RESPONSE EXECUTED**\\n\\n**Data Breach Assessment:**\\n- Is Data Breach: @{outputs('Assess_Data_Breach_Risk')['isDataBreach']}\\n- GDPR Notification Required: @{outputs('Assess_Data_Breach_Risk')['gdprNotificationRequired']}\\n- Data Types: @{outputs('Assess_Data_Breach_Risk')['dataTypes']}\\n- Affected Records: @{outputs('Assess_Data_Breach_Risk')['affectedRecords']}\\n- Data Volume: @{outputs('Assess_Data_Breach_Risk')['dataVolume']} bytes\\n\\n**Response Actions:**\\n@{join(map(variables('responseActions'), lambda('item', concat('- ', item['action'], ' (', item['timestamp'], ')'))), '\\n')}\\n\\n**Evidence Package:**\\n- File access logs (24h)\\n- Email activity with attachments (24h)\\n- Azure storage access (24h)\\n- Data classification analysis\\n- Stored in Key Vault: dlp-incident-@{variables('incidentId')}-evidence\\n\\n**Notifications Sent:**\\n- Security team (detailed report)\\n- @{if(outputs('Assess_Data_Breach_Risk')['isDataBreach'], 'Legal team and DPO (breach notification)', 'Manager (standard notification)')}\\n- Teams notification posted\\n\\n**Next Steps:**\\n1. Review evidence package in Key Vault\\n2. Interview user to validate activity\\n3. @{if(outputs('Assess_Data_Breach_Risk')['gdprNotificationRequired'], 'Prepare regulatory notifications within 72h', 'Assess business impact')}\\n4. Restore access if legitimate activity\\n5. Update incident status"
+                    }
+                  },
+                  "runAfter": {
+                    "Send_Teams_DLP_Notification": ["Succeeded"]
+                  }
+                }
+              },
+              "else": {
+                "actions": {
+                  "Not_DLP_Incident_Notification": {
+                    "type": "Http",
+                    "inputs": {
+                      "method": "POST",
+                      "uri": "@parameters('teamsWebhookUrl')",
+                      "headers": {
+                        "Content-Type": "application/json"
+                      },
+                      "body": {
+                        "@type": "MessageCard",
+                        "@context": "http://schema.org/extensions",
+                        "themeColor": "36A64F",
+                        "summary": "Security Incident - Not DLP Related",
+                        "sections": [
+                          {
+                            "activityTitle": "ℹ️ Security Incident Detected",
+                            "activitySubtitle": "Non-DLP incident - manual review required",
+                            "facts": [
+                              {
+                                "name": "Incident ID",
+                                "value": "@{variables('incidentId')}"
+                              },
+                              {
+                                "name": "User",
+                                "value": "@{variables('userPrincipal')}"
+                              },
+                              {
+                                "name": "Title",
+                                "value": "@{variables('title')}"
+                              },
+                              {
+                                "name": "Severity",
+                                "value": "@{variables('severity')}"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "runAfter": {}
+                  }
+                }
+              },
+              "runAfter": {
+                "Initialize_Variables": ["Succeeded"]
+              }
+            }
+          },
+          "parameters": {
+            "$connections": {
+              "value": {
+                "azuread": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('azureADConnectionName'))]",
+                  "connectionName": "[variables('azureADConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuread')]"
+                },
+                "office365": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('office365ConnectionName'))]",
+                  "connectionName": "[variables('office365ConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+                },
+                "keyvault": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('keyVaultConnectionName'))]",
+                  "connectionName": "[variables('keyVaultConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/keyvault')]"
+                },
+                "azuremonitorlogs": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('azureMonitorConnectionName'))]",
+                  "connectionName": "[variables('azureMonitorConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+                },
+                "teams": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('teamsConnectionName'))]",
+                  "connectionName": "[variables('teamsConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/teams')]"
+                }
+              }
+            },
+            "teamsWebhookUrl": {
+              "value": "[parameters('teamsWebhookUrl')]"
+            },
+            "securityGroupEmail": {
+              "value": "[parameters('securityGroupEmail')]"
+            },
+            "legalGroupEmail": {
+              "value": "[parameters('legalGroupEmail')]"
+            },
+            "dataProtectionOfficerEmail": {
+              "value": "[parameters('dataProtectionOfficerEmail')]"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "logicAppUrl": {
+      "type": "string",
+      "value": "[concat('https://portal.azure.com/#resource/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/', parameters('logicAppName'), '/overview')]"
+    }
+  }
+}

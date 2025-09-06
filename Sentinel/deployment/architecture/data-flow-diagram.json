@@ -1,0 +1,470 @@
+{
+  "dataFlowDiagram": {
+    "name": "Microsoft Sentinel Data Flow Architecture",
+    "version": "2.0",
+    "description": "Comprehensive data flow diagram showing how security data flows through Microsoft Sentinel ecosystem",
+    "lastUpdated": "2024-01-15",
+    "components": {
+      "dataSources": {
+        "azure": {
+          "name": "Azure Data Sources",
+          "position": { "x": 100, "y": 100 },
+          "icon": "azure-cloud",
+          "color": "#0078d4",
+          "sources": [
+            {
+              "name": "Azure Activity Log",
+              "type": "Subscription-level events",
+              "volume": "Medium",
+              "criticality": "High",
+              "retention": "90 days",
+              "sampleEvents": [
+                "Resource creation/deletion",
+                "Role assignments",
+                "Policy changes",
+                "Authentication events"
+              ]
+            },
+            {
+              "name": "Azure AD Logs", 
+              "type": "Identity and access events",
+              "volume": "High",
+              "criticality": "Critical",
+              "retention": "90 days",
+              "sampleEvents": [
+                "User sign-ins",
+                "Failed authentication attempts",
+                "Privileged operations",
+                "Risk detections"
+              ]
+            },
+            {
+              "name": "Azure Resources",
+              "type": "Service-specific diagnostic logs",
+              "volume": "Variable",
+              "criticality": "Medium-High", 
+              "retention": "90-365 days",
+              "services": [
+                "Key Vault",
+                "Storage Accounts",
+                "Virtual Machines",
+                "App Services",
+                "SQL Databases"
+              ]
+            }
+          ]
+        },
+        "office365": {
+          "name": "Microsoft 365 Sources",
+          "position": { "x": 100, "y": 300 },
+          "icon": "office365",
+          "color": "#d83b01",
+          "sources": [
+            {
+              "name": "Exchange Online",
+              "type": "Email and calendar events",
+              "volume": "High",
+              "criticality": "High",
+              "sampleEvents": [
+                "Mailbox access",
+                "Mail forwarding rules",
+                "Inbox rule changes",
+                "Email sending patterns"
+              ]
+            },
+            {
+              "name": "SharePoint Online",
+              "type": "Document and site activities",
+              "volume": "Medium",
+              "criticality": "Medium",
+              "sampleEvents": [
+                "File sharing",
+                "Permission changes",
+                "Site access",
+                "Document downloads"
+              ]
+            },
+            {
+              "name": "Microsoft Teams",
+              "type": "Collaboration activities",
+              "volume": "Medium",
+              "criticality": "Medium",
+              "sampleEvents": [
+                "Meeting recordings",
+                "External user activities",
+                "File sharing in Teams",
+                "App installations"
+              ]
+            }
+          ]
+        },
+        "multiCloud": {
+          "name": "Multi-Cloud Sources",
+          "position": { "x": 100, "y": 500 },
+          "icon": "cloud-multiple",
+          "color": "#ff6900",
+          "sources": [
+            {
+              "name": "AWS CloudTrail",
+              "type": "AWS API and management events",
+              "volume": "Medium-High",
+              "criticality": "High",
+              "authentication": "IAM Cross-Account Role",
+              "sampleEvents": [
+                "EC2 instance changes",
+                "S3 bucket operations",
+                "IAM policy changes",
+                "Console logins"
+              ]
+            },
+            {
+              "name": "Google Cloud Audit",
+              "type": "GCP operations and access logs",
+              "volume": "Medium",
+              "criticality": "High", 
+              "authentication": "Service Account",
+              "sampleEvents": [
+                "Compute Engine operations",
+                "Storage access",
+                "IAM changes",
+                "Network modifications"
+              ]
+            }
+          ]
+        },
+        "onPremises": {
+          "name": "On-Premises Sources",
+          "position": { "x": 100, "y": 700 },
+          "icon": "server-network",
+          "color": "#107c10",
+          "sources": [
+            {
+              "name": "Windows Security Events",
+              "type": "Windows event logs",
+              "volume": "High",
+              "criticality": "High",
+              "method": "Azure Monitor Agent",
+              "sampleEvents": [
+                "Logon/Logoff events",
+                "Process creation",
+                "File access",
+                "Registry changes"
+              ]
+            },
+            {
+              "name": "Linux Syslog",
+              "type": "Linux system logs",
+              "volume": "Medium",
+              "criticality": "Medium",
+              "method": "rsyslog/syslog-ng",
+              "sampleEvents": [
+                "SSH connections",
+                "Sudo operations",
+                "Service status changes",
+                "Kernel messages"
+              ]
+            },
+            {
+              "name": "Security Appliances",
+              "type": "Firewall, IDS/IPS, EDR",
+              "volume": "High",
+              "criticality": "Critical",
+              "method": "CEF/Syslog",
+              "devices": [
+                "Palo Alto Networks",
+                "Cisco ASA/FTD",
+                "Check Point",
+                "CrowdStrike",
+                "Carbon Black"
+              ]
+            }
+          ]
+        }
+      },
+      "ingestionLayer": {
+        "name": "Data Ingestion & Processing",
+        "position": { "x": 500, "y": 400 },
+        "icon": "data-ingestion",
+        "color": "#5c2d91",
+        "components": [
+          {
+            "name": "Native Connectors",
+            "type": "Built-in Azure connectors",
+            "protocols": ["REST API", "Event Hubs", "Diagnostic Settings"],
+            "advantages": ["No additional infrastructure", "Real-time ingestion", "Managed by Microsoft"]
+          },
+          {
+            "name": "Data Collection Rules",
+            "type": "Configuration for custom log collection",
+            "capabilities": ["Log filtering", "Data transformation", "Routing rules"],
+            "advantages": ["Cost optimization", "Data quality", "Compliance"]
+          },
+          {
+            "name": "Azure Monitor Agent",
+            "type": "Modern agent for log collection",
+            "platforms": ["Windows", "Linux"],
+            "advantages": ["Centralized configuration", "Better performance", "Multiple destinations"]
+          },
+          {
+            "name": "CEF/Syslog Forwarders",
+            "type": "Linux-based log collectors",
+            "protocols": ["UDP/TCP Syslog", "CEF over Syslog"],
+            "advantages": ["Third-party device support", "Protocol flexibility", "Local buffering"]
+          }
+        ]
+      },
+      "storageLayer": {
+        "name": "Data Storage & Retention",
+        "position": { "x": 900, "y": 200 },
+        "icon": "database",
+        "color": "#0078d4",
+        "tiers": [
+          {
+            "name": "Hot Tier (Workspace)",
+            "type": "Log Analytics Workspace",
+            "retention": "90-730 days",
+            "performance": "Optimized for queries",
+            "cost": "$$$ per GB",
+            "useCases": ["Active investigations", "Real-time monitoring", "Dashboards"]
+          },
+          {
+            "name": "Warm Tier (Archive)",
+            "type": "Workspace Archive",
+            "retention": "730+ days",
+            "performance": "Slower query performance",
+            "cost": "$$ per GB",
+            "useCases": ["Historical analysis", "Compliance queries", "Long-term investigations"]
+          },
+          {
+            "name": "Cold Tier (Storage)",
+            "type": "Azure Blob Storage",
+            "retention": "Years",
+            "performance": "Export/import required",
+            "cost": "$ per GB", 
+            "useCases": ["Regulatory compliance", "Audit trails", "Data archival"]
+          }
+        ]
+      },
+      "analyticsEngine": {
+        "name": "Analytics & Detection Engine",
+        "position": { "x": 900, "y": 600 },
+        "icon": "analytics",
+        "color": "#ca5010",
+        "engines": [
+          {
+            "name": "KQL Query Engine",
+            "type": "Kusto Query Language processor",
+            "capabilities": ["Real-time queries", "Historical analysis", "Statistical functions"],
+            "performance": "Sub-second for optimized queries"
+          },
+          {
+            "name": "Analytics Rules Engine", 
+            "type": "Rule-based detection system",
+            "ruleTypes": ["Scheduled", "Near Real-time", "Anomaly", "Fusion"],
+            "output": "Security alerts and incidents"
+          },
+          {
+            "name": "Machine Learning Engine",
+            "type": "AI-powered threat detection",
+            "algorithms": ["Anomaly detection", "User behavior analytics", "Threat intelligence"],
+            "advantages": ["Reduced false positives", "Advanced threat detection", "Behavioral analysis"]
+          }
+        ]
+      },
+      "outputLayer": {
+        "name": "Outputs & Actions",
+        "position": { "x": 1300, "y": 400 },
+        "icon": "output",
+        "color": "#107c10",
+        "outputs": [
+          {
+            "name": "Security Incidents",
+            "type": "Correlated security alerts",
+            "properties": ["Severity", "Classification", "Evidence", "Timeline"],
+            "lifecycle": ["New", "Active", "Resolved", "Closed"]
+          },
+          {
+            "name": "Dashboards & Reports",
+            "type": "Interactive visualizations",
+            "formats": ["Workbooks", "Power BI", "Custom dashboards"],
+            "audiences": ["SOC analysts", "Management", "Compliance teams"]
+          },
+          {
+            "name": "Automated Responses",
+            "type": "Logic Apps playbooks",
+            "actions": ["User isolation", "Device quarantine", "Ticket creation", "Notifications"],
+            "triggers": ["Incident creation", "Alert severity", "Custom conditions"]
+          },
+          {
+            "name": "API Exports",
+            "type": "Programmatic data access",
+            "protocols": ["REST API", "Graph API", "PowerShell"],
+            "useCases": ["SOAR integration", "Custom applications", "Reporting tools"]
+          }
+        ]
+      }
+    },
+    "dataFlows": [
+      {
+        "id": "azure-to-workspace",
+        "from": "dataSources.azure",
+        "to": "storageLayer",
+        "via": "ingestionLayer.Native Connectors",
+        "protocol": "HTTPS REST API",
+        "encryption": "TLS 1.2",
+        "authentication": "Managed Identity",
+        "volume": "Variable (GB-TB/day)",
+        "latency": "5-15 minutes",
+        "reliability": "99.9%+"
+      },
+      {
+        "id": "office365-to-workspace", 
+        "from": "dataSources.office365",
+        "to": "storageLayer",
+        "via": "ingestionLayer.Native Connectors",
+        "protocol": "Office 365 Management API",
+        "encryption": "TLS 1.2",
+        "authentication": "Azure AD App Registration", 
+        "volume": "High (GB/day)",
+        "latency": "5-30 minutes",
+        "reliability": "99.9%+"
+      },
+      {
+        "id": "multicloud-to-workspace",
+        "from": "dataSources.multiCloud",
+        "to": "storageLayer", 
+        "via": "ingestionLayer.Native Connectors",
+        "protocol": "HTTPS REST API",
+        "encryption": "TLS 1.2",
+        "authentication": "Cross-account roles/Service accounts",
+        "volume": "Medium-High (GB/day)",
+        "latency": "10-30 minutes", 
+        "reliability": "99.9%"
+      },
+      {
+        "id": "onprem-to-workspace",
+        "from": "dataSources.onPremises",
+        "to": "storageLayer",
+        "via": ["ingestionLayer.Azure Monitor Agent", "ingestionLayer.CEF/Syslog Forwarders"],
+        "protocol": "HTTPS/Syslog",
+        "encryption": "TLS 1.2",
+        "authentication": "Workspace Key/Certificate",
+        "volume": "High (GB/day)",
+        "latency": "1-10 minutes",
+        "reliability": "99.9%"
+      },
+      {
+        "id": "workspace-to-analytics",
+        "from": "storageLayer",
+        "to": "analyticsEngine",
+        "protocol": "Internal KQL API",
+        "frequency": "Real-time + Scheduled",
+        "processing": ["Rule evaluation", "Anomaly detection", "Correlation"],
+        "output": "Alerts and Incidents"
+      },
+      {
+        "id": "analytics-to-outputs",
+        "from": "analyticsEngine", 
+        "to": "outputLayer",
+        "triggers": ["Threshold breaches", "Pattern matches", "Anomalies"],
+        "actions": ["Incident creation", "Notification", "Automation"],
+        "latency": "Seconds to minutes"
+      },
+      {
+        "id": "workspace-to-archive",
+        "from": "storageLayer.Hot Tier",
+        "to": "storageLayer.Warm Tier",
+        "trigger": "Age-based (90+ days)",
+        "method": "Automatic archival",
+        "costSaving": "80% reduction"
+      },
+      {
+        "id": "workspace-to-storage",
+        "from": "storageLayer",
+        "to": "storageLayer.Cold Tier",
+        "method": "Data Export Rules",
+        "frequency": "Near real-time",
+        "format": "JSON/Parquet",
+        "retention": "Unlimited"
+      }
+    ],
+    "securityControls": {
+      "encryption": {
+        "inTransit": {
+          "protocol": "TLS 1.2+",
+          "cipherSuites": "AES-256, ECDHE",
+          "certificateValidation": "Required"
+        },
+        "atRest": {
+          "algorithm": "AES-256",
+          "keyManagement": "Microsoft-managed (default) or Customer-managed",
+          "scope": "All stored data"
+        }
+      },
+      "authentication": {
+        "azureAD": "Primary identity provider",
+        "managedIdentity": "Service-to-service authentication", 
+        "certificates": "On-premises agent authentication",
+        "apiKeys": "Legacy connector authentication (being deprecated)"
+      },
+      "authorization": {
+        "rbac": "Role-based access control",
+        "resourcePermissions": "Granular resource-level access",
+        "customRoles": "Organization-specific role definitions",
+        "conditionalAccess": "Location and device-based access controls"
+      },
+      "networkSecurity": {
+        "publicEndpoints": "Internet-accessible with firewall rules",
+        "privateEndpoints": "VNet-integrated private connectivity",
+        "serviceEndpoints": "Azure backbone routing",
+        "ipFiltering": "Source IP allowlisting"
+      }
+    },
+    "performanceOptimization": {
+      "ingestion": {
+        "batching": "Events batched for efficiency",
+        "compression": "Gzip compression for transport",
+        "deduplication": "Duplicate event filtering",
+        "throttling": "Rate limiting for protection"
+      },
+      "storage": {
+        "indexing": "Automatic column indexing",
+        "partitioning": "Time-based data partitioning", 
+        "compression": "Column-store compression",
+        "caching": "Query result caching"
+      },
+      "queries": {
+        "optimization": "Query plan optimization",
+        "parallelization": "Multi-threaded execution",
+        "materialization": "Pre-computed views",
+        "timeFiltering": "Early time range filtering"
+      }
+    },
+    "monitoring": {
+      "dataFlow": [
+        "Ingestion volume tracking",
+        "Latency monitoring",
+        "Error rate alerting",
+        "Throughput analysis"
+      ],
+      "performance": [
+        "Query execution time",
+        "Storage utilization", 
+        "CPU and memory usage",
+        "Network bandwidth"
+      ],
+      "costs": [
+        "Ingestion costs per GB",
+        "Storage costs per GB",
+        "Query costs per operation",
+        "Total monthly spend"
+      ],
+      "security": [
+        "Failed authentication attempts",
+        "Unauthorized access attempts",
+        "Data exfiltration detection",
+        "Configuration changes"
+      ]
+    }
+  }
+}

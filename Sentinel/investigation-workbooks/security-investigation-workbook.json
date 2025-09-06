@@ -1,0 +1,432 @@
+{
+  "version": "Notebook/1.0",
+  "items": [
+    {
+      "type": 1,
+      "content": {
+        "json": "# Security Investigation Dashboard\n## Comprehensive Security Analytics and Threat Hunting Platform\n\nThis workbook provides enterprise-grade security investigation capabilities with advanced analytics, machine learning insights, and threat intelligence correlation. Use this dashboard to investigate security incidents, conduct threat hunting, and analyze security posture across your Azure environment.\n\n---"
+      },
+      "name": "title"
+    },
+    {
+      "type": 9,
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "parameters": [
+          {
+            "id": "timeRange",
+            "version": "KqlParameterItem/1.0", 
+            "name": "TimeRange",
+            "label": "Time Range",
+            "type": 4,
+            "isRequired": true,
+            "value": {
+              "durationMs": 86400000
+            },
+            "typeSettings": {
+              "selectableValues": [
+                {
+                  "durationMs": 3600000,
+                  "displayName": "Last hour"
+                },
+                {
+                  "durationMs": 14400000,
+                  "displayName": "Last 4 hours"
+                },
+                {
+                  "durationMs": 43200000,
+                  "displayName": "Last 12 hours"
+                },
+                {
+                  "durationMs": 86400000,
+                  "displayName": "Last 24 hours"
+                },
+                {
+                  "durationMs": 259200000,
+                  "displayName": "Last 3 days"
+                },
+                {
+                  "durationMs": 604800000,
+                  "displayName": "Last 7 days"
+                }
+              ]
+            }
+          },
+          {
+            "id": "investigationTarget",
+            "version": "KqlParameterItem/1.0",
+            "name": "InvestigationTarget",
+            "label": "Investigation Target",
+            "type": 2,
+            "isRequired": false,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "query": "union SigninLogs, AzureActivity, SecurityEvents, OfficeActivity\n| where TimeGenerated {TimeRange}\n| extend Target = coalesce(UserPrincipalName, Caller, Account, UserId)\n| where isnotempty(Target)\n| distinct Target\n| order by Target asc",
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "showDefault": false
+            },
+            "queryType": 0,
+            "resourceType": "microsoft.operationalinsights/workspaces"
+          },
+          {
+            "id": "severityFilter",
+            "version": "KqlParameterItem/1.0",
+            "name": "SeverityFilter",
+            "label": "Severity Filter",
+            "type": 2,
+            "isRequired": false,
+            "multiSelect": true,
+            "quote": "'",
+            "delimiter": ",",
+            "value": ["High", "Critical"],
+            "typeSettings": {
+              "additionalResourceOptions": [],
+              "staticOptions": [
+                {"value": "Critical", "label": "Critical"},
+                {"value": "High", "label": "High"},
+                {"value": "Medium", "label": "Medium"},
+                {"value": "Low", "label": "Low"},
+                {"value": "Informational", "label": "Informational"}
+              ]
+            }
+          }
+        ],
+        "style": "pills",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces"
+      },
+      "name": "parameters"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 📊 Security Metrics Overview\n\nHigh-level security metrics and KPIs for the selected time range."
+      },
+      "name": "metricsHeader"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let timeRange = {TimeRange};\nlet targetUsers = dynamic([{InvestigationTarget:value}]);\nlet severityFilter = dynamic([{SeverityFilter:value}]);\n// Security Incidents Summary\nlet incidentSummary = \n    SecurityIncident\n    | where TimeGenerated {TimeRange}\n    | where array_length(severityFilter) == 0 or Severity in (severityFilter)\n    | summarize \n        TotalIncidents = count(),\n        CriticalIncidents = countif(Severity == \"Critical\"),\n        HighIncidents = countif(Severity == \"High\"),\n        OpenIncidents = countif(Status == \"New\" or Status == \"Active\"),\n        ClosedIncidents = countif(Status == \"Closed\");\n// Authentication Analysis\nlet authSummary = \n    SigninLogs\n    | where TimeGenerated {TimeRange}\n    | where array_length(targetUsers) == 0 or UserPrincipalName in (targetUsers)\n    | summarize \n        TotalSignIns = count(),\n        FailedSignIns = countif(ResultType != \"0\"),\n        SuccessfulSignIns = countif(ResultType == \"0\"),\n        UniqueUsers = dcount(UserPrincipalName),\n        UniqueIPs = dcount(IPAddress),\n        RiskySignIns = countif(RiskLevelDuringSignIn in (\"high\", \"medium\"));\n// Network Activity Summary  \nlet networkSummary = \n    CommonSecurityLog\n    | where TimeGenerated {TimeRange}\n    | summarize \n        TotalNetworkEvents = count(),\n        BlockedConnections = countif(DeviceAction == \"Deny\" or DeviceAction == \"Block\"),\n        AllowedConnections = countif(DeviceAction == \"Allow\"),\n        UniqueSourceIPs = dcount(SourceIP),\n        UniqueDestinationIPs = dcount(DestinationIP);\n// Combine all metrics\nprint \n    Metric = \"Security Overview\",\n    TotalIncidents = toint(incidentSummary.TotalIncidents),\n    CriticalIncidents = toint(incidentSummary.CriticalIncidents),\n    OpenIncidents = toint(incidentSummary.OpenIncidents),\n    TotalSignIns = toint(authSummary.TotalSignIns),\n    FailedSignIns = toint(authSummary.FailedSignIns),\n    RiskySignIns = toint(authSummary.RiskySignIns),\n    UniqueUsers = toint(authSummary.UniqueUsers),\n    NetworkEvents = toint(networkSummary.TotalNetworkEvents),\n    BlockedConnections = toint(networkSummary.BlockedConnections)",
+        "size": 4,
+        "title": "Security Metrics Summary",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "tiles",
+        "tileSettings": {
+          "titleContent": {
+            "columnMatch": "Metric",
+            "formatter": 1
+          },
+          "leftContent": {
+            "columnMatch": "TotalIncidents",
+            "formatter": 12,
+            "formatOptions": {
+              "palette": "auto"
+            },
+            "numberFormat": {
+              "unit": 17,
+              "options": {
+                "maximumSignificantDigits": 3,
+                "maximumFractionDigits": 2
+              }
+            }
+          },
+          "secondaryContent": {
+            "columnMatch": "CriticalIncidents",
+            "formatter": 1
+          },
+          "showBorder": false
+        }
+      },
+      "name": "securityMetrics"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 🔍 Threat Investigation Timeline\n\nComprehensive timeline of security events across all data sources."
+      },
+      "name": "timelineHeader"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let timeRange = {TimeRange};\nlet targetUsers = dynamic([{InvestigationTarget:value}]);\nlet severityFilter = dynamic([{SeverityFilter:value}]);\n// Comprehensive security timeline\nunion \n    (\n        // Security Incidents\n        SecurityIncident\n        | where TimeGenerated {TimeRange}\n        | where array_length(severityFilter) == 0 or Severity in (severityFilter)\n        | extend \n            EventType = \"Security Incident\",\n            EventDetails = strcat(\"[Incident] \", Title, \" - \", Severity),\n            UserIdentity = \"\",\n            SourceSystem = \"Sentinel\",\n            RiskLevel = case(\n                Severity == \"Critical\", 100,\n                Severity == \"High\", 80,\n                Severity == \"Medium\", 60,\n                Severity == \"Low\", 40,\n                20\n            )\n        | project TimeGenerated, EventType, EventDetails, UserIdentity, SourceSystem, RiskLevel\n    ),\n    (\n        // Authentication Events\n        SigninLogs\n        | where TimeGenerated {TimeRange}\n        | where array_length(targetUsers) == 0 or UserPrincipalName in (targetUsers)\n        | where ResultType != \"0\" or RiskLevelDuringSignIn in (\"high\", \"medium\")\n        | extend \n            EventType = case(\n                ResultType != \"0\", \"Auth Failure\",\n                RiskLevelDuringSignIn == \"high\", \"High Risk Auth\",\n                \"Medium Risk Auth\"\n            ),\n            EventDetails = strcat(\n                \"[Auth] User: \", UserPrincipalName,\n                \", App: \", AppDisplayName,\n                \", IP: \", IPAddress,\n                \", Location: \", coalesce(LocationDetails.city, \"Unknown\"),\n                case(ResultType != \"0\", strcat(\", Failed: \", ResultDescription), \"\")\n            ),\n            UserIdentity = UserPrincipalName,\n            SourceSystem = \"Azure AD\",\n            RiskLevel = case(\n                ResultType != \"0\" and RiskLevelDuringSignIn == \"high\", 90,\n                ResultType != \"0\", 70,\n                RiskLevelDuringSignIn == \"high\", 80,\n                50\n            )\n        | project TimeGenerated, EventType, EventDetails, UserIdentity, SourceSystem, RiskLevel\n    ),\n    (\n        // Azure Activity\n        AzureActivity\n        | where TimeGenerated {TimeRange}\n        | where array_length(targetUsers) == 0 or Caller in (targetUsers)\n        | where ActivityStatusValue == \"Failure\" or OperationNameValue has_any (\"delete\", \"create\", \"write\")\n        | extend \n            EventType = case(\n                ActivityStatusValue == \"Failure\", \"Azure Activity Failure\",\n                OperationNameValue contains \"delete\", \"Resource Deletion\",\n                \"Azure Activity\"\n            ),\n            EventDetails = strcat(\n                \"[Azure] Operation: \", OperationNameValue,\n                \", Resource: \", coalesce(ResourceGroup, \"Unknown\"),\n                \", Status: \", ActivityStatusValue,\n                \", Caller: \", Caller\n            ),\n            UserIdentity = Caller,\n            SourceSystem = \"Azure Activity\",\n            RiskLevel = case(\n                ActivityStatusValue == \"Failure\" and OperationNameValue contains \"delete\", 85,\n                ActivityStatusValue == \"Failure\", 60,\n                OperationNameValue contains \"delete\", 75,\n                40\n            )\n        | project TimeGenerated, EventType, EventDetails, UserIdentity, SourceSystem, RiskLevel\n    ),\n    (\n        // Office 365 Activities\n        OfficeActivity\n        | where TimeGenerated {TimeRange}\n        | where array_length(targetUsers) == 0 or UserId in (targetUsers)\n        | where Operation in (\"FileDownloaded\", \"FileSyncDownloaded\", \"SharingSet\", \"MailboxLogin\")\n           or (Operation == \"Send\" and AttachmentCount > 0)\n        | extend \n            EventType = case(\n                Operation in (\"FileDownloaded\", \"FileSyncDownloaded\"), \"File Download\",\n                Operation == \"SharingSet\", \"File Sharing\",\n                Operation == \"Send\" and AttachmentCount > 0, \"Email with Attachments\",\n                \"Office Activity\"\n            ),\n            EventDetails = strcat(\n                \"[O365] Operation: \", Operation,\n                \", User: \", UserId,\n                case(isnotempty(SourceFileName), strcat(\", File: \", SourceFileName), \"\"),\n                case(isnotempty(Recipients), strcat(\", Recipients: \", Recipients), \"\"),\n                case(AttachmentCount > 0, strcat(\", Attachments: \", AttachmentCount), \"\")\n            ),\n            UserIdentity = UserId,\n            SourceSystem = \"Office 365\",\n            RiskLevel = case(\n                Operation == \"SharingSet\" and isnotempty(TargetUserOrGroupName), 70,\n                Operation in (\"FileDownloaded\", \"FileSyncDownloaded\") and toint(Size) > 50000000, 65, // 50MB+\n                Operation == \"Send\" and AttachmentCount > 5, 60,\n                45\n            )\n        | project TimeGenerated, EventType, EventDetails, UserIdentity, SourceSystem, RiskLevel\n    ),\n    (\n        // Security Events (Windows)\n        SecurityEvent\n        | where TimeGenerated {TimeRange}\n        | where EventID in (4625, 4624, 4648, 4720, 4726, 4728, 4732, 4756) // Auth failures/success, logon, account management\n        | where array_length(targetUsers) == 0 or TargetUserName in (targetUsers) or Account in (targetUsers)\n        | extend \n            EventType = case(\n                EventID == 4625, \"Windows Auth Failure\",\n                EventID == 4624, \"Windows Logon Success\", \n                EventID == 4648, \"Explicit Logon\",\n                EventID in (4720, 4726), \"Account Management\",\n                EventID in (4728, 4732, 4756), \"Group Management\",\n                \"Security Event\"\n            ),\n            EventDetails = strcat(\n                \"[WinSec] Event: \", EventID,\n                \", Computer: \", Computer,\n                \", User: \", coalesce(TargetUserName, Account),\n                case(isnotempty(IpAddress), strcat(\", IP: \", IpAddress), \"\"),\n                case(isnotempty(LogonType), strcat(\", LogonType: \", LogonType), \"\")\n            ),\n            UserIdentity = coalesce(TargetUserName, Account),\n            SourceSystem = \"Windows Security\",\n            RiskLevel = case(\n                EventID == 4625 and TargetUserName == \"Administrator\", 85,\n                EventID == 4625, 65,\n                EventID in (4720, 4726, 4728, 4732, 4756), 70,\n                EventID == 4648, 55,\n                40\n            )\n        | project TimeGenerated, EventType, EventDetails, UserIdentity, SourceSystem, RiskLevel\n    )\n| order by TimeGenerated desc\n| extend \n    RiskCategory = case(\n        RiskLevel >= 80, \"🔴 Critical\",\n        RiskLevel >= 60, \"🟠 High\",\n        RiskLevel >= 40, \"🟡 Medium\",\n        \"🟢 Low\"\n    )\n| take 1000",
+        "size": 0,
+        "title": "Security Events Timeline",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "TimeGenerated",
+              "formatter": 6,
+              "dateFormat": {
+                "showUtcTime": false,
+                "formatName": "shortDateTimePattern"
+              }
+            },
+            {
+              "columnMatch": "EventType",
+              "formatter": 1,
+              "formatOptions": {
+                "linkTarget": null,
+                "showIcon": true
+              }
+            },
+            {
+              "columnMatch": "RiskLevel",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 100,
+                "palette": "redGreen"
+              }
+            },
+            {
+              "columnMatch": "RiskCategory",
+              "formatter": 1
+            }
+          ],
+          "filter": true,
+          "sortBy": [
+            {
+              "itemKey": "TimeGenerated",
+              "sortOrder": 2
+            }
+          ]
+        },
+        "sortBy": [
+          {
+            "itemKey": "TimeGenerated",
+            "sortOrder": 2
+          }
+        ]
+      },
+      "name": "securityTimeline"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 👤 User Behavior Analysis\n\nAnalyze user behavior patterns and detect anomalies."
+      },
+      "name": "userBehaviorHeader"  
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let timeRange = {TimeRange};\nlet targetUsers = dynamic([{InvestigationTarget:value}]);\n// User behavior analysis with risk scoring\nlet userBehavior = \n    SigninLogs\n    | where TimeGenerated {TimeRange}\n    | where array_length(targetUsers) == 0 or UserPrincipalName in (targetUsers)\n    | extend \n        Location = strcat(coalesce(LocationDetails.countryOrRegion, \"Unknown\"), \"-\", coalesce(LocationDetails.city, \"Unknown\")),\n        DeviceInfo = strcat(coalesce(DeviceDetail.operatingSystem, \"Unknown\"), \" - \", coalesce(DeviceDetail.browser, \"Unknown\")),\n        IsFailure = ResultType != \"0\",\n        IsRisky = RiskLevelDuringSignIn in (\"high\", \"medium\"),\n        IsNewDevice = isempty(DeviceDetail.deviceId) or not(DeviceDetail.isCompliant),\n        IsAfterHours = hourofday(TimeGenerated) < 6 or hourofday(TimeGenerated) > 20\n    | summarize \n        TotalSignIns = count(),\n        FailedSignIns = countif(IsFailure),\n        RiskySignIns = countif(IsRisky),\n        UniqueIPs = dcount(IPAddress),\n        UniqueLocations = dcount(Location),\n        UniqueDevices = dcount(DeviceInfo),\n        UniqueApps = dcount(AppDisplayName),\n        AfterHoursSignIns = countif(IsAfterHours),\n        NewDeviceSignIns = countif(IsNewDevice),\n        \n        // Evidence collection\n        IPAddresses = make_set(IPAddress, 10),\n        Locations = make_set(Location, 10),\n        Applications = make_set(AppDisplayName, 10),\n        FailureReasons = make_set_if(ResultDescription, IsFailure, 5),\n        \n        // Time analysis\n        FirstSignIn = min(TimeGenerated),\n        LastSignIn = max(TimeGenerated)\n        \n        by UserPrincipalName\n    | extend \n        FailureRate = round((FailedSignIns * 100.0) / TotalSignIns, 1),\n        RiskyRate = round((RiskySignIns * 100.0) / TotalSignIns, 1),\n        \n        // Risk scoring algorithm\n        BehaviorRiskScore = \n            (case(FailureRate > 50, 30, FailureRate > 25, 20, FailureRate > 10, 10, 0)) +\n            (case(RiskyRate > 25, 25, RiskyRate > 10, 15, RiskyRate > 0, 10, 0)) +\n            (case(UniqueIPs > 10, 20, UniqueIPs > 5, 15, UniqueIPs > 2, 10, 0)) +\n            (case(UniqueLocations > 5, 25, UniqueLocations > 2, 15, UniqueLocations > 1, 10, 0)) +\n            (case(AfterHoursSignIns > (TotalSignIns * 0.5), 15, AfterHoursSignIns > 0, 10, 0)) +\n            (case(NewDeviceSignIns > (TotalSignIns * 0.3), 10, NewDeviceSignIns > 0, 5, 0)),\n            \n        BehaviorPattern = case(\n            FailureRate > 50 and UniqueIPs > 5, \"🚨 Brute Force Pattern\",\n            RiskyRate > 25 and UniqueLocations > 3, \"🌍 Impossible Travel\", \n            AfterHoursSignIns > (TotalSignIns * 0.8), \"🌙 After-Hours Abuse\",\n            UniqueIPs > 10 and TotalSignIns > 100, \"🔄 Distributed Access\",\n            NewDeviceSignIns > 5, \"📱 Multiple New Devices\",\n            \"✅ Normal Behavior\"\n        ),\n        \n        RiskCategory = case(\n            BehaviorRiskScore >= 70, \"🔴 Critical Risk\",\n            BehaviorRiskScore >= 50, \"🟠 High Risk\",\n            BehaviorRiskScore >= 30, \"🟡 Medium Risk\",\n            \"🟢 Low Risk\"\n        )\n    | order by BehaviorRiskScore desc;\n// Combine with additional context\nuserBehavior\n| join kind=leftouter (\n    AzureActivity\n    | where TimeGenerated {TimeRange}\n    | where array_length(targetUsers) == 0 or Caller in (targetUsers)\n    | summarize \n        AzureActivities = count(),\n        FailedAzureActivities = countif(ActivityStatusValue == \"Failure\"),\n        ResourceGroups = dcount(ResourceGroup),\n        Operations = make_set(OperationNameValue, 10)\n        by UserPrincipalName = Caller\n) on UserPrincipalName\n| join kind=leftouter (\n    OfficeActivity \n    | where TimeGenerated {TimeRange}\n    | where array_length(targetUsers) == 0 or UserId in (targetUsers)\n    | summarize \n        Office365Activities = count(),\n        FileDownloads = countif(Operation in (\"FileDownloaded\", \"FileSyncDownloaded\")),\n        ExternalSharing = countif(Operation == \"SharingSet\" and isnotempty(TargetUserOrGroupName))\n        by UserPrincipalName = UserId\n) on UserPrincipalName\n| extend \n    AzureActivities = coalesce(AzureActivities, 0),\n    Office365Activities = coalesce(Office365Activities, 0),\n    FileDownloads = coalesce(FileDownloads, 0),\n    ExternalSharing = coalesce(ExternalSharing, 0)\n| project \n    UserPrincipalName,\n    BehaviorPattern,\n    RiskCategory,\n    BehaviorRiskScore,\n    TotalSignIns,\n    FailureRate,\n    RiskyRate,\n    UniqueIPs,\n    UniqueLocations,\n    AfterHoursSignIns,\n    AzureActivities,\n    Office365Activities,\n    FileDownloads,\n    ExternalSharing,\n    IPAddresses,\n    Locations,\n    Applications,\n    FirstSignIn,\n    LastSignIn",
+        "size": 0,
+        "title": "User Behavior Analysis",
+        "timeContextFromParameter": "TimeRange", 
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "BehaviorRiskScore",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 100,
+                "palette": "redGreen"
+              }
+            },
+            {
+              "columnMatch": "FailureRate",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 1,
+                "options": {
+                  "style": "decimal",
+                  "maximumFractionDigits": 1
+                }
+              }
+            },
+            {
+              "columnMatch": "FirstSignIn",
+              "formatter": 6
+            },
+            {
+              "columnMatch": "LastSignIn", 
+              "formatter": 6
+            }
+          ],
+          "filter": true,
+          "sortBy": [
+            {
+              "itemKey": "BehaviorRiskScore",
+              "sortOrder": 2
+            }
+          ]
+        },
+        "sortBy": [
+          {
+            "itemKey": "BehaviorRiskScore",
+            "sortOrder": 2
+          }
+        ]
+      },
+      "name": "userBehaviorAnalysis"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 🌐 Network Traffic Analysis\n\nAnalyze network traffic patterns and identify suspicious connections."
+      },
+      "name": "networkHeader"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let timeRange = {TimeRange};\n// Network traffic analysis with threat intelligence correlation\nlet networkTraffic = \n    CommonSecurityLog\n    | where TimeGenerated {TimeRange}\n    | where isnotempty(SourceIP) and isnotempty(DestinationIP)\n    | extend \n        IsInternalSource = SourceIP matches regex @\"^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)\",\n        IsInternalDestination = DestinationIP matches regex @\"^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)\",\n        IsExternalTraffic = not(SourceIP matches regex @\"^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)\") or \n                           not(DestinationIP matches regex @\"^(10\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|192\\.168\\.)\"),\n        IsBlocked = DeviceAction in (\"Deny\", \"Block\", \"Drop\"),\n        IsAllowed = DeviceAction in (\"Allow\", \"Accept\"),\n        \n        // Port risk classification\n        PortRisk = case(\n            DestinationPort in (22, 3389, 5900, 23), \"High - Remote Access\",\n            DestinationPort in (21, 69, 135, 139, 445), \"High - File Transfer/SMB\", \n            DestinationPort in (1433, 3306, 5432, 1521), \"High - Database\",\n            DestinationPort in (80, 443, 8080, 8443), \"Medium - Web Traffic\",\n            DestinationPort in (25, 587, 993, 995), \"Medium - Email\",\n            DestinationPort in (53, 123), \"Low - DNS/NTP\",\n            \"Medium - Other\"\n        ),\n        \n        // Protocol analysis\n        ProtocolRisk = case(\n            Protocol == \"TCP\" and DestinationPort in (22, 23, 3389), \"High\",\n            Protocol == \"UDP\" and DestinationPort < 1024, \"Medium\",\n            Protocol == \"ICMP\", \"Low\",\n            \"Medium\"\n        )\n    | summarize \n        TotalConnections = count(),\n        BlockedConnections = countif(IsBlocked),\n        AllowedConnections = countif(IsAllowed),\n        ExternalConnections = countif(IsExternalTraffic),\n        HighRiskPortConnections = countif(PortRisk startswith \"High\"),\n        UniqueSources = dcount(SourceIP),\n        UniqueDestinations = dcount(DestinationIP),\n        \n        // Data transfer analysis\n        TotalBytesIn = sum(coalesce(ReceivedBytes, 0)),\n        TotalBytesOut = sum(coalesce(SentBytes, 0)),\n        \n        // Evidence collection\n        TopSources = make_list(SourceIP, 20),\n        TopDestinations = make_list(DestinationIP, 20),\n        BlockedIPs = make_set_if(DestinationIP, IsBlocked, 50),\n        HighRiskPorts = make_set_if(DestinationPort, PortRisk startswith \"High\", 20),\n        \n        FirstConnection = min(TimeGenerated),\n        LastConnection = max(TimeGenerated)\n        \n        by bin(TimeGenerated, 1h), DeviceVendor\n    | extend \n        BlockedRate = round((BlockedConnections * 100.0) / TotalConnections, 1),\n        ExternalRate = round((ExternalConnections * 100.0) / TotalConnections, 1),\n        HighRiskRate = round((HighRiskPortConnections * 100.0) / TotalConnections, 1),\n        \n        // Network risk scoring\n        NetworkRiskScore = \n            (case(BlockedRate > 50, 30, BlockedRate > 25, 20, BlockedRate > 10, 10, 0)) +\n            (case(HighRiskRate > 25, 25, HighRiskRate > 10, 15, HighRiskRate > 0, 10, 0)) +\n            (case(ExternalRate > 75, 20, ExternalRate > 50, 15, ExternalRate > 25, 10, 0)) +\n            (case(TotalBytesOut > 1000000000, 15, TotalBytesOut > 100000000, 10, 0)), // GB thresholds\n            \n        NetworkPattern = case(\n            BlockedRate > 50 and HighRiskRate > 25, \"🚫 High Block Rate with Risk Ports\",\n            ExternalRate > 75 and TotalBytesOut > 500000000, \"📤 High External Data Transfer\",\n            HighRiskRate > 50, \"⚠️ High Risk Port Usage\",\n            BlockedRate > 25, \"🛡️ Elevated Blocking Activity\",\n            \"✅ Normal Network Activity\"\n        ),\n        \n        RiskCategory = case(\n            NetworkRiskScore >= 60, \"🔴 Critical Risk\",\n            NetworkRiskScore >= 40, \"🟠 High Risk\", \n            NetworkRiskScore >= 25, \"🟡 Medium Risk\",\n            \"🟢 Low Risk\"\n        ),\n        \n        // Convert bytes to MB for display\n        TotalMBIn = round(TotalBytesIn / (1024.0 * 1024.0), 2),\n        TotalMBOut = round(TotalBytesOut / (1024.0 * 1024.0), 2)\n    | order by NetworkRiskScore desc;\nnetworkTraffic\n| project \n    TimeGenerated,\n    DeviceVendor,\n    NetworkPattern,\n    RiskCategory,\n    NetworkRiskScore,\n    TotalConnections,\n    BlockedRate,\n    ExternalRate,\n    HighRiskRate,\n    TotalMBIn,\n    TotalMBOut,\n    UniqueSources,\n    UniqueDestinations,\n    BlockedIPs,\n    HighRiskPorts",
+        "size": 0,
+        "title": "Network Traffic Analysis",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "TimeGenerated",
+              "formatter": 6
+            },
+            {
+              "columnMatch": "NetworkRiskScore", 
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 100,
+                "palette": "redGreen"
+              }
+            },
+            {
+              "columnMatch": "BlockedRate",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 1,
+                "options": {
+                  "maximumFractionDigits": 1
+                }
+              }
+            },
+            {
+              "columnMatch": "ExternalRate",
+              "formatter": 0,
+              "numberFormat": {
+                "unit": 1,
+                "options": {
+                  "maximumFractionDigits": 1
+                }
+              }
+            }
+          ],
+          "filter": true,
+          "sortBy": [
+            {
+              "itemKey": "NetworkRiskScore",
+              "sortOrder": 2
+            }
+          ]
+        }
+      },
+      "name": "networkAnalysis"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 🎯 Threat Intelligence Correlation\n\nCorrelate security events with known threat intelligence indicators."
+      },
+      "name": "threatIntelHeader"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let timeRange = {TimeRange};\n// Threat Intelligence correlation across multiple data sources\nlet threatIntelData = \n    _GetWatchlist('threat-intelligence-iocs')\n    | extend \n        IOCValue = Value,\n        IOCType = IndicatorType,\n        ThreatType = ThreatType,\n        Confidence = Confidence,\n        IOCSource = Source\n    | project IOCValue, IOCType, ThreatType, Confidence, IOCSource;\n// Correlate with network traffic\nlet networkCorrelation = \n    CommonSecurityLog\n    | where TimeGenerated {TimeRange}\n    | join kind=inner threatIntelData on $left.SourceIP == $right.IOCValue or $left.DestinationIP == $right.IOCValue\n    | extend \n        MatchType = \"Network Traffic\",\n        MatchedIOC = IOCValue,\n        SourceData = strcat(\"Traffic from \", SourceIP, \" to \", DestinationIP, \":\", DestinationPort),\n        EventSeverity = case(\n            Confidence == \"High\" and ThreatType in (\"Malware\", \"Ransomware\"), \"Critical\",\n            Confidence == \"High\", \"High\", \n            \"Medium\"\n        )\n    | project TimeGenerated, MatchType, MatchedIOC, IOCType, ThreatType, Confidence, SourceData, EventSeverity;\n// Correlate with authentication logs\nlet authCorrelation = \n    SigninLogs\n    | where TimeGenerated {TimeRange}\n    | join kind=inner threatIntelData on $left.IPAddress == $right.IOCValue\n    | extend \n        MatchType = \"Authentication\",\n        MatchedIOC = IOCValue,\n        SourceData = strcat(\"Login attempt by \", UserPrincipalName, \" from \", IPAddress, \" to \", AppDisplayName),\n        EventSeverity = case(\n            ResultType != \"0\" and Confidence == \"High\", \"Critical\",\n            ResultType != \"0\", \"High\",\n            Confidence == \"High\", \"High\",\n            \"Medium\"\n        )\n    | project TimeGenerated, MatchType, MatchedIOC, IOCType, ThreatType, Confidence, SourceData, EventSeverity;\n// Correlate with DNS queries (if available)\nlet dnsCorrelation = \n    DnsEvents\n    | where TimeGenerated {TimeRange}\n    | join kind=inner threatIntelData on $left.Name == $right.IOCValue\n    | extend \n        MatchType = \"DNS Query\", \n        MatchedIOC = IOCValue,\n        SourceData = strcat(\"DNS query for \", Name, \" from \", ClientIP),\n        EventSeverity = case(\n            Confidence == \"High\" and ThreatType in (\"Malware\", \"Command and Control\"), \"Critical\",\n            Confidence == \"High\", \"High\",\n            \"Medium\"\n        )\n    | project TimeGenerated, MatchType, MatchedIOC, IOCType, ThreatType, Confidence, SourceData, EventSeverity;\n// Correlate with web traffic (if available)\nlet webCorrelation = \n    W3CIISLog\n    | where TimeGenerated {TimeRange}\n    | join kind=inner threatIntelData on $left.cIP == $right.IOCValue or $left.csUriStem == $right.IOCValue\n    | extend \n        MatchType = \"Web Traffic\",\n        MatchedIOC = IOCValue,\n        SourceData = strcat(\"Web request from \", cIP, \" to \", csUriStem, \" (\", scStatus, \")\"),\n        EventSeverity = case(\n            scStatus >= 200 and scStatus < 300 and Confidence == \"High\", \"Critical\",\n            Confidence == \"High\", \"High\",\n            \"Medium\"\n        )\n    | project TimeGenerated, MatchType, MatchedIOC, IOCType, ThreatType, Confidence, SourceData, EventSeverity;\n// Combine all correlations\nunion networkCorrelation, authCorrelation, dnsCorrelation, webCorrelation\n| extend \n    RiskScore = case(\n        EventSeverity == \"Critical\", 90,\n        EventSeverity == \"High\", 70,\n        EventSeverity == \"Medium\", 50,\n        30\n    ),\n    ThreatLevel = strcat(\n        case(\n            EventSeverity == \"Critical\", \"🚨\",\n            EventSeverity == \"High\", \"🔴\", \n            EventSeverity == \"Medium\", \"🟠\",\n            \"🟡\"\n        ),\n        \" \", EventSeverity\n    )\n| summarize \n    CorrelationCount = count(),\n    MaxRiskScore = max(RiskScore),\n    ThreatTypes = make_set(ThreatType),\n    MatchTypes = make_set(MatchType), \n    SourceDetails = make_list(SourceData, 10),\n    FirstSeen = min(TimeGenerated),\n    LastSeen = max(TimeGenerated)\n    by MatchedIOC, IOCType, ThreatLevel\n| extend \n    ThreatSummary = case(\n        CorrelationCount > 10, strcat(\"🚨 HIGH ACTIVITY: \", CorrelationCount, \" correlations detected\"),\n        CorrelationCount > 5, strcat(\"⚠️ MODERATE ACTIVITY: \", CorrelationCount, \" correlations detected\"),\n        strcat(\"ℹ️ Limited activity: \", CorrelationCount, \" correlation(s) detected\")\n    )\n| order by MaxRiskScore desc, CorrelationCount desc\n| project \n    MatchedIOC,\n    IOCType, \n    ThreatLevel,\n    ThreatSummary,\n    MaxRiskScore,\n    CorrelationCount,\n    ThreatTypes,\n    MatchTypes,\n    FirstSeen,\n    LastSeen,\n    SourceDetails",
+        "size": 0,\n        "title": "Threat Intelligence Correlations",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "MaxRiskScore",
+              "formatter": 8,
+              "formatOptions": {
+                "min": 0,
+                "max": 100,
+                "palette": "redGreen"
+              }
+            },
+            {
+              "columnMatch": "FirstSeen",
+              "formatter": 6
+            },
+            {
+              "columnMatch": "LastSeen",
+              "formatter": 6
+            }
+          ],
+          "filter": true,
+          "sortBy": [
+            {
+              "itemKey": "MaxRiskScore",
+              "sortOrder": 2
+            }
+          ]
+        }
+      },
+      "name": "threatIntelCorrelation"
+    },
+    {
+      "type": 1,
+      "content": {
+        "json": "## 📈 Investigation Summary\n\nKey findings and recommendations from the security investigation."
+      },
+      "name": "summaryHeader"
+    },
+    {
+      "type": 3,
+      "content": {
+        "version": "KqlItem/1.0",
+        "query": "let timeRange = {TimeRange};\nlet targetUsers = dynamic([{InvestigationTarget:value}]);\nlet severityFilter = dynamic([{SeverityFilter:value}]);\n// Investigation summary with key findings\nlet summary = \n    union \n    (\n        SecurityIncident\n        | where TimeGenerated {TimeRange}\n        | where array_length(severityFilter) == 0 or Severity in (severityFilter)\n        | summarize \n            Category = \"Security Incidents\",\n            TotalCount = count(),\n            CriticalCount = countif(Severity == \"Critical\"),\n            HighCount = countif(Severity == \"High\"),\n            KeyFindings = strcat(\n                \"Total incidents: \", count(), \n                \", Critical: \", countif(Severity == \"Critical\"),\n                \", High: \", countif(Severity == \"High\"),\n                \", Open: \", countif(Status in (\"New\", \"Active\"))\n            )\n    ),\n    (\n        SigninLogs\n        | where TimeGenerated {TimeRange}\n        | where array_length(targetUsers) == 0 or UserPrincipalName in (targetUsers)\n        | summarize \n            Category = \"Authentication Activity\",\n            TotalCount = count(),\n            CriticalCount = countif(RiskLevelDuringSignIn == \"high\"),\n            HighCount = countif(ResultType != \"0\" or RiskLevelDuringSignIn in (\"high\", \"medium\")),\n            KeyFindings = strcat(\n                \"Total sign-ins: \", count(),\n                \", Failed: \", countif(ResultType != \"0\"),\n                \", High risk: \", countif(RiskLevelDuringSignIn == \"high\"),\n                \", Unique users: \", dcount(UserPrincipalName),\n                \", Unique IPs: \", dcount(IPAddress)\n            )\n    ),\n    (\n        CommonSecurityLog\n        | where TimeGenerated {TimeRange}\n        | summarize \n            Category = \"Network Security\",\n            TotalCount = count(),\n            CriticalCount = countif(DeviceAction in (\"Deny\", \"Block\") and DestinationPort in (22, 3389, 445)),\n            HighCount = countif(DeviceAction in (\"Deny\", \"Block\")),\n            KeyFindings = strcat(\n                \"Total network events: \", count(),\n                \", Blocked: \", countif(DeviceAction in (\"Deny\", \"Block\")),\n                \", High-risk ports: \", countif(DestinationPort in (22, 3389, 445, 1433)),\n                \", Unique sources: \", dcount(SourceIP)\n            )\n    ),\n    (\n        OfficeActivity\n        | where TimeGenerated {TimeRange}\n        | where array_length(targetUsers) == 0 or UserId in (targetUsers)\n        | summarize \n            Category = \"Office 365 Activity\",\n            TotalCount = count(),\n            CriticalCount = countif(Operation == \"SharingSet\" and isnotempty(TargetUserOrGroupName)),\n            HighCount = countif(Operation in (\"FileDownloaded\", \"FileSyncDownloaded\", \"SharingSet\")),\n            KeyFindings = strcat(\n                \"Total O365 activities: \", count(),\n                \", File downloads: \", countif(Operation in (\"FileDownloaded\", \"FileSyncDownloaded\")),\n                \", External sharing: \", countif(Operation == \"SharingSet\"),\n                \", Unique users: \", dcount(UserId)\n            )\n    )\n    | extend \n        RiskLevel = case(\n            CriticalCount > 0, \"🔴 Critical\",\n            HighCount > 10, \"🟠 High\",\n            HighCount > 0, \"🟡 Medium\",\n            \"🟢 Low\"\n        ),\n        Priority = case(\n            CriticalCount > 0, 1,\n            HighCount > 10, 2,\n            HighCount > 0, 3,\n            4\n        )\n    | order by Priority asc;\n// Generate recommendations\nlet recommendations = \n    summary\n    | extend \n        Recommendations = case(\n            Category == \"Security Incidents\" and CriticalCount > 0, \n            \"IMMEDIATE ACTION: Review and respond to critical security incidents. Ensure incident response procedures are followed.\",\n            \n            Category == \"Authentication Activity\" and CriticalCount > 0,\n            \"HIGH PRIORITY: Investigate high-risk authentication events. Consider implementing additional MFA controls and Conditional Access policies.\",\n            \n            Category == \"Network Security\" and CriticalCount > 0,\n            \"URGENT: Review blocked high-risk port connections. Verify firewall rules and investigate source IPs.\",\n            \n            Category == \"Office 365 Activity\" and CriticalCount > 0,\n            \"REVIEW REQUIRED: Examine external file sharing activities. Validate business justification and implement DLP policies.\",\n            \n            \"Monitor: Continue standard monitoring and review patterns for anomalies.\"\n        )\n    | project Category, RiskLevel, KeyFindings, Recommendations;\n// Investigation metadata\nlet metadata = \n    print \n        InvestigationPeriod = strcat(format_datetime({TimeRange:start}, \"yyyy-MM-dd HH:mm\"), \" to \", format_datetime({TimeRange:end}, \"yyyy-MM-dd HH:mm\")),\n        TargetsInvestigated = case(\n            array_length(targetUsers) == 0, \"All users and entities\",\n            strcat(\"Specific targets: \", strjoin(targetUsers, \", \"))\n        ),\n        SeverityScope = case(\n            array_length(severityFilter) == 0, \"All severity levels\",\n            strcat(\"Filtered severities: \", strjoin(severityFilter, \", \"))\n        ),\n        GeneratedAt = now(),\n        AnalystNotes = \"Investigation completed using automated security analytics. Manual review recommended for high-risk findings.\";\nprint InvestigationSummary = \"Security Investigation Report\";\nrecommendations",
+        "size": 0,
+        "title": "Investigation Summary and Recommendations",
+        "timeContextFromParameter": "TimeRange",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "visualization": "table",
+        "gridSettings": {
+          "formatters": [
+            {
+              "columnMatch": "Category",
+              "formatter": 1,
+              "formatOptions": {
+                "linkTarget": null,
+                "showIcon": true
+              }
+            }
+          ],
+          "filter": false
+        }
+      },
+      "name": "investigationSummary"
+    }
+  ],
+  "fallbackResourceIds": [],
+  "fromTemplateId": "sentinel-SecurityInvestigationWorkbook",
+  "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
+}

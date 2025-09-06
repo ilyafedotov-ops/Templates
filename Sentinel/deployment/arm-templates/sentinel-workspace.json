@@ -1,0 +1,195 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace for Microsoft Sentinel"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Location for all resources"
+      }
+    },
+    "retentionInDays": {
+      "type": "int",
+      "defaultValue": 90,
+      "minValue": 30,
+      "maxValue": 730,
+      "metadata": {
+        "description": "Number of days to retain data in the workspace"
+      }
+    },
+    "dailyQuotaGb": {
+      "type": "int",
+      "defaultValue": -1,
+      "metadata": {
+        "description": "Daily ingestion limit in GB. -1 for unlimited"
+      }
+    },
+    "enableSentinel": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable Microsoft Sentinel on the workspace"
+      }
+    },
+    "enableDiagnostics": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable diagnostic settings for the workspace"
+      }
+    },
+    "diagnosticsStorageAccountId": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Resource ID of storage account for diagnostics (optional)"
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {
+        "Environment": "Production",
+        "Purpose": "SecurityMonitoring",
+        "Owner": "SecurityTeam"
+      },
+      "metadata": {
+        "description": "Tags to apply to all resources"
+      }
+    }
+  },
+  "variables": {
+    "workspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspaceName'))]",
+    "diagnosticsName": "[concat('diag-', parameters('workspaceName'))]"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[parameters('workspaceName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        },
+        "retentionInDays": "[parameters('retentionInDays')]",
+        "workspaceCapping": {
+          "dailyQuotaGb": "[if(equals(parameters('dailyQuotaGb'), -1), json('null'), parameters('dailyQuotaGb'))]"
+        },
+        "publicNetworkAccessForIngestion": "Enabled",
+        "publicNetworkAccessForQuery": "Enabled",
+        "features": {
+          "enableLogAccessUsingOnlyResourcePermissions": true,
+          "immediatePurgeDataOn30Days": true
+        }
+      }
+    },
+    {
+      "condition": "[parameters('enableSentinel')]",
+      "type": "Microsoft.SecurityInsights/onboardingStates",
+      "apiVersion": "2023-02-01",
+      "name": "default",
+      "scope": "[format('Microsoft.OperationalInsights/workspaces/{0}', parameters('workspaceName'))]",
+      "dependsOn": [
+        "[variables('workspaceResourceId')]"
+      ],
+      "properties": {}
+    },
+    {
+      "condition": "[and(parameters('enableDiagnostics'), not(empty(parameters('diagnosticsStorageAccountId'))))]",
+      "type": "Microsoft.Insights/diagnosticSettings",
+      "apiVersion": "2021-05-01-preview",
+      "name": "[variables('diagnosticsName')]",
+      "scope": "[variables('workspaceResourceId')]",
+      "dependsOn": [
+        "[variables('workspaceResourceId')]"
+      ],
+      "properties": {
+        "storageAccountId": "[parameters('diagnosticsStorageAccountId')]",
+        "logs": [
+          {
+            "category": "Audit",
+            "enabled": true,
+            "retentionPolicy": {
+              "days": 365,
+              "enabled": true
+            }
+          }
+        ],
+        "metrics": [
+          {
+            "category": "AllMetrics",
+            "enabled": true,
+            "retentionPolicy": {
+              "days": 365,
+              "enabled": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/savedSearches",
+      "apiVersion": "2020-08-01",
+      "name": "[concat(parameters('workspaceName'), '/SentinelHealthCheck')]",
+      "dependsOn": [
+        "[variables('workspaceResourceId')]"
+      ],
+      "properties": {
+        "category": "Sentinel Health",
+        "displayName": "Sentinel Health Check",
+        "query": "union withsource=TableName *\n| where TimeGenerated > ago(24h)\n| summarize Count = count() by TableName\n| where Count > 0\n| order by Count desc",
+        "tags": [
+          {
+            "name": "Group",
+            "value": "Sentinel"
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/savedSearches", 
+      "apiVersion": "2020-08-01",
+      "name": "[concat(parameters('workspaceName'), '/DataConnectorHealth')]",
+      "dependsOn": [
+        "[variables('workspaceResourceId')]"
+      ],
+      "properties": {
+        "category": "Sentinel Health",
+        "displayName": "Data Connector Health Check",
+        "query": "union \n(AzureActivity | where TimeGenerated > ago(1h) | extend Connector = 'AzureActivity'),\n(SigninLogs | where TimeGenerated > ago(1h) | extend Connector = 'AzureActiveDirectory'),\n(AuditLogs | where TimeGenerated > ago(1h) | extend Connector = 'AzureActiveDirectory'),\n(SecurityAlert | where TimeGenerated > ago(1h) | extend Connector = 'SecurityCenter'),\n(OfficeActivity | where TimeGenerated > ago(1h) | extend Connector = 'Office365'),\n(CommonSecurityLog | where TimeGenerated > ago(1h) | extend Connector = 'CommonEventFormat'),\n(Syslog | where TimeGenerated > ago(1h) | extend Connector = 'Syslog')\n| summarize LastReceived = max(TimeGenerated), Count = count() by Connector\n| extend Status = case(Count > 0, 'Healthy', 'No Data')",
+        "tags": [
+          {
+            "name": "Group", 
+            "value": "Sentinel"
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "workspaceResourceId": {
+      "type": "string",
+      "value": "[variables('workspaceResourceId')]"
+    },
+    "workspaceId": {
+      "type": "string",
+      "value": "[reference(variables('workspaceResourceId')).customerId]"
+    },
+    "workspaceKey": {
+      "type": "string",
+      "value": "[listKeys(variables('workspaceResourceId'), '2022-10-01').primarySharedKey]"
+    },
+    "workspaceName": {
+      "type": "string",
+      "value": "[parameters('workspaceName')]"
+    }
+  }
+}

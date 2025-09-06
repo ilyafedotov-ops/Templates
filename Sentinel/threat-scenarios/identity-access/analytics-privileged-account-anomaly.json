@@ -1,0 +1,176 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "2.0.0.0",
+  "metadata": {
+    "title": "ML-Enhanced Privileged Account Anomaly Detection",
+    "description": "Advanced machine learning-based detection of privileged account anomalies including behavioral deviations, privilege escalation, and suspicious access patterns with UEBA integration",
+    "author": "Enterprise Security Team",
+    "version": "2.0.0", 
+    "lastModified": "2025-01-01T00:00:00Z",
+    "compliance": ["ISO27001:A.9.2.1", "SOC2:CC6.2", "NIST:AC-2", "PCI-DSS:8.1.1"],
+    "mitreAttack": {
+      "techniques": ["T1078.004", "T1484", "T1098", "T1136.003", "T1087.003"],
+      "tactics": ["Persistence", "Privilege Escalation", "Defense Evasion", "Discovery"],
+      "subTechniques": ["Valid Accounts: Cloud Accounts", "Domain Policy Modification", "Account Manipulation"]
+    },
+    "dataConnectors": ["AzureActiveDirectory", "AzureActiveDirectoryIdentityProtection", "AzureActivity", "Office365"],
+    "queryFrequency": "PT10M",
+    "queryPeriod": "PT24H",
+    "alertRuleTemplateName": "ml-privileged-account-anomaly"
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace"
+      }
+    },
+    "ruleId": {
+      "type": "string",
+      "defaultValue": "ml-priv-account-anomaly",
+      "metadata": {
+        "description": "Unique identifier for the analytics rule"
+      }
+    },
+    "anomalyThreshold": {
+      "type": "int",
+      "defaultValue": 70,
+      "minValue": 50,
+      "maxValue": 95,
+      "metadata": {
+        "description": "ML anomaly score threshold (50-95)"
+      }
+    },
+    "privilegedRoles": {
+      "type": "array",
+      "defaultValue": [
+        "Global Administrator",
+        "Privileged Role Administrator", 
+        "Security Administrator",
+        "Application Administrator",
+        "Cloud Application Administrator",
+        "Exchange Administrator",
+        "SharePoint Administrator",
+        "User Administrator",
+        "Groups Administrator",
+        "Intune Administrator",
+        "Compliance Administrator"
+      ],
+      "metadata": {
+        "description": "List of privileged Azure AD roles to monitor"
+      }
+    },
+    "highValueResources": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "List of high-value resource IDs for enhanced monitoring"
+      }
+    }
+  },
+  "variables": {
+    "alertRuleName": "[concat('ML-Enhanced Privileged Account Anomaly Detection - ', parameters('ruleId'))]",
+    "alertRuleDescription": "Leverages machine learning and behavioral analytics to detect anomalous privileged account activity including unusual access patterns, privilege abuse, lateral movement, and potential account compromise"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('ruleId'))]",
+      "properties": {
+        "displayName": "[variables('alertRuleName')]",
+        "description": "[variables('alertRuleDescription')]", 
+        "enabled": true,
+        "kind": "Scheduled",
+        "severity": "High",
+        "queryFrequency": "PT10M",
+        "queryPeriod": "PT24H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": true,
+        "tactics": ["Persistence", "PrivilegeEscalation", "DefenseEvasion"],
+        "techniques": ["T1078.004", "T1484", "T1098"],
+        "subTechniques": ["T1078.004", "T1484.001", "T1098.001"],
+        "query": "let analysisWindow = 24h;\nlet baselineWindow = 30d; \nlet anomalyThreshold = toint('[parameters('anomalyThreshold')]');\nlet privilegedRoles = dynamic('[parameters('privilegedRoles')]');\nlet highValueResources = dynamic('[parameters('highValueResources')]');\n// Define privileged account baseline behavior\nlet privAccountBaseline = \n    IdentityInfo\n    | where TimeGenerated between (ago(baselineWindow) .. ago(analysisWindow))\n    | where AssignedRoles has_any (privilegedRoles) or UserType == \"Admin\"\n    | extend UserPrincipal = AccountUPN\n    | join kind=inner (\n        SigninLogs\n        | where TimeGenerated between (ago(baselineWindow) .. ago(analysisWindow))\n        | where isnotempty(UserPrincipalName)\n    ) on $left.UserPrincipal == $right.UserPrincipalName\n    | extend \n        Hour = hourofday(TimeGenerated),\n        DayOfWeek = dayofweek(TimeGenerated),\n        Location = strcat(coalesce(LocationDetails.countryOrRegion, \"Unknown\"), \"-\", coalesce(LocationDetails.city, \"Unknown\")),\n        DeviceOS = coalesce(DeviceDetail.operatingSystem, \"Unknown\"),\n        AppName = coalesce(AppDisplayName, \"Unknown\")\n    | summarize \n        TypicalHoursActive = make_set(Hour),\n        TypicalDaysActive = make_set(DayOfWeek), \n        TypicalLocations = make_set(Location),\n        TypicalDevices = make_set(DeviceOS),\n        TypicalApps = make_set(AppName),\n        BaselineSigninsPerDay = avg(todouble(1)),\n        BaselineUniqueIPs = avg(dcount(IPAddress)),\n        BaselineAppsAccessed = avg(dcount(AppDisplayName)),\n        BaselineFailureRate = avg(case(ResultType != \"0\", 1.0, 0.0))\n        by bin(TimeGenerated, 1d), UserPrincipal\n    | summarize \n        BaselineAvgSigninsPerDay = avg(BaselineSigninsPerDay),\n        BaselineStdDevSignins = stdev(BaselineSigninsPerDay),\n        BaselineAvgUniqueIPs = avg(BaselineUniqueIPs), \n        BaselineAvgApps = avg(BaselineAppsAccessed),\n        BaselineAvgFailureRate = avg(BaselineFailureRate),\n        CommonHours = make_set_if(TypicalHoursActive, array_length(TypicalHoursActive) > 5),\n        CommonLocations = make_set_if(TypicalLocations, array_length(TypicalLocations) > 0),\n        CommonDevices = make_set_if(TypicalDevices, array_length(TypicalDevices) > 0),\n        CommonApps = make_set_if(TypicalApps, array_length(TypicalApps) > 3)\n        by UserPrincipal;\n// Advanced privileged account activity analysis\nlet privActivityAnalysis = \n    IdentityInfo\n    | where TimeGenerated >= ago(analysisWindow)\n    | where AssignedRoles has_any (privilegedRoles) or UserType == \"Admin\"\n    | extend UserPrincipal = AccountUPN\n    | join kind=inner (\n        SigninLogs\n        | where TimeGenerated >= ago(analysisWindow)\n        | where isnotempty(UserPrincipalName)\n    ) on $left.UserPrincipal == $right.UserPrincipalName\n    | extend \n        // Enhanced temporal analysis\n        Hour = hourofday(TimeGenerated),\n        DayOfWeek = dayofweek(TimeGenerated),\n        IsAfterHours = Hour < 6 or Hour > 20,\n        IsWeekend = DayOfWeek == 0 or DayOfWeek == 6,\n        \n        // Geographic and device analysis \n        Location = strcat(coalesce(LocationDetails.countryOrRegion, \"Unknown\"), \"-\", coalesce(LocationDetails.city, \"Unknown\")),\n        DeviceOS = coalesce(DeviceDetail.operatingSystem, \"Unknown\"),\n        DeviceId = coalesce(DeviceDetail.deviceId, \"Unknown\"),\n        IsNewDevice = isempty(DeviceDetail.deviceId) or not(DeviceDetail.isCompliant),\n        IsUnmanagedDevice = not(DeviceDetail.isManaged),\n        \n        // Network and risk analysis\n        IsAnonymousProxy = NetworkLocationDetails.networkType == \"anonymousProxy\",\n        IsTor = NetworkLocationDetails.networkType == \"tor\", \n        IsHighRisk = RiskLevelDuringSignIn in (\"high\", \"medium\"),\n        \n        // Application analysis\n        AppName = coalesce(AppDisplayName, \"Unknown\"),\n        IsHighRiskApp = AppDisplayName in (\"Microsoft Azure PowerShell\", \"Azure CLI\", \"Microsoft Graph PowerShell\", \"Azure Active Directory PowerShell\"),\n        IsNewApp = false, // Would require baseline comparison\n        \n        // Authentication analysis\n        AuthSuccess = ResultType == \"0\",\n        FailureReason = case(ResultType != \"0\", ResultDescription, \"\"),\n        MFAUsed = AuthenticationMethodsUsed has \"MFA\" or AuthenticationMethodsUsed has \"PhoneApp\" or AuthenticationMethodsUsed has \"SMS\",\n        \n        // Role and privilege context\n        RoleNames = coalesce(AssignedRoles, \"Unknown\"),\n        IsGlobalAdmin = AssignedRoles contains \"Global Administrator\",\n        IsSecurityRole = AssignedRoles has_any (\"Security Administrator\", \"Security Operator\", \"Security Reader\"),\n        \n        // Calculate anomaly indicators\n        TemporalAnomalyScore = case(\n            IsAfterHours and IsWeekend, 25,\n            IsAfterHours, 15,\n            IsWeekend, 10,\n            0\n        ),\n        LocationAnomalyScore = case(\n            IsAnonymousProxy or IsTor, 30,\n            Location contains \"Unknown\", 15,\n            0\n        ),\n        DeviceAnomalyScore = case(\n            IsNewDevice and IsUnmanagedDevice, 25,\n            IsNewDevice, 15,\n            IsUnmanagedDevice, 10,\n            0\n        ),\n        AuthAnomalyScore = case(\n            not(MFAUsed) and IsGlobalAdmin, 20,\n            not(MFAUsed), 10,\n            not(AuthSuccess), 5,\n            0\n        ),\n        AppAnomalyScore = case(\n            IsHighRiskApp, 15,\n            0\n        ),\n        RoleRiskScore = case(\n            IsGlobalAdmin, 30,\n            IsSecurityRole, 20,\n            10\n        )\n    | extend \n        // Comprehensive anomaly score calculation\n        TotalAnomalyScore = TemporalAnomalyScore + LocationAnomalyScore + DeviceAnomalyScore + AuthAnomalyScore + AppAnomalyScore + RoleRiskScore;\n// Aggregate analysis and pattern detection  \nlet aggregatedAnalysis = \n    privActivityAnalysis\n    | summarize \n        // Volume metrics\n        SigninCount = count(),\n        UniqueIPs = dcount(IPAddress),\n        UniqueLocations = dcount(Location),\n        UniqueDevices = dcount(DeviceId),\n        UniqueApps = dcount(AppName),\n        \n        // Temporal patterns\n        AfterHoursSignins = countif(IsAfterHours),\n        WeekendSignins = countif(IsWeekend),\n        TimeSpan = datetime_diff('hour', max(TimeGenerated), min(TimeGenerated)),\n        \n        // Risk indicators\n        HighRiskSignins = countif(IsHighRisk),\n        AnonymousProxySignins = countif(IsAnonymousProxy or IsTor),\n        UnmanagedDeviceSignins = countif(IsUnmanagedDevice),\n        NoMFASignins = countif(not(MFAUsed)),\n        FailedSignins = countif(not(AuthSuccess)),\n        \n        // Application and privilege context\n        HighRiskAppAccess = countif(IsHighRiskApp),\n        GlobalAdminActivity = countif(IsGlobalAdmin),\n        SecurityRoleActivity = countif(IsSecurityRole),\n        \n        // ML features for anomaly detection\n        AvgAnomalyScore = avg(TotalAnomalyScore),\n        MaxAnomalyScore = max(TotalAnomalyScore),\n        AnomalyScoreStdDev = stdev(TotalAnomalyScore),\n        \n        // Evidence collection\n        AccessedApps = make_set(AppName, 50),\n        SourceIPs = make_set(IPAddress, 30),\n        Locations = make_set(Location, 20),\n        Devices = make_set(strcat(DeviceOS, \":\", DeviceId), 20),\n        FailureReasons = make_set_if(FailureReason, not(AuthSuccess), 10),\n        RolesActive = make_set(RoleNames, 10)\n        \n        by bin(TimeGenerated, 10m), UserPrincipal, RoleNames\n    | extend \n        // Advanced behavioral pattern classification\n        BehaviorPattern = case(\n            HighRiskAppAccess > 0 and AnonymousProxySignins > 0, \"Anonymous Admin Tool Access\",\n            AfterHoursSignins > (SigninCount * 0.8), \"After-Hours Privilege Abuse\", \n            UniqueLocations > 5 and TimeSpan < 4, \"Impossible Travel Admin Activity\",\n            NoMFASignins > 0 and GlobalAdminActivity > 0, \"Unprotected Global Admin Access\",\n            FailedSignins > 10 and SigninCount > 20, \"Admin Brute Force Pattern\",\n            UniqueDevices > 3 and UnmanagedDeviceSignins > 0, \"Multi-Device Admin Access\",\n            WeekendSignins > 0 and SecurityRoleActivity > 0, \"Weekend Security Admin Activity\",\n            SigninCount > 50 and TimeSpan < 2, \"Rapid Admin Access Burst\",\n            \"Privileged Account Activity\"\n        ),\n        \n        // Calculate comprehensive ML-based anomaly score\n        MLAnomalyScore = min_of(\n            round(\n                (AvgAnomalyScore * 1.5) +\n                (case(UniqueLocations > 3, UniqueLocations * 5, 0)) +\n                (case(AfterHoursSignins > 0, AfterHoursSignins * 2, 0)) +\n                (case(AnonymousProxySignins > 0, 40, 0)) +\n                (case(NoMFASignins > 0 and GlobalAdminActivity > 0, 30, 0)) +\n                (case(HighRiskAppAccess > 0, 25, 0)) +\n                (case(UnmanagedDeviceSignins > 0, 20, 0)) +\n                (case(FailedSignins > 5, FailedSignins * 2, 0))\n            , 1),\n            100\n        );\n// Join with baseline and detect anomalies\naggregatedAnalysis\n| join kind=leftouter (\n    privAccountBaseline\n) on UserPrincipal\n| extend \n    // Baseline deviation analysis\n    SigninVolumeDeviation = case(\n        isnotnull(BaselineAvgSigninsPerDay), \n        round((SigninCount - BaselineAvgSigninsPerDay) / BaselineAvgSigninsPerDay * 100, 1),\n        0\n    ),\n    IPCountDeviation = case(\n        isnotnull(BaselineAvgUniqueIPs),\n        round((UniqueIPs - BaselineAvgUniqueIPs) / BaselineAvgUniqueIPs * 100, 1), \n        0\n    ),\n    AppCountDeviation = case(\n        isnotnull(BaselineAvgApps),\n        round((UniqueApps - BaselineAvgApps) / BaselineAvgApps * 100, 1),\n        0\n    ),\n    \n    // Behavioral anomaly detection\n    IsUnusualTiming = AfterHoursSignins > 0 and not(set_has_element(CommonHours, hourofday(TimeGenerated))),\n    IsUnusualLocation = UniqueLocations > array_length(CommonLocations) and not(set_intersect(make_set(Locations), CommonLocations)),\n    IsUnusualDevice = UniqueDevices > array_length(CommonDevices),\n    IsVolumeAnomaly = abs(SigninVolumeDeviation) > 300 or SigninCount > 100,\n    \n    BaselineComparison = case(\n        isnotnull(BaselineAvgSigninsPerDay),\n        strcat(\"Volume: \", SigninVolumeDeviation, \"%, IPs: \", IPCountDeviation, \"%, Apps: \", AppCountDeviation, \"%\"),\n        \"No baseline available - new privileged account\"\n    )\n| where MLAnomalyScore >= anomalyThreshold or IsVolumeAnomaly or (IsUnusualTiming and IsUnusualLocation)\n| extend \n    // MITRE ATT&CK technique mapping\n    MitreTechnique = case(\n        BehaviorPattern contains \"Anonymous\", \"T1078.004\", \n        BehaviorPattern contains \"Brute Force\", \"T1110\",\n        BehaviorPattern contains \"Impossible Travel\", \"T1078.004\",\n        BehaviorPattern contains \"Multi-Device\", \"T1078.004\",\n        GlobalAdminActivity > 0 and NoMFASignins > 0, \"T1078.004\",\n        \"T1078.004\"\n    ),\n    MitreTactic = case(\n        BehaviorPattern contains \"Brute Force\", \"Credential Access\",\n        BehaviorPattern contains \"Privilege\", \"Privilege Escalation\", \n        \"Persistence\"\n    ),\n    \n    // Dynamic incident severity\n    IncidentSeverity = case(\n        MLAnomalyScore >= 90 or (GlobalAdminActivity > 0 and AnonymousProxySignins > 0), \"Critical\",\n        MLAnomalyScore >= 80 or (NoMFASignins > 0 and GlobalAdminActivity > 0), \"High\",\n        MLAnomalyScore >= 70 or IsVolumeAnomaly, \"Medium\", \n        \"Low\"\n    ),\n    \n    // Compliance impact assessment\n    ComplianceImpact = case(\n        GlobalAdminActivity > 0 and NoMFASignins > 0, \"Critical - SOC2 CC6.2 MFA requirement violation\",\n        AnonymousProxySignins > 0 and SecurityRoleActivity > 0, \"High - ISO 27001 A.9.2.1 privileged access control gap\",\n        AfterHoursSignins > 0 and SigninCount > 20, \"Medium - NIST AC-2 account monitoring requirement\",\n        \"Low - Standard privileged account activity\"\n    ),\n    \n    // Response recommendations \n    RecommendedActions = case(\n        MLAnomalyScore >= 90, \"IMMEDIATE: Disable account, force password reset, investigate all recent activity\",\n        AnonymousProxySignins > 0, \"Block anonymous proxy access, enable Conditional Access, investigate source\",\n        NoMFASignins > 0 and GlobalAdminActivity > 0, \"Force MFA enrollment, review privileged access policies\", \n        IsVolumeAnomaly, \"Enhanced monitoring, privilege review, investigate activity spike\",\n        \"Monitor closely, validate business justification for unusual activity\"\n    )\n| project \n    TimeGenerated,\n    UserPrincipal,\n    RoleNames,\n    BehaviorPattern,\n    IncidentSeverity,\n    MLAnomalyScore,\n    SigninCount,\n    UniqueIPs,\n    UniqueLocations,\n    AfterHoursSignins,\n    WeekendSignins,\n    GlobalAdminActivity,\n    SecurityRoleActivity,\n    HighRiskAppAccess,\n    AnonymousProxySignins,\n    NoMFASignins,\n    FailedSignins,\n    BaselineComparison,\n    MitreTechnique,\n    MitreTactic,\n    ComplianceImpact, \n    RecommendedActions,\n    // Evidence for investigation\n    AccessedApps,\n    SourceIPs,\n    Locations,\n    Devices,\n    FailureReasons,\n    RolesActive,\n    // Behavioral indicators\n    IsUnusualTiming,\n    IsUnusualLocation, \n    IsUnusualDevice,\n    SigninVolumeDeviation,\n    IPCountDeviation,\n    AppCountDeviation\n| order by MLAnomalyScore desc, SigninCount desc",
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "columnName": "UserPrincipal",
+                "identifier": "Name"
+              }
+            ]
+          },
+          {
+            "entityType": "IP", 
+            "fieldMappings": [
+              {
+                "columnName": "SourceIPs",
+                "identifier": "Address"
+              }
+            ]
+          }
+        ],
+        "alertDetailsOverride": {
+          "alertDisplayNameFormat": "ML Privileged Account Anomaly: {{UserPrincipal}} - {{BehaviorPattern}} (Score: {{MLAnomalyScore}}/100)",
+          "alertDescriptionFormat": "Machine learning detected privileged account anomaly: {{BehaviorPattern}}\\n\\nUser: {{UserPrincipal}}\\nRoles: {{RoleNames}}\\n\\nAnomaly Assessment:\\n- ML Anomaly Score: {{MLAnomalyScore}}/100\\n- Sign-in Count: {{SigninCount}}\\n- Unique IPs: {{UniqueIPs}}\\n- Unique Locations: {{UniqueLocations}}\\n- After-hours Activity: {{AfterHoursSignins}}\\n- Global Admin Activity: {{GlobalAdminActivity}}\\n- Anonymous Proxy Use: {{AnonymousProxySignins}}\\n- No-MFA Sign-ins: {{NoMFASignins}}\\n- Failed Attempts: {{FailedSignins}}\\n- MITRE Technique: {{MitreTechnique}}\\n\\nBaseline Deviation: {{BaselineComparison}}\\nCompliance Impact: {{ComplianceImpact}}\\n\\nIMMEDIATE ACTIONS: {{RecommendedActions}}\\n\\nEvidence:\\n- Apps Accessed: {{AccessedApps}}\\n- Source IPs: {{SourceIPs}}\\n- Locations: {{Locations}}\\n- Devices: {{Devices}}",
+          "alertSeverityColumnName": "IncidentSeverity",
+          "alertDynamicProperties": [
+            {
+              "alertProperty": "AlertLink",
+              "value": "BehaviorPattern"
+            },
+            {
+              "alertProperty": "ProviderName",
+              "value": "ML Privileged Account Analytics"
+            },
+            {
+              "alertProperty": "RemediationSteps",
+              "value": "RecommendedActions"
+            }
+          ]
+        },
+        "customDetails": {
+          "BehaviorPattern": "BehaviorPattern",
+          "MLAnomalyScore": "MLAnomalyScore",
+          "RoleNames": "RoleNames", 
+          "MitreTechnique": "MitreTechnique",
+          "BaselineDeviation": "BaselineComparison",
+          "GlobalAdminActivity": "GlobalAdminActivity",
+          "AnonymousProxySignins": "AnonymousProxySignins",
+          "NoMFASignins": "NoMFASignins",
+          "ComplianceImpact": "ComplianceImpact",
+          "UnusualTiming": "IsUnusualTiming",
+          "UnusualLocation": "IsUnusualLocation"
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": true,
+            "lookbackDuration": "PT6H",
+            "matchingMethod": "AllEntities", 
+            "groupByEntities": ["Account", "IP"],
+            "groupByAlertDetails": ["DisplayName"],
+            "groupByCustomDetails": ["BehaviorPattern", "RoleNames"]
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "alertRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/alertRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', parameters('ruleId'))]"
+    },
+    "alertRuleName": {
+      "type": "string",
+      "value": "[variables('alertRuleName')]"
+    }
+  }
+}

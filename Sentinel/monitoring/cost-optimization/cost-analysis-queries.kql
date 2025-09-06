@@ -1,0 +1,371 @@
+// Cost Analysis and Optimization Queries for Microsoft Sentinel
+// These queries help monitor and optimize costs associated with data ingestion and storage
+
+//==========================================
+// 1. OVERALL COST ANALYSIS
+//==========================================
+
+// Daily Data Ingestion Volume and Estimated Cost
+Usage
+| where TimeGenerated > ago(30d)
+| where IsBillable == true
+| where DataType != "Usage"  // Exclude Usage table itself
+| summarize 
+    DataVolumeGB = sum(Quantity) / 1024,
+    BillableEvents = sum(Quantity)
+by bin(TimeGenerated, 1d)
+| extend 
+    EstimatedDailyCostUSD = DataVolumeGB * 2.30,  // Approximate cost per GB for Pay-as-you-go
+    EstimatedMonthlyCostUSD = EstimatedDailyCostUSD * 30
+| project 
+    Date = format_datetime(TimeGenerated, "yyyy-MM-dd"),
+    DataVolumeGB = round(DataVolumeGB, 2),
+    BillableEvents,
+    EstimatedDailyCostUSD = round(EstimatedDailyCostUSD, 2),
+    EstimatedMonthlyCostUSD = round(EstimatedMonthlyCostUSD, 2)
+| order by TimeGenerated desc
+
+// Monthly Cost Summary
+Usage
+| where TimeGenerated > ago(90d)
+| where IsBillable == true
+| where DataType != "Usage"
+| summarize 
+    TotalDataGB = sum(Quantity) / 1024,
+    TotalEvents = sum(Quantity)
+by startofmonth(TimeGenerated)
+| extend 
+    EstimatedCostUSD = TotalDataGB * 2.30,
+    CostPerEvent = EstimatedCostUSD / TotalEvents * 1000000  // Cost per million events
+| project 
+    Month = format_datetime(startofmonth_TimeGenerated, "yyyy-MM"),
+    TotalDataGB = round(TotalDataGB, 2),
+    TotalEvents,
+    EstimatedCostUSD = round(EstimatedCostUSD, 2),
+    CostPerMillionEvents = round(CostPerEvent, 4)
+| order by startofmonth_TimeGenerated desc
+
+//==========================================
+// 2. COST BY DATA SOURCE
+//==========================================
+
+// Cost breakdown by table/data source over last 30 days
+Usage
+| where TimeGenerated > ago(30d)
+| where IsBillable == true
+| where DataType != "Usage"
+| summarize 
+    DataVolumeGB = sum(Quantity) / 1024,
+    EventCount = sum(Quantity)
+by DataType
+| extend 
+    EstimatedMonthlyCostUSD = DataVolumeGB * 2.30,
+    PercentOfTotal = DataVolumeGB / toscalar(Usage | where TimeGenerated > ago(30d) and IsBillable and DataType != "Usage" | summarize sum(Quantity) / 1024) * 100,
+    AvgEventSizeKB = (DataVolumeGB * 1024 * 1024) / EventCount
+| project 
+    DataSource = DataType,
+    DataVolumeGB = round(DataVolumeGB, 3),
+    EventCount,
+    AvgEventSizeKB = round(AvgEventSizeKB, 2),
+    EstimatedMonthlyCostUSD = round(EstimatedMonthlyCostUSD, 2),
+    PercentOfTotal = round(PercentOfTotal, 1)
+| order by DataVolumeGB desc
+
+// Top 10 most expensive data sources
+Usage
+| where TimeGenerated > ago(30d)
+| where IsBillable == true
+| where DataType != "Usage"
+| summarize 
+    DataVolumeGB = sum(Quantity) / 1024
+by DataType
+| top 10 by DataVolumeGB desc
+| extend 
+    EstimatedMonthlyCostUSD = DataVolumeGB * 2.30,
+    CostOptimizationPotential = case(
+        DataVolumeGB > 100, "High",
+        DataVolumeGB > 50, "Medium",
+        DataVolumeGB > 10, "Low",
+        "Minimal"
+    )
+| project 
+    Rank = row_number(),
+    DataSource = DataType,
+    DataVolumeGB = round(DataVolumeGB, 2),
+    EstimatedMonthlyCostUSD = round(EstimatedMonthlyCostUSD, 2),
+    CostOptimizationPotential
+
+//==========================================
+// 3. COST TRENDS AND ANOMALIES
+//==========================================
+
+// Daily cost trend with anomaly detection
+let baseline_days = 14;
+let analysis_days = 7;
+let CostBaseline = 
+    Usage
+    | where TimeGenerated between (ago(baseline_days + analysis_days) .. ago(analysis_days))
+    | where IsBillable == true
+    | where DataType != "Usage"
+    | summarize DailyDataGB = sum(Quantity) / 1024 by bin(TimeGenerated, 1d)
+    | summarize 
+        AvgDailyDataGB = avg(DailyDataGB),
+        StdDevDataGB = stdev(DailyDataGB);
+
+Usage
+| where TimeGenerated > ago(analysis_days)
+| where IsBillable == true  
+| where DataType != "Usage"
+| summarize DailyDataGB = sum(Quantity) / 1024 by bin(TimeGenerated, 1d)
+| extend 
+    BaselineAvg = toscalar(CostBaseline | project AvgDailyDataGB),
+    BaselineStdDev = toscalar(CostBaseline | project StdDevDataGB)
+| extend 
+    ZScore = (DailyDataGB - BaselineAvg) / BaselineStdDev,
+    CostAnomaly = case(
+        abs(ZScore) > 2.5, "High Anomaly",
+        abs(ZScore) > 1.5, "Moderate Anomaly",
+        "Normal"
+    ),
+    EstimatedDailyCost = DailyDataGB * 2.30,
+    CostDifference = (DailyDataGB - BaselineAvg) * 2.30
+| project 
+    Date = format_datetime(TimeGenerated, "yyyy-MM-dd"),
+    DailyDataGB = round(DailyDataGB, 2),
+    BaselineAvg = round(BaselineAvg, 2),
+    EstimatedDailyCost = round(EstimatedDailyCost, 2),
+    CostDifference = round(CostDifference, 2),
+    CostAnomaly,
+    ZScore = round(ZScore, 2)
+| order by TimeGenerated desc
+
+//==========================================
+// 4. DATA RETENTION COST ANALYSIS
+//==========================================
+
+// Cost analysis by data age (for retention optimization)
+union withsource=TableName *
+| where TimeGenerated > ago(90d)
+| extend DataAge = now() - TimeGenerated
+| extend AgeCategory = case(
+    DataAge <= 7d, "0-7 days (Hot)",
+    DataAge <= 30d, "7-30 days (Warm)", 
+    DataAge <= 90d, "30-90 days (Archive)",
+    "90+ days (Cold)"
+)
+| summarize 
+    RecordCount = count(),
+    EstimatedSizeGB = count() * 0.5 / 1024 / 1024  // Rough estimate
+by TableName, AgeCategory
+| extend 
+    EstimatedStorageCostUSD = case(
+        AgeCategory == "0-7 days (Hot)", EstimatedSizeGB * 2.30,      // Full rate
+        AgeCategory == "7-30 days (Warm)", EstimatedSizeGB * 1.15,    // 50% discount
+        AgeCategory == "30-90 days (Archive)", EstimatedSizeGB * 0.23, // 90% discount  
+        EstimatedSizeGB * 0.05                                         // Archive rate
+    )
+| project 
+    TableName,
+    AgeCategory,
+    RecordCount,
+    EstimatedSizeGB = round(EstimatedSizeGB, 3),
+    EstimatedStorageCostUSD = round(EstimatedStorageCostUSD, 2)
+| order by TableName, AgeCategory
+
+//==========================================
+// 5. QUERY COST ANALYSIS
+//==========================================
+
+// Most expensive queries by data scanned
+LAQueryLogs
+| where TimeGenerated > ago(7d)
+| where ResponseCode == 200  // Successful queries only
+| summarize 
+    QueryCount = count(),
+    AvgDataScannedGB = avg(DataScanned_GB),
+    TotalDataScannedGB = sum(DataScanned_GB),
+    AvgDurationSeconds = avg(DurationMs) / 1000
+by QueryText_s
+| where TotalDataScannedGB > 1  // Focus on queries that scan significant data
+| extend 
+    EstimatedQueryCostUSD = TotalDataScannedGB * 0.0057,  // Approximate query cost per GB
+    CostOptimizationPriority = case(
+        TotalDataScannedGB > 100, "Critical",
+        TotalDataScannedGB > 50, "High", 
+        TotalDataScannedGB > 10, "Medium",
+        "Low"
+    )
+| project 
+    QueryText = substring(QueryText_s, 0, 100),
+    QueryCount,
+    TotalDataScannedGB = round(TotalDataScannedGB, 2),
+    AvgDataScannedGB = round(AvgDataScannedGB, 3),
+    AvgDurationSeconds = round(AvgDurationSeconds, 1),
+    EstimatedQueryCostUSD = round(EstimatedQueryCostUSD, 4),
+    CostOptimizationPriority
+| top 20 by TotalDataScannedGB desc
+
+//==========================================
+// 6. COST OPTIMIZATION RECOMMENDATIONS
+//==========================================
+
+// Data sources with optimization potential
+let OptimizationAnalysis = 
+    Usage
+    | where TimeGenerated > ago(30d)
+    | where IsBillable == true
+    | where DataType != "Usage"
+    | summarize 
+        DataVolumeGB = sum(Quantity) / 1024,
+        EventCount = sum(Quantity)
+    by DataType
+    | extend 
+        EstimatedMonthlyCost = DataVolumeGB * 2.30,
+        AvgEventSizeKB = (DataVolumeGB * 1024 * 1024) / EventCount
+    | extend OptimizationRecommendation = case(
+        AvgEventSizeKB > 10, "Large events - consider data filtering",
+        DataVolumeGB > 100, "High volume - review retention policy", 
+        DataVolumeGB > 50, "Medium volume - optimize collection rules",
+        "Monitor for growth"
+    );
+
+OptimizationAnalysis
+| where EstimatedMonthlyCost > 10  // Focus on significant cost sources
+| extend 
+    PotentialSavings30Percent = EstimatedMonthlyCost * 0.30,
+    PotentialSavings50Percent = EstimatedMonthlyCost * 0.50
+| project 
+    DataSource = DataType,
+    CurrentMonthlyCostUSD = round(EstimatedMonthlyCost, 2),
+    DataVolumeGB = round(DataVolumeGB, 2),
+    AvgEventSizeKB = round(AvgEventSizeKB, 2),
+    OptimizationRecommendation,
+    PotentialSavings30 = round(PotentialSavings30Percent, 2),
+    PotentialSavings50 = round(PotentialSavings50Percent, 2)
+| order by CurrentMonthlyCostUSD desc
+
+//==========================================
+// 7. MULTI-WORKSPACE COST COMPARISON
+//==========================================
+
+// Compare costs across multiple workspaces (if using multi-workspace setup)
+Usage  
+| where TimeGenerated > ago(30d)
+| where IsBillable == true
+| where DataType != "Usage"
+| extend WorkspaceId = tostring(split(_ResourceId, "/")[8])  // Extract workspace ID
+| summarize 
+    TotalDataGB = sum(Quantity) / 1024,
+    EventCount = sum(Quantity)
+by WorkspaceId
+| extend 
+    EstimatedMonthlyCost = TotalDataGB * 2.30,
+    CostPerEvent = EstimatedMonthlyCost / EventCount * 1000000
+| project 
+    WorkspaceId,
+    TotalDataGB = round(TotalDataGB, 2),
+    EventCount,
+    EstimatedMonthlyCost = round(EstimatedMonthlyCost, 2),
+    CostPerMillionEvents = round(CostPerEvent, 4)
+| order by EstimatedMonthlyCost desc
+
+//==========================================
+// 8. COST PROJECTION AND BUDGETING
+//==========================================
+
+// 90-day cost projection based on recent trends
+let RecentTrend = 
+    Usage
+    | where TimeGenerated > ago(14d)
+    | where IsBillable == true
+    | where DataType != "Usage"
+    | summarize DailyDataGB = sum(Quantity) / 1024 by bin(TimeGenerated, 1d)
+    | summarize 
+        AvgDailyDataGB = avg(DailyDataGB),
+        TrendSlope = (max(DailyDataGB) - min(DailyDataGB)) / 14.0;
+
+let ProjectionData = 
+    RecentTrend
+    | extend 
+        Current30DayCost = AvgDailyDataGB * 30 * 2.30,
+        Projected60DayCost = (AvgDailyDataGB + TrendSlope * 30) * 30 * 2.30,
+        Projected90DayCost = (AvgDailyDataGB + TrendSlope * 60) * 30 * 2.30;
+
+ProjectionData
+| project 
+    MetricPeriod = "Cost Projection",
+    Current30Days = round(Current30DayCost, 2),
+    Projected60Days = round(Projected60DayCost, 2), 
+    Projected90Days = round(Projected90DayCost, 2),
+    TrendDirection = iff(TrendSlope > 0, "Increasing", "Decreasing"),
+    DailyTrendGB = round(TrendSlope, 3)
+| union (datatable(
+    MetricPeriod:string, 
+    Current30Days:real, 
+    Projected60Days:real,
+    Projected90Days:real, 
+    TrendDirection:string,
+    DailyTrendGB:real
+) [
+    "Budget Recommendations",
+    toscalar(ProjectionData | project Current30DayCost * 1.2),  // 20% buffer
+    toscalar(ProjectionData | project Projected60DayCost * 1.2),
+    toscalar(ProjectionData | project Projected90DayCost * 1.2),
+    "Budget with 20% buffer",
+    0.0
+])
+
+//==========================================
+// 9. FREE TIER MONITORING
+//==========================================
+
+// Monitor free tier usage (if applicable)
+Usage
+| where TimeGenerated > ago(30d)
+| where IsBillable == false  // Focus on free tier data
+| summarize 
+    FreeDataGB = sum(Quantity) / 1024
+by DataType
+| extend 
+    ValueIfPaid = FreeDataGB * 2.30  // What this would cost if paid
+| where FreeDataGB > 0
+| project 
+    DataType,
+    FreeDataGB = round(FreeDataGB, 3),
+    ValueIfPaidUSD = round(ValueIfPaid, 2)
+| order by FreeDataGB desc
+
+//==========================================
+// 10. COST OPTIMIZATION SUMMARY DASHBOARD
+//==========================================
+
+// Comprehensive cost optimization summary
+let TotalCost = toscalar(
+    Usage
+    | where TimeGenerated > ago(30d)
+    | where IsBillable == true
+    | where DataType != "Usage"
+    | summarize sum(Quantity) / 1024 * 2.30
+);
+
+let TopCostSources = 
+    Usage
+    | where TimeGenerated > ago(30d)
+    | where IsBillable == true
+    | where DataType != "Usage"  
+    | summarize DataGB = sum(Quantity) / 1024 by DataType
+    | top 5 by DataGB desc
+    | extend Cost = DataGB * 2.30
+    | summarize TopFiveCost = sum(Cost);
+
+datatable(
+    Metric:string, 
+    Value:string, 
+    Recommendation:string
+) [
+    "Total Monthly Cost", strcat("$", round(TotalCost, 2)), "Monitor for 20% month-over-month increase",
+    "Top 5 Sources Cost", strcat("$", round(toscalar(TopCostSources), 2), " (", round(toscalar(TopCostSources) / TotalCost * 100, 1), "%)"), "Focus optimization on top sources",  
+    "Cost per GB", strcat("$", round(TotalCost / toscalar(Usage | where TimeGenerated > ago(30d) and IsBillable and DataType != "Usage" | summarize sum(Quantity) / 1024), 2)), "Benchmark against $2.30 standard rate",
+    "Optimization Target", strcat("$", round(TotalCost * 0.8, 2)), "Aim for 20% cost reduction through optimization",
+    "Budget Alert Threshold", strcat("$", round(TotalCost * 1.2, 2)), "Set budget alert at 120% of current spend"
+]

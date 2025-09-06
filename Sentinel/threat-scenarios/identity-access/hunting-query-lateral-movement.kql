@@ -1,0 +1,297 @@
+// Advanced Lateral Movement Detection - Hunting Query
+// Description: Proactive hunting for lateral movement patterns across Azure AD and cloud resources
+// MITRE ATT&CK: T1078.004 (Valid Accounts: Cloud Accounts), T1021 (Remote Services)
+// Author: Enterprise Security Team
+// Version: 2.0.0
+// Last Modified: 2025-01-01T00:00:00Z
+
+let huntingWindow = 7d;
+let movementTimeWindow = 4h;
+let suspiciousActivityThreshold = 5;
+
+// Define high-value resources and privileged roles for enhanced detection
+let highValueResources = dynamic([
+    "Microsoft.KeyVault/vaults",
+    "Microsoft.Storage/storageAccounts", 
+    "Microsoft.Sql/servers",
+    "Microsoft.Compute/virtualMachines",
+    "Microsoft.Network/networkSecurityGroups"
+]);
+
+let privilegedRoles = dynamic([
+    "Global Administrator",
+    "Security Administrator", 
+    "Privileged Role Administrator",
+    "Application Administrator",
+    "User Administrator"
+]);
+
+// Step 1: Identify potential pivot accounts (accounts with unusual cross-resource access)
+let pivotAccounts = 
+    AzureActivity
+    | where TimeGenerated >= ago(huntingWindow)
+    | where ActivityStatusValue == "Success"
+    | where isnotempty(Caller) and isnotempty(ResourceProvider)
+    | extend 
+        UserPrincipal = Caller,
+        ResourceType = strcat(ResourceProvider, "/", ResourceType)
+    | summarize 
+        UniqueResourceTypes = dcount(ResourceType),
+        UniqueResourceGroups = dcount(ResourceGroup),
+        UniqueSubscriptions = dcount(SubscriptionId),
+        ActivityCount = count(),
+        ResourceTypes = make_set(ResourceType, 50),
+        ResourceGroups = make_set(ResourceGroup, 50),
+        Operations = make_set(OperationNameValue, 100),
+        TimeSpan = datetime_diff('hour', max(TimeGenerated), min(TimeGenerated)),
+        FirstActivity = min(TimeGenerated),
+        LastActivity = max(TimeGenerated)
+        by UserPrincipal
+    | where UniqueResourceTypes >= 3 and UniqueResourceGroups >= 2
+    | extend 
+        LateralMovementScore = 
+            (UniqueResourceTypes * 5) + 
+            (UniqueResourceGroups * 3) +
+            (UniqueSubscriptions * 10) +
+            (case(TimeSpan <= 4, 20, TimeSpan <= 24, 10, 0)) + // Rapid movement bonus
+            (case(ActivityCount > 100, 15, ActivityCount > 50, 10, ActivityCount > 20, 5, 0))
+    | where LateralMovementScore >= 30
+    | project UserPrincipal, LateralMovementScore, UniqueResourceTypes, UniqueResourceGroups, 
+              UniqueSubscriptions, ActivityCount, TimeSpan, ResourceTypes, ResourceGroups, 
+              Operations, FirstActivity, LastActivity;
+
+// Step 2: Analyze authentication patterns for pivot accounts
+let authPatterns = 
+    pivotAccounts
+    | join kind=inner (
+        SigninLogs
+        | where TimeGenerated >= ago(huntingWindow)
+        | where isnotempty(UserPrincipalName) and ResultType == "0"
+        | extend UserPrincipal = UserPrincipalName
+    ) on UserPrincipal
+    | extend 
+        Location = strcat(coalesce(LocationDetails.countryOrRegion, "Unknown"), "-", coalesce(LocationDetails.city, "Unknown")),
+        DeviceInfo = strcat(coalesce(DeviceDetail.operatingSystem, "Unknown"), ":", coalesce(DeviceDetail.deviceId, "Unknown")),
+        AppName = coalesce(AppDisplayName, "Unknown"),
+        IsHighRiskApp = AppDisplayName in ("Microsoft Azure PowerShell", "Azure CLI", "Microsoft Graph PowerShell"),
+        IsNewDevice = isempty(DeviceDetail.deviceId) or not(DeviceDetail.isCompliant),
+        IsAnonymousProxy = NetworkLocationDetails.networkType == "anonymousProxy",
+        IsTor = NetworkLocationDetails.networkType == "tor"
+    | summarize 
+        UniqueIPs = dcount(IPAddress),
+        UniqueLocations = dcount(Location), 
+        UniqueDevices = dcount(DeviceInfo),
+        UniqueApps = dcount(AppName),
+        HighRiskAppSignins = countif(IsHighRiskApp),
+        NewDeviceSignins = countif(IsNewDevice),
+        AnonymousSignins = countif(IsAnonymousProxy or IsTor),
+        SigninCount = count(),
+        IPs = make_set(IPAddress, 20),
+        Locations = make_set(Location, 10),
+        Apps = make_set(AppName, 20),
+        AuthTimeSpan = datetime_diff('hour', max(TimeGenerated), min(TimeGenerated))
+        by UserPrincipal
+    | extend 
+        AuthAnomalyScore = 
+            (case(UniqueIPs > 10, 25, UniqueIPs > 5, 15, UniqueIPs > 2, 10, 0)) +
+            (case(UniqueLocations > 5, 30, UniqueLocations > 2, 15, 0)) +
+            (case(HighRiskAppSignins > 0, 20, 0)) +
+            (case(AnonymousSignins > 0, 35, 0)) +
+            (case(NewDeviceSignins > (SigninCount * 0.5), 15, 0));
+
+// Step 3: Correlate with role assignments and privilege changes
+let privilegeAnalysis = 
+    AuditLogs
+    | where TimeGenerated >= ago(huntingWindow)
+    | where Category == "RoleManagement" 
+    | where ActivityDisplayName has_any ("Add member to role", "Remove member from role", "Add eligible member to role")
+    | extend 
+        UserPrincipal = tostring(TargetResources[0].userPrincipalName),
+        RoleName = tostring(TargetResources[0].displayName),
+        Action = ActivityDisplayName,
+        Initiator = tostring(InitiatedBy.user.userPrincipalName)
+    | where isnotempty(UserPrincipal) and RoleName in (privilegedRoles)
+    | summarize 
+        RoleChanges = count(),
+        RolesAssigned = make_set(RoleName, 20),
+        Actions = make_set(Action, 20),
+        Initiators = make_set(Initiator, 10),
+        FirstRoleChange = min(TimeGenerated),
+        LastRoleChange = max(TimeGenerated)
+        by UserPrincipal
+    | extend PrivilegeEscalationScore = RoleChanges * 15;
+
+// Step 4: Detect suspicious resource access patterns
+let resourceAccessPatterns = 
+    AzureActivity
+    | where TimeGenerated >= ago(huntingWindow)
+    | where ActivityStatusValue == "Success"
+    | where ResourceProvider has_any (highValueResources) or ResourceType has_any ("secrets", "keys", "certificates")
+    | extend 
+        UserPrincipal = Caller,
+        ResourceIdentifier = strcat(ResourceProvider, "/", ResourceType, "/", coalesce(ResourceId, "Unknown")),
+        IsHighValueResource = ResourceProvider in (highValueResources)
+    | summarize 
+        HighValueResourceAccess = countif(IsHighValueResource),
+        UniqueHighValueResources = dcountif(ResourceIdentifier, IsHighValueResource),
+        SensitiveOperations = countif(OperationNameValue has_any ("delete", "write", "create", "update")),
+        TotalResourceAccess = count(),
+        AccessedResources = make_set(ResourceIdentifier, 100),
+        Operations = make_set(OperationNameValue, 50),
+        FirstAccess = min(TimeGenerated),
+        LastAccess = max(TimeGenerated)
+        by UserPrincipal
+    | where HighValueResourceAccess > 0 or SensitiveOperations >= 10
+    | extend 
+        ResourceAccessScore = 
+            (HighValueResourceAccess * 10) +
+            (UniqueHighValueResources * 15) +
+            (SensitiveOperations * 2) +
+            (case(TotalResourceAccess > 100, 20, TotalResourceAccess > 50, 10, 0));
+
+// Step 5: Timeline analysis for coordinated activity
+let timelineAnalysis = 
+    pivotAccounts
+    | join kind=leftouter authPatterns on UserPrincipal
+    | join kind=leftouter privilegeAnalysis on UserPrincipal  
+    | join kind=leftouter resourceAccessPatterns on UserPrincipal
+    | extend 
+        // Calculate comprehensive lateral movement risk score
+        ComprehensiveRiskScore = 
+            LateralMovementScore +
+            coalesce(AuthAnomalyScore, 0) +
+            coalesce(PrivilegeEscalationScore, 0) +
+            coalesce(ResourceAccessScore, 0),
+            
+        // Determine movement pattern classification
+        MovementPattern = case(
+            coalesce(PrivilegeEscalationScore, 0) > 30 and LateralMovementScore > 50, "Privilege Escalation with Lateral Movement",
+            coalesce(AnonymousSignins, 0) > 0 and coalesce(HighValueResourceAccess, 0) > 0, "Anonymous High-Value Resource Access",
+            coalesce(AuthAnomalyScore, 0) > 40 and UniqueResourceTypes >= 5, "Multi-Vector Lateral Movement", 
+            TimeSpan <= 2 and ActivityCount > 50, "Rapid Cross-Resource Movement",
+            UniqueSubscriptions > 1 and coalesce(SensitiveOperations, 0) > 10, "Cross-Subscription Privilege Abuse",
+            "Suspicious Cross-Resource Activity"
+        ),
+        
+        // Risk categorization
+        RiskLevel = case(
+            ComprehensiveRiskScore >= 100, "Critical",
+            ComprehensiveRiskScore >= 75, "High", 
+            ComprehensiveRiskScore >= 50, "Medium",
+            "Low"
+        ),
+        
+        // Investigation priority
+        InvestigationPriority = case(
+            coalesce(PrivilegeEscalationScore, 0) > 0 and coalesce(HighValueResourceAccess, 0) > 0, "P0-Critical",
+            coalesce(AnonymousSignins, 0) > 0 and LateralMovementScore > 40, "P1-High",
+            ComprehensiveRiskScore >= 60, "P2-Medium", 
+            "P3-Low"
+        ),
+        
+        // Evidence timeline
+        EvidenceTimeline = strcat(
+            "First Activity: ", FirstActivity, " | ",
+            "Last Activity: ", LastActivity, " | ",
+            case(isnotempty(FirstRoleChange), strcat("First Role Change: ", FirstRoleChange, " | "), ""),
+            case(isnotempty(FirstAccess), strcat("First Resource Access: ", FirstAccess), "")
+        );
+
+// Step 6: Final results with hunting recommendations
+timelineAnalysis
+| where ComprehensiveRiskScore >= 40 // Adjustable threshold based on environment
+| project 
+    // Identity Information
+    UserPrincipal,
+    MovementPattern,
+    RiskLevel,
+    InvestigationPriority,
+    ComprehensiveRiskScore,
+    
+    // Movement Metrics
+    LateralMovementScore,
+    UniqueResourceTypes,
+    UniqueResourceGroups, 
+    UniqueSubscriptions,
+    ActivityCount,
+    TimeSpan,
+    
+    // Authentication Anomalies
+    AuthAnomalyScore = coalesce(AuthAnomalyScore, 0),
+    UniqueIPs = coalesce(UniqueIPs, 0),
+    UniqueLocations = coalesce(UniqueLocations, 0),
+    HighRiskAppSignins = coalesce(HighRiskAppSignins, 0),
+    AnonymousSignins = coalesce(AnonymousSignins, 0),
+    
+    // Privilege Changes
+    PrivilegeEscalationScore = coalesce(PrivilegeEscalationScore, 0),
+    RoleChanges = coalesce(RoleChanges, 0),
+    RolesAssigned = coalesce(RolesAssigned, dynamic([])),
+    
+    // Resource Access
+    ResourceAccessScore = coalesce(ResourceAccessScore, 0),
+    HighValueResourceAccess = coalesce(HighValueResourceAccess, 0),
+    SensitiveOperations = coalesce(SensitiveOperations, 0),
+    
+    // Evidence for Investigation
+    ResourceTypes,
+    ResourceGroups,
+    Operations,
+    IPs = coalesce(IPs, dynamic([])),
+    Locations = coalesce(Locations, dynamic([])),
+    Apps = coalesce(Apps, dynamic([])),
+    AccessedResources = coalesce(AccessedResources, dynamic([])),
+    EvidenceTimeline,
+    
+    // Hunting Recommendations
+    HuntingRecommendations = case(
+        InvestigationPriority == "P0-Critical", "IMMEDIATE: Full account review, disable if necessary, audit all recent activity across all subscriptions",
+        InvestigationPriority == "P1-High", "URGENT: Deep dive investigation, correlation with SIEM alerts, privilege audit",
+        InvestigationPriority == "P2-Medium", "Investigate within 24h: Review activity patterns, validate business justification", 
+        "Monitor: Baseline activity patterns, schedule periodic review"
+    ),
+    
+    // MITRE ATT&CK Mapping
+    MitreTechniques = case(
+        coalesce(PrivilegeEscalationScore, 0) > 0, "T1078.004, T1484",
+        coalesce(AnonymousSignins, 0) > 0, "T1078.004, T1090",
+        "T1078.004, T1021"
+    ),
+    
+    // Next Steps for Analysts
+    AnalystActions = strcat(
+        "1. Review user's normal activity baseline | ",
+        "2. Validate business justification for cross-resource access | ",
+        "3. Check for concurrent alerts or incidents | ",
+        "4. Examine resource access logs in detail | ",
+        "5. Interview user if movement pattern is unexplained"
+    )
+| order by ComprehensiveRiskScore desc, InvestigationPriority asc
+
+// Additional Context Queries for Detailed Investigation:
+// Uncomment and run these queries for specific users identified above
+
+/*
+// Query 1: Detailed timeline for specific user
+let targetUser = "user@company.com"; // Replace with actual user
+union 
+    (AzureActivity | where Caller == targetUser | extend EventType = "AzureActivity"),
+    (SigninLogs | where UserPrincipalName == targetUser | extend EventType = "SignIn"),
+    (AuditLogs | where InitiatedBy.user.userPrincipalName == targetUser or TargetResources[0].userPrincipalName == targetUser | extend EventType = "AuditLog")
+| where TimeGenerated >= ago(7d)
+| sort by TimeGenerated asc
+| project TimeGenerated, EventType, ActivityDisplayName, OperationName, ResourceGroup, ResultType, IPAddress, Location
+
+// Query 2: Resource access heat map
+AzureActivity
+| where TimeGenerated >= ago(7d) and Caller == targetUser
+| summarize Count = count() by ResourceGroup, ResourceProvider, bin(TimeGenerated, 1h)
+| render timechart
+
+// Query 3: Authentication pattern analysis  
+SigninLogs
+| where TimeGenerated >= ago(7d) and UserPrincipalName == targetUser
+| extend Hour = hourofday(TimeGenerated), Day = dayofweek(TimeGenerated)
+| summarize Count = count() by Hour, Day, IPAddress
+| render columnchart
+*/

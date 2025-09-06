@@ -1,0 +1,111 @@
+{
+  "kind": "AzureDiagnostics",
+  "properties": {
+    "resourceTypes": [
+      "Microsoft.KeyVault/vaults"
+    ],
+    "dataTypes": [
+      {
+        "name": "KeyVaultData",
+        "state": "enabled",
+        "diagnosticLogsCategory": "AuditEvent"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Azure Key Vault",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "Azure Key Vault is a cloud service for securely storing and accessing secrets. This connector allows you to stream Key Vault audit logs into Microsoft Sentinel to monitor access patterns, detect anomalies, and investigate security incidents.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "KeyVaultData",
+          "baseQuery": "KeyVaultData"
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "Failed Key Vault operations",
+          "query": "KeyVaultData | where ResultType != \"Success\" | summarize count() by OperationName, CallerIPAddress, bin(TimeGenerated, 1h) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Unusual Key Vault access patterns",
+          "query": "KeyVaultData | where TimeGenerated > ago(7d) | summarize count() by CallerIPAddress, bin(TimeGenerated, 1h) | where count_ > 100"
+        },
+        {
+          "description": "Key and secret operations",
+          "query": "KeyVaultData | where Category == \"AuditEvent\" and OperationName contains \"Secret\" or OperationName contains \"Key\" | project TimeGenerated, OperationName, ResultType, CallerIPAddress, id_s"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "KeyVaultData",
+          "lastDataReceivedQuery": "KeyVaultData | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "HasDataConnectors",
+          "value": ["AzureDiagnostics"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "customs": [
+          {
+            "name": "Key Vault Contributor",
+            "description": "Key Vault Contributor permissions are required to enable diagnostic settings on Key Vault resources."
+          }
+        ]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Enable diagnostic settings on Key Vault",
+          "description": "Configure diagnostic settings to send Key Vault logs to your Log Analytics workspace.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Configure Key Vault diagnostic settings",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Go to your **Key Vault** resource in the Azure portal\n2. Select **Diagnostic settings** under Monitoring\n3. Click **Add diagnostic setting**\n4. Provide a name for the setting\n5. Check **AuditEvent** under Logs\n6. Select **Send to Log Analytics workspace**\n7. Choose your Microsoft Sentinel workspace\n8. Click **Save**"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Validate data ingestion",
+          "description": "Run the following query to validate that Key Vault logs are being ingested:",
+          "instructions": [
+            {
+              "parameters": {
+                "query": "KeyVaultData | take 10",
+                "label": "Validation Query"
+              },
+              "type": "CopyableLabel"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

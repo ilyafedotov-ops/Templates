@@ -1,0 +1,87 @@
+{
+  "kind": "AzureActivityLog",
+  "properties": {
+    "tenantId": "{{tenantId}}",
+    "subscriptions": [
+      {
+        "subscriptionId": "{{subscriptionId}}",
+        "enabled": true
+      }
+    ],
+    "dataTypes": [
+      {
+        "name": "AzureActivity",
+        "lastDataReceivedQuery": "AzureActivity | where TimeGenerated > ago(7d) | summarize Time = max(TimeGenerated)",
+        "connectorUiConfig": {
+          "title": "Azure Activity",
+          "publisher": "Microsoft",
+          "descriptionMarkdown": "Azure Activity Log provides insight into subscription-level events that have occurred in Azure. Activity logs include information such as when a resource is created, modified, or deleted.",
+          "graphQueries": [
+            {
+              "metricName": "Total data received",
+              "legend": "AzureActivity",
+              "baseQuery": "AzureActivity"
+            }
+          ],
+          "sampleQueries": [
+            {
+              "description": "All Administrative operations",
+              "query": "AzureActivity | where CategoryValue == \"Administrative\" | summarize count() by bin(TimeGenerated, 1h)"
+            },
+            {
+              "description": "Failed authentication attempts",
+              "query": "AzureActivity | where ActivityStatus == \"Failed\" and CategoryValue == \"Administrative\" | project TimeGenerated, Caller, OperationName, ResourceGroup"
+            }
+          ],
+          "dataTypes": [
+            {
+              "name": "AzureActivity",
+              "lastDataReceivedQuery": "AzureActivity | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+            }
+          ],
+          "connectivityCriteria": [
+            {
+              "type": "SentinelKindsV2",
+              "value": ["AzureActivityLog"]
+            }
+          ],
+          "availability": {
+            "status": 1,
+            "isPreview": false
+          },
+          "permissions": {
+            "resourceProvider": [
+              {
+                "provider": "Microsoft.OperationalInsights/workspaces",
+                "permissionsDisplayText": "Write permissions are required.",
+                "providerDisplayName": "Workspace",
+                "scope": "Workspace",
+                "requiredPermissions": {
+                  "write": true,
+                  "read": false,
+                  "delete": false
+                }
+              }
+            ]
+          },
+          "instructionSteps": [
+            {
+              "title": "1. Connect Azure Activity Log",
+              "description": "Select the subscriptions you want to connect to your Microsoft Sentinel workspace.",
+              "instructions": [
+                {
+                  "parameters": {
+                    "connectorKind": "AzureActivityLog",
+                    "title": "Azure Activity Log",
+                    "enable": true
+                  },
+                  "type": "SentinelResourceProvider"
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

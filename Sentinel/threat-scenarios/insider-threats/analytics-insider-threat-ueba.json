@@ -1,0 +1,175 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "2.0.0.0",
+  "metadata": {
+    "title": "Advanced Insider Threat Detection with UEBA Analytics",
+    "description": "Comprehensive insider threat detection using User and Entity Behavior Analytics (UEBA), machine learning models, and psychological profiling to identify malicious insiders, compromised accounts, and policy violations",
+    "author": "Enterprise Security Team",
+    "version": "2.0.0",
+    "lastModified": "2025-01-01T00:00:00Z",
+    "compliance": ["ISO27001:A.9.2.6", "SOC2:CC6.3", "NIST:AU-6", "PCI-DSS:10.2"],
+    "mitreAttack": {
+      "techniques": ["T1078.004", "T1087", "T1083", "T1005", "T1020", "T1041", "T1567"],
+      "tactics": ["Collection", "Exfiltration", "Discovery", "Persistence"],
+      "subTechniques": ["Valid Accounts: Cloud Accounts", "Account Discovery", "File and Directory Discovery"]
+    },
+    "dataConnectors": ["AzureActiveDirectory", "Office365", "AzureActivity", "SecurityEvents", "AzureStorage", "BehaviorAnalytics"],
+    "queryFrequency": "PT30M",
+    "queryPeriod": "PT24H",
+    "alertRuleTemplateName": "advanced-insider-threat-ueba"
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace"
+      }
+    },
+    "ruleId": {
+      "type": "string",
+      "defaultValue": "adv-insider-threat-ueba",
+      "metadata": {
+        "description": "Unique identifier for the analytics rule"
+      }
+    },
+    "insiderThreatThreshold": {
+      "type": "int",
+      "defaultValue": 70,
+      "minValue": 50,
+      "maxValue": 95,
+      "metadata": {
+        "description": "UEBA insider threat score threshold (50-95)"
+      }
+    },
+    "privilegedUsers": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "List of privileged user accounts for enhanced monitoring"
+      }
+    },
+    "departmentHeads": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "List of department head accounts with access to sensitive information"
+      }
+    },
+    "contractorAccounts": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "List of contractor/temporary accounts requiring special monitoring"
+      }
+    }
+  },
+  "variables": {
+    "alertRuleName": "[concat('Advanced Insider Threat Detection with UEBA - ', parameters('ruleId'))]",
+    "alertRuleDescription": "Uses User and Entity Behavior Analytics (UEBA) to detect sophisticated insider threats including data theft, sabotage, fraud, and policy violations through advanced behavioral modeling and machine learning"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('ruleId'))]",
+      "properties": {
+        "displayName": "[variables('alertRuleName')]",
+        "description": "[variables('alertRuleDescription')]",
+        "enabled": true,
+        "kind": "Scheduled",
+        "severity": "High",
+        "queryFrequency": "PT30M",
+        "queryPeriod": "PT24H",
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT2H",
+        "suppressionEnabled": true,
+        "tactics": ["Collection", "Exfiltration", "Discovery"],
+        "techniques": ["T1078.004", "T1087", "T1083"],
+        "subTechniques": ["T1078.004", "T1087.003", "T1083.001"],
+        "query": "let analysisWindow = 24h;\nlet baselineWindow = 30d;\nlet insiderThreshold = toint('[parameters('insiderThreatThreshold')]');\nlet privilegedUsers = dynamic('[parameters('privilegedUsers')]');\nlet departmentHeads = dynamic('[parameters('departmentHeads')]');\nlet contractorAccounts = dynamic('[parameters('contractorAccounts')]');\n// Define high-risk activities and behavioral indicators\nlet highRiskActivities = dynamic([\n    \"FileDownloaded\", \"FileSyncDownloaded\", \"FileAccessed\", \"SharingSet\", \"SharingInvitationCreated\",\n    \"Send\", \"MailItemsAccessed\", \"SearchQueryInitiatedExchange\", \"SearchQueryInitiatedSharePoint\"\n]);\n// User baseline behavioral analysis (30-day lookback)\nlet userBaseline = \n    union \n    (\n        // Office 365 baseline\n        OfficeActivity\n        | where TimeGenerated between (ago(baselineWindow) .. ago(analysisWindow))\n        | where Operation in (highRiskActivities)\n        | where isnotempty(UserId)\n        | extend UserPrincipal = tolower(UserId)\n    ),\n    (\n        // Azure Activity baseline\n        AzureActivity\n        | where TimeGenerated between (ago(baselineWindow) .. ago(analysisWindow))\n        | where isnotempty(Caller)\n        | extend \n            UserPrincipal = tolower(Caller),\n            Operation = OperationNameValue\n    ),\n    (\n        // Sign-in baseline\n        SigninLogs\n        | where TimeGenerated between (ago(baselineWindow) .. ago(analysisWindow))\n        | where isnotempty(UserPrincipalName)\n        | extend \n            UserPrincipal = tolower(UserPrincipalName),\n            Operation = \"SignIn\"\n    )\n    | extend \n        Hour = hourofday(TimeGenerated),\n        DayOfWeek = dayofweek(TimeGenerated),\n        IsWeekend = dayofweek(TimeGenerated) in (0, 6),\n        IsAfterHours = hourofday(TimeGenerated) < 7 or hourofday(TimeGenerated) > 19\n    | summarize \n        BaselineActivitiesPerDay = avg(todouble(1)),\n        BaselineAfterHoursRate = avg(case(IsAfterHours, 1.0, 0.0)),\n        BaselineWeekendRate = avg(case(IsWeekend, 1.0, 0.0)),\n        TypicalHours = make_set(Hour),\n        TypicalOperations = make_set(Operation),\n        ActivityStdDev = stdev(todouble(1))\n        by bin(TimeGenerated, 1d), UserPrincipal\n    | summarize \n        BaselineAvgActivitiesPerDay = avg(BaselineActivitiesPerDay),\n        BaselineStdDevActivities = avg(ActivityStdDev),\n        BaselineAfterHoursRate = avg(BaselineAfterHoursRate),\n        BaselineWeekendRate = avg(BaselineWeekendRate),\n        CommonHours = make_set_if(TypicalHours, array_length(TypicalHours) > 5),\n        CommonOperations = make_set_if(TypicalOperations, array_length(TypicalOperations) > 3)\n        by UserPrincipal;\n// Current period comprehensive user behavior analysis\nlet currentBehavior = \n    union \n    (\n        // Office 365 current activity\n        OfficeActivity\n        | where TimeGenerated >= ago(analysisWindow)\n        | where isnotempty(UserId)\n        | extend \n            UserPrincipal = tolower(UserId),\n            ActivityType = \"Office365\",\n            FileSize = toint(coalesce(Size, 0)),\n            IsFileOperation = Operation in (\"FileDownloaded\", \"FileSyncDownloaded\", \"FileAccessed\"),\n            IsSharingOperation = Operation in (\"SharingSet\", \"SharingInvitationCreated\"),\n            IsEmailOperation = Operation in (\"Send\", \"MailItemsAccessed\"),\n            IsSearchOperation = Operation in (\"SearchQueryInitiatedExchange\", \"SearchQueryInitiatedSharePoint\"),\n            TargetResource = coalesce(SourceFileName, ObjectId, \"\"),\n            ExternalTarget = case(\n                Operation in (\"SharingSet\", \"SharingInvitationCreated\") and isnotempty(TargetUserOrGroupName),\n                TargetUserOrGroupName,\n                Operation == \"Send\" and isnotempty(Recipients),\n                Recipients,\n                \"\"\n            )\n    ),\n    (\n        // Azure Activity current\n        AzureActivity\n        | where TimeGenerated >= ago(analysisWindow)\n        | where isnotempty(Caller)\n        | extend \n            UserPrincipal = tolower(Caller),\n            ActivityType = \"AzureActivity\",\n            Operation = OperationNameValue,\n            FileSize = 0,\n            IsFileOperation = false,\n            IsSharingOperation = false,\n            IsEmailOperation = false,\n            IsSearchOperation = false,\n            TargetResource = coalesce(ResourceId, ResourceGroup, \"\"),\n            ExternalTarget = \"\"\n    ),\n    (\n        // Sign-in current\n        SigninLogs\n        | where TimeGenerated >= ago(analysisWindow)\n        | where isnotempty(UserPrincipalName)\n        | extend \n            UserPrincipal = tolower(UserPrincipalName),\n            ActivityType = \"Authentication\",\n            Operation = \"SignIn\",\n            FileSize = 0,\n            IsFileOperation = false,\n            IsSharingOperation = false,\n            IsEmailOperation = false,\n            IsSearchOperation = false,\n            TargetResource = coalesce(AppDisplayName, \"\"),\n            ExternalTarget = \"\"\n    )\n    | extend \n        // Enhanced temporal analysis\n        Hour = hourofday(TimeGenerated),\n        DayOfWeek = dayofweek(TimeGenerated),\n        IsWeekend = dayofweek(TimeGenerated) in (0, 6),\n        IsAfterHours = hourofday(TimeGenerated) < 7 or hourofday(TimeGenerated) > 19,\n        IsHoliday = false, // Would integrate with holiday calendar\n        \n        // User classification\n        IsPrivilegedUser = UserPrincipal in (privilegedUsers),\n        IsDepartmentHead = UserPrincipal in (departmentHeads),\n        IsContractor = UserPrincipal in (contractorAccounts),\n        \n        // Risk indicators\n        IsSensitiveFileAccess = (\n            TargetResource contains \"confidential\" or \n            TargetResource contains \"secret\" or \n            TargetResource contains \"personal\" or\n            TargetResource contains \"financial\" or\n            TargetResource contains \"salary\"\n        ),\n        IsLargeFileOperation = FileSize > 50000000, // 50MB+\n        IsExternalSharing = isnotempty(ExternalTarget) and not(ExternalTarget contains \"@yourcompany.com\"), // Replace domain\n        \n        // Psychological and behavioral risk factors\n        IsMassDataAccess = false, // Will be calculated in aggregation\n        IsRapidActivity = false, // Will be calculated in aggregation\n        IsUnusualTiming = false, // Will be calculated against baseline\n        \n        // Access pattern analysis\n        IsSystemAdminAccess = TargetResource contains \"admin\" or Operation contains \"admin\",\n        IsHRDataAccess = TargetResource contains \"hr\" or TargetResource contains \"employee\",\n        IsFinancialDataAccess = TargetResource contains \"financial\" or TargetResource contains \"payroll\",\n        IsIPDataAccess = TargetResource contains \"patent\" or TargetResource contains \"proprietary\"\n    | summarize \n        // Volume metrics\n        TotalActivities = count(),\n        FileOperations = countif(IsFileOperation),\n        SharingOperations = countif(IsSharingOperation),\n        EmailOperations = countif(IsEmailOperation),\n        SearchOperations = countif(IsSearchOperation),\n        \n        // Temporal patterns\n        AfterHoursActivities = countif(IsAfterHours),\n        WeekendActivities = countif(IsWeekend),\n        UnusualHourActivities = countif(Hour < 6 or Hour > 22), // Very unusual hours\n        \n        // Risk activities\n        SensitiveFileAccess = countif(IsSensitiveFileAccess),\n        LargeFileOperations = countif(IsLargeFileOperation),\n        ExternalSharingActivities = countif(IsExternalSharing),\n        SystemAdminAccess = countif(IsSystemAdminAccess),\n        HRDataAccess = countif(IsHRDataAccess),\n        FinancialDataAccess = countif(IsFinancialDataAccess),\n        IPDataAccess = countif(IsIPDataAccess),\n        \n        // Data volume analysis\n        TotalDataTransfer = sum(FileSize),\n        MaxFileSize = max(FileSize),\n        AvgFileSize = avg(FileSize),\n        \n        // Diversity analysis\n        UniqueOperations = dcount(Operation),\n        UniqueResources = dcount(TargetResource),\n        UniqueHours = dcount(Hour),\n        \n        // Evidence collection\n        AccessedResources = make_set(TargetResource, 100),\n        SensitiveResources = make_set_if(TargetResource, IsSensitiveFileAccess, 50),\n        ExternalTargets = make_set_if(ExternalTarget, IsExternalSharing, 30),\n        Operations = make_set(Operation, 50),\n        ActivityTypes = make_set(ActivityType, 10),\n        \n        // Timing analysis\n        FirstActivity = min(TimeGenerated),\n        LastActivity = max(TimeGenerated),\n        ActivityDuration = datetime_diff('hour', max(TimeGenerated), min(TimeGenerated))\n        \n        by bin(TimeGenerated, 30m), UserPrincipal, IsPrivilegedUser, IsDepartmentHead, IsContractor\n    | extend \n        // Behavioral pattern analysis\n        IsMassDataAccess = TotalActivities > 200 or TotalDataTransfer > 1000000000, // 1GB+\n        IsRapidActivity = ActivityDuration <= 2 and TotalActivities > 50,\n        IsDataHoarding = FileOperations > 100 or SensitiveFileAccess > 20,\n        IsReconnaissancePattern = SearchOperations > 20 or UniqueResources > 50,\n        IsPrivilegeAbuse = (IsPrivilegedUser or IsDepartmentHead) and (\n            SystemAdminAccess > 0 or \n            SensitiveFileAccess > 10 or \n            ExternalSharingActivities > 0\n        ),\n        \n        // Calculate rates\n        AfterHoursRate = round((AfterHoursActivities * 100.0) / TotalActivities, 1),\n        WeekendRate = round((WeekendActivities * 100.0) / TotalActivities, 1),\n        SensitiveAccessRate = round((SensitiveFileAccess * 100.0) / TotalActivities, 1),\n        ExternalSharingRate = round((ExternalSharingActivities * 100.0) / TotalActivities, 1);\n// Join current behavior with baseline for anomaly detection\nlet behaviorAnalysis = \n    currentBehavior\n    | join kind=leftouter (\n        userBaseline\n    ) on UserPrincipal\n    | extend \n        // Baseline deviation analysis\n        ActivityVolumeDeviation = case(\n            isnotnull(BaselineAvgActivitiesPerDay),\n            round((TotalActivities - BaselineAvgActivitiesPerDay) / BaselineAvgActivitiesPerDay * 100, 1),\n            0\n        ),\n        AfterHoursDeviation = case(\n            isnotnull(BaselineAfterHoursRate),\n            round((AfterHoursRate - (BaselineAfterHoursRate * 100)) / (BaselineAfterHoursRate * 100) * 100, 1),\n            0\n        ),\n        WeekendDeviation = case(\n            isnotnull(BaselineWeekendRate),\n            round((WeekendRate - (BaselineWeekendRate * 100)) / (BaselineWeekendRate * 100) * 100, 1),\n            0\n        ),\n        \n        // Anomaly flags\n        IsVolumeAnomaly = abs(ActivityVolumeDeviation) > 300 or TotalActivities > 500,\n        IsTimingAnomaly = abs(AfterHoursDeviation) > 200 or abs(WeekendDeviation) > 200,\n        IsNewUser = isnull(BaselineAvgActivitiesPerDay), // No baseline = potentially new or returning user\n        \n        BaselineComparison = case(\n            isnotnull(BaselineAvgActivitiesPerDay),\n            strcat(\"Volume: \", ActivityVolumeDeviation, \"%, After-hours: \", AfterHoursDeviation, \"%, Weekend: \", WeekendDeviation, \"%\"),\n            \"No baseline available - new or infrequent user\"\n        )\n    | extend \n        // Comprehensive UEBA Insider Threat Risk Score\n        UEBAInsiderScore = min_of(\n            round(\n                // Baseline deviation (25% weight)\n                (case(IsVolumeAnomaly, 25, abs(ActivityVolumeDeviation) > 100, 15, 0)) +\n                (case(IsTimingAnomaly, 20, abs(AfterHoursDeviation) > 50, 10, 0)) +\n                \n                // Data access patterns (30% weight)\n                (case(SensitiveFileAccess > 50, 30, SensitiveFileAccess > 20, 20, SensitiveFileAccess > 0, 10, 0)) +\n                (case(ExternalSharingActivities > 10, 25, ExternalSharingActivities > 0, 15, 0)) +\n                (case(TotalDataTransfer > 5000000000, 25, TotalDataTransfer > 1000000000, 15, TotalDataTransfer > 100000000, 10, 0)) + // GB thresholds\n                \n                // Behavioral patterns (25% weight)\n                (case(IsMassDataAccess, 20, 0)) +\n                (case(IsRapidActivity, 15, 0)) +\n                (case(IsDataHoarding, 20, 0)) +\n                (case(IsReconnaissancePattern, 15, 0)) +\n                \n                // User context and privilege abuse (20% weight)\n                (case(IsPrivilegeAbuse, 25, 0)) +\n                (case(IsContractor and SensitiveFileAccess > 5, 15, 0)) +\n                (case(IsDepartmentHead and ExternalSharingActivities > 0, 15, 0)) +\n                (case(IsNewUser and SensitiveFileAccess > 0, 10, 0)) +\n                \n                // Specific high-risk activities\n                (case(HRDataAccess > 0, 15, 0)) +\n                (case(FinancialDataAccess > 0, 12, 0)) +\n                (case(IPDataAccess > 0, 18, 0)) +\n                (case(SystemAdminAccess > 0 and not(IsPrivilegedUser), 20, 0))\n            , 1),\n            100\n        ),\n        \n        // Insider threat pattern classification\n        InsiderThreatPattern = case(\n            IsPrivilegeAbuse and ExternalSharingActivities > 0, \"Privileged Insider Data Theft\",\n            IsMassDataAccess and IsRapidActivity, \"Rapid Mass Data Extraction\", \n            SensitiveFileAccess > 20 and ExternalSharingActivities > 5, \"Systematic Data Exfiltration\",\n            IsContractor and (SensitiveFileAccess > 10 or SystemAdminAccess > 0), \"Contractor Insider Threat\",\n            IsDataHoarding and AfterHoursRate > 50, \"After-Hours Data Hoarding\",\n            IsReconnaissancePattern and UniqueResources > 100, \"Internal Reconnaissance Activity\",\n            HRDataAccess > 0 and not(IsDepartmentHead), \"Unauthorized HR Data Access\",\n            FinancialDataAccess > 0 and not(IsPrivilegedUser), \"Unauthorized Financial Data Access\",\n            IPDataAccess > 0 and ExternalSharingActivities > 0, \"Intellectual Property Theft\",\n            WeekendRate > 80 and SensitiveFileAccess > 0, \"Weekend Sensitive Data Activity\",\n            \"Suspicious Insider Activity\"\n        );\n// Filter and finalize results\nbehaviorAnalysis\n| where UEBAInsiderScore >= insiderThreshold or IsPrivilegeAbuse or (SensitiveFileAccess > 20 and ExternalSharingActivities > 0)\n| extend \n    // MITRE ATT&CK technique mapping\n    MitreTechnique = case(\n        InsiderThreatPattern contains \"Data Theft\" or InsiderThreatPattern contains \"Exfiltration\", \"T1041\",\n        InsiderThreatPattern contains \"Reconnaissance\", \"T1087.003\",\n        InsiderThreatPattern contains \"Privileged\", \"T1078.004\",\n        IsDataHoarding, \"T1005\",\n        \"T1083\"\n    ),\n    MitreTactic = case(\n        InsiderThreatPattern contains \"Theft\" or InsiderThreatPattern contains \"Exfiltration\", \"Exfiltration\",\n        InsiderThreatPattern contains \"Reconnaissance\", \"Discovery\",\n        InsiderThreatPattern contains \"Hoarding\", \"Collection\",\n        \"Discovery\"\n    ),\n    \n    // Dynamic incident severity\n    IncidentSeverity = case(\n        UEBAInsiderScore >= 90 or (IsPrivilegeAbuse and ExternalSharingActivities > 0), \"Critical\",\n        UEBAInsiderScore >= 80 or InsiderThreatPattern contains \"Theft\", \"High\",\n        UEBAInsiderScore >= 70 or IsVolumeAnomaly, \"Medium\",\n        \"Low\"\n    ),\n    \n    // Business and compliance impact\n    BusinessImpact = case(\n        IPDataAccess > 0 and ExternalSharingActivities > 0, \"Critical - Intellectual property theft risk\",\n        FinancialDataAccess > 0 and IsContractor, \"High - Financial data exposure by contractor\",\n        HRDataAccess > 0 and ExternalSharingActivities > 0, \"High - Employee personal data breach risk\",\n        SensitiveFileAccess > 50, \"Medium - Large scale sensitive data access\",\n        \"Low - Standard monitoring alert\"\n    ),\n    \n    // Investigation and response recommendations\n    RecommendedActions = case(\n        UEBAInsiderScore >= 90, \"IMMEDIATE: Interview user, disable access if necessary, preserve evidence, legal consultation\",\n        IsPrivilegeAbuse, \"URGENT: Review privileged access logs, validate business justification, consider access restriction\", \n        ExternalSharingActivities > 10, \"HIGH: Audit all external shares, verify recipients, implement DLP controls\",\n        IsContractor and SensitiveFileAccess > 10, \"Review contractor access scope, validate need-to-know, manager approval\",\n        UEBAInsiderScore >= 70, \"Monitor closely, document patterns, schedule user interview if behavior continues\",\n        \"Standard monitoring, baseline adjustment if behavior becomes normal\"\n    )\n| project \n    TimeGenerated,\n    UserPrincipal,\n    InsiderThreatPattern,\n    IncidentSeverity,\n    UEBAInsiderScore,\n    IsPrivilegedUser,\n    IsDepartmentHead,\n    IsContractor,\n    TotalActivities,\n    SensitiveFileAccess,\n    ExternalSharingActivities,\n    TotalDataTransfer,\n    AfterHoursRate,\n    WeekendRate,\n    HRDataAccess,\n    FinancialDataAccess,\n    IPDataAccess,\n    SystemAdminAccess,\n    BaselineComparison,\n    MitreTechnique,\n    MitreTactic,\n    BusinessImpact,\n    RecommendedActions,\n    // Evidence for investigation\n    AccessedResources,\n    SensitiveResources,\n    ExternalTargets,\n    Operations,\n    ActivityTypes,\n    // Risk breakdown\n    IsVolumeAnomaly,\n    IsTimingAnomaly,\n    IsMassDataAccess,\n    IsRapidActivity,\n    IsDataHoarding,\n    IsReconnaissancePattern,\n    IsPrivilegeAbuse,\n    ActivityVolumeDeviation,\n    AfterHoursDeviation,\n    WeekendDeviation,\n    FirstActivity,\n    LastActivity,\n    ActivityDuration\n| order by UEBAInsiderScore desc, SensitiveFileAccess desc",
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "columnName": "UserPrincipal",
+                "identifier": "Name"
+              }
+            ]
+          },
+          {
+            "entityType": "File",
+            "fieldMappings": [
+              {
+                "columnName": "AccessedResources",
+                "identifier": "Name"
+              }
+            ]
+          }
+        ],
+        "alertDetailsOverride": {
+          "alertDisplayNameFormat": "UEBA Insider Threat: {{UserPrincipal}} - {{InsiderThreatPattern}} (Score: {{UEBAInsiderScore}}/100)",
+          "alertDescriptionFormat": "Advanced insider threat detected: {{InsiderThreatPattern}}\\n\\nUser: {{UserPrincipal}}\\nUser Type: {{#IsPrivilegedUser}}Privileged User{{/IsPrivilegedUser}}{{#IsDepartmentHead}}Department Head{{/IsDepartmentHead}}{{#IsContractor}}Contractor{{/IsContractor}}\\n\\nUEBA Analysis:\\n- Insider Threat Score: {{UEBAInsiderScore}}/100\\n- Total Activities: {{TotalActivities}}\\n- Sensitive File Access: {{SensitiveFileAccess}}\\n- External Sharing: {{ExternalSharingActivities}}\\n- Data Transfer: {{TotalDataTransfer}} bytes\\n- After-Hours Rate: {{AfterHoursRate}}%\\n- Weekend Rate: {{WeekendRate}}%\\n- HR Data Access: {{HRDataAccess}}\\n- Financial Data Access: {{FinancialDataAccess}}\\n- IP Data Access: {{IPDataAccess}}\\n- System Admin Access: {{SystemAdminAccess}}\\n- MITRE Technique: {{MitreTechnique}}\\n\\nBaseline Deviation: {{BaselineComparison}}\\nBusiness Impact: {{BusinessImpact}}\\n\\nIMMEDIATE ACTIONS: {{RecommendedActions}}\\n\\nEvidence:\\n- Accessed Resources: {{AccessedResources}}\\n- Sensitive Resources: {{SensitiveResources}}\\n- External Targets: {{ExternalTargets}}\\n- Operations: {{Operations}}\\n\\nRisk Indicators:\\n- Volume Anomaly: {{IsVolumeAnomaly}}\\n- Timing Anomaly: {{IsTimingAnomaly}}\\n- Mass Data Access: {{IsMassDataAccess}}\\n- Rapid Activity: {{IsRapidActivity}}\\n- Data Hoarding: {{IsDataHoarding}}\\n- Reconnaissance: {{IsReconnaissancePattern}}\\n- Privilege Abuse: {{IsPrivilegeAbuse}}",
+          "alertSeverityColumnName": "IncidentSeverity",
+          "alertDynamicProperties": [
+            {
+              "alertProperty": "AlertLink",
+              "value": "InsiderThreatPattern"
+            },
+            {
+              "alertProperty": "ProviderName",
+              "value": "UEBA Insider Threat Analytics"
+            },
+            {
+              "alertProperty": "RemediationSteps",
+              "value": "RecommendedActions"
+            }
+          ]
+        },
+        "customDetails": {
+          "InsiderThreatPattern": "InsiderThreatPattern",
+          "UEBAInsiderScore": "UEBAInsiderScore",
+          "IsPrivilegedUser": "IsPrivilegedUser",
+          "IsDepartmentHead": "IsDepartmentHead",
+          "IsContractor": "IsContractor",
+          "MitreTechnique": "MitreTechnique",
+          "SensitiveFileAccess": "SensitiveFileAccess",
+          "ExternalSharingActivities": "ExternalSharingActivities",
+          "TotalDataTransfer": "TotalDataTransfer",
+          "BusinessImpact": "BusinessImpact",
+          "HRDataAccess": "HRDataAccess",
+          "FinancialDataAccess": "FinancialDataAccess",
+          "IPDataAccess": "IPDataAccess",
+          "IsPrivilegeAbuse": "IsPrivilegeAbuse",
+          "BaselineDeviation": "BaselineComparison"
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": true,
+            "lookbackDuration": "PT6H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": ["Account", "File"],
+            "groupByAlertDetails": ["DisplayName"],
+            "groupByCustomDetails": ["InsiderThreatPattern", "UserPrincipal"]
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "alertRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/alertRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', parameters('ruleId'))]"
+    },
+    "alertRuleName": {
+      "type": "string",
+      "value": "[variables('alertRuleName')]"
+    }
+  }
+}

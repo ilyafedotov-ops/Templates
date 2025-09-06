@@ -1,0 +1,32 @@
+IndicatorType,Value,ThreatType,Confidence,FirstSeen,LastSeen,Source,Description,Severity,Context
+IP,192.0.2.1,Malware,High,2024-12-01,2024-12-31,CrowdStrike,C2 server for Cobalt Strike,Critical,Known command and control infrastructure
+IP,203.0.113.50,Phishing,Medium,2024-11-15,2024-12-20,PhishTank,Hosting phishing landing pages,High,Multiple credential harvesting campaigns
+IP,198.51.100.25,Botnet,High,2024-10-01,2024-12-30,Spamhaus,Conficker botnet member,High,Part of established botnet infrastructure
+Domain,malicious-example.com,Malware,High,2024-12-05,2024-12-31,VirusTotal,Distributing banking trojans,Critical,Active malware distribution point
+Domain,phish-site.org,Phishing,High,2024-11-20,2024-12-25,OpenPhish,Microsoft Office 365 credential phishing,High,Targets corporate credentials
+Domain,spam-relay.net,Spam,Medium,2024-09-01,2024-12-31,SURBL,Bulk email distribution,Medium,Used for spam and promotional emails
+URL,http://malicious-example.com/payload.exe,Malware,High,2024-12-10,2024-12-31,Hybrid Analysis,Ransomware payload download,Critical,Direct malware download link
+URL,https://phish-site.org/login.php,Phishing,High,2024-11-25,2024-12-25,URLVoid,Credential harvesting page,High,Mimics legitimate login portals
+URL,http://203.0.113.50/admin/panel,Command and Control,Medium,2024-10-15,2024-12-31,ThreatCrowd,Administrative panel for botnet,High,Used for botnet command and control
+FileHash,d41d8cd98f00b204e9800998ecf8427e,Malware,High,2024-12-01,2024-12-31,YARA Rules,Emotet banking trojan,Critical,Known Emotet variant MD5 hash
+FileHash,356a192b7913b04c54574d18c28d46e6395428ab,Malware,High,2024-11-10,2024-12-31,VirusTotal,Trickbot payload,Critical,Trickbot banking trojan SHA1 hash
+FileHash,2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae,Ransomware,High,2024-12-15,2024-12-31,Malware Bazaar,WannaCry ransomware,Critical,WannaCry ransomware SHA256 hash
+Email,threat-actor@malicious-example.com,Command and Control,Medium,2024-11-01,2024-12-31,Recorded Future,C2 communication email,Medium,Used for command and control communications
+Email,phisher@phish-site.org,Phishing,High,2024-11-20,2024-12-25,Anti-Phishing Working Group,Phishing campaign sender,High,Active in credential phishing campaigns
+Registry,HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\Malware,Persistence,High,2024-12-05,2024-12-31,MITRE ATT&CK,Persistence mechanism,High,Malware persistence registry key
+Registry,HKEY_CURRENT_USER\Software\Classes\.exe\shell\open\command,Hijacking,Medium,2024-10-01,2024-12-31,Security Researchers,File association hijacking,Medium,Used to hijack executable file associations
+Mutex,Global\I_AM_EMOTET,Malware,High,2024-11-15,2024-12-31,Malware Analysis,Emotet mutex,High,Emotet banking trojan mutex identifier
+Mutex,RyukMutex2021,Ransomware,High,2024-12-01,2024-12-31,Threat Intelligence,Ryuk ransomware mutex,Critical,Ryuk ransomware mutex identifier
+UserAgent,Mozilla/5.0 (compatible; Baiduspider/2.0),Malicious Tool,Medium,2024-09-01,2024-12-31,Web Security,Fake Baidu crawler,Medium,Often used by malicious bots
+UserAgent,python-requests/2.25.1 ThreatActor,Command and Control,High,2024-11-01,2024-12-31,Network Security,Modified Python requests library,High,Customized for C2 communication
+Certificate,12:34:56:78:9A:BC:DE:F0:12:34:56:78:9A:BC:DE:F0:12:34:56:78,Malware,High,2024-12-10,2024-12-31,Certificate Transparency,Self-signed malware certificate,High,Used by malware for encrypted C2
+ASN,AS64512,Hosting Provider,Low,2024-01-01,2024-12-31,ASN Database,Bulletproof hosting provider,Low,Known to host malicious content
+JA3,769,055:47,013-0-0-01d1-017,TLS Fingerprint,Medium,2024-11-01,2024-12-31,TLS Analysis,Malware TLS fingerprint,Medium,Common TLS signature for malware
+Process,svchost.exe running from temp folder,Suspicious Process,High,2024-12-01,2024-12-31,Behavioral Analysis,Process masquerading,High,Legitimate process name in wrong location
+Network,TCP connection to port 6667 from office network,Suspicious Network,Medium,2024-10-01,2024-12-31,Network Monitoring,IRC C2 communication,Medium,Uncommon IRC traffic from corporate network
+CVE,CVE-2021-44228,Vulnerability,Critical,2021-12-09,2024-12-31,NVD,Log4j remote code execution,Critical,Log4Shell vulnerability
+CVE,CVE-2021-34527,Vulnerability,Critical,2021-06-08,2024-12-31,NVD,PrintNightmare privilege escalation,Critical,Windows Print Spooler vulnerability
+YARA,rule_emotet_banking_trojan,Detection Rule,High,2024-11-01,2024-12-31,YARA Project,Emotet detection rule,High,YARA rule for Emotet identification
+YARA,rule_ransomware_generic,Detection Rule,Medium,2024-09-01,2024-12-31,YARA Project,Generic ransomware detection,Medium,Broad ransomware family detection
+Suricata,alert tcp any any -> any 443 (msg:"TLS Certificate CN contains suspicious string",Intrusion Detection,High,2024-12-01,2024-12-31,Suricata Community,Suspicious TLS certificate detection,High,Detects certificates with suspicious common names
+Snort,alert tcp any any -> any 80 (msg:"HTTP User-Agent contains malware string",Intrusion Detection,Medium,2024-10-15,2024-12-31,Snort Community,Malicious User-Agent detection,Medium,Detects HTTP requests with malicious user agents

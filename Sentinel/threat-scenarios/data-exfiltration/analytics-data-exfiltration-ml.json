@@ -1,0 +1,199 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "2.0.0.0",
+  "metadata": {
+    "title": "Advanced Data Exfiltration Detection with ML Analytics",
+    "description": "Machine learning-enhanced detection of data exfiltration patterns including unusual file access, bulk downloads, external sharing, and covert channel communication",
+    "author": "Enterprise Security Team",
+    "version": "2.0.0",
+    "lastModified": "2025-01-01T00:00:00Z",
+    "compliance": ["ISO27001:A.13.2.1", "SOC2:CC6.7", "GDPR:Article32", "HIPAA:164.312"],
+    "mitreAttack": {
+      "techniques": ["T1041", "T1567", "T1048", "T1020", "T1537", "T1030"],
+      "tactics": ["Exfiltration", "Command and Control"],
+      "subTechniques": ["Exfiltration Over C2 Channel", "Exfiltration to Cloud Storage", "Exfiltration Over Alternative Protocol"]
+    },
+    "dataConnectors": ["Office365", "AzureStorage", "AzureActivity", "SecurityEvents", "AzureActiveDirectory"],
+    "queryFrequency": "PT15M",
+    "queryPeriod": "PT6H",
+    "alertRuleTemplateName": "advanced-data-exfiltration-ml"
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace"
+      }
+    },
+    "ruleId": {
+      "type": "string",
+      "defaultValue": "adv-data-exfiltration-ml",
+      "metadata": {
+        "description": "Unique identifier for the analytics rule"
+      }
+    },
+    "exfiltrationThreshold": {
+      "type": "int",
+      "defaultValue": 75,
+      "minValue": 50,
+      "maxValue": 95,
+      "metadata": {
+        "description": "ML exfiltration risk score threshold (50-95)"
+      }
+    },
+    "sensitiveDataKeywords": {
+      "type": "array",
+      "defaultValue": [
+        "confidential",
+        "secret", 
+        "personal",
+        "sensitive",
+        "financial",
+        "salary",
+        "ssn",
+        "credit card",
+        "password",
+        "key",
+        "private",
+        "restricted"
+      ],
+      "metadata": {
+        "description": "Keywords indicating sensitive data in file names/content"
+      }
+    },
+    "trustedDomains": {
+      "type": "array",
+      "defaultValue": [],
+      "metadata": {
+        "description": "List of trusted external domains for sharing (e.g., partners)"
+      }
+    },
+    "highValueDataSources": {
+      "type": "array",
+      "defaultValue": [
+        "HR Systems",
+        "Financial Systems", 
+        "Customer Database",
+        "Source Code Repository",
+        "Executive Files"
+      ],
+      "metadata": {
+        "description": "High-value data sources for enhanced monitoring"
+      }
+    }
+  },
+  "variables": {
+    "alertRuleName": "[concat('Advanced Data Exfiltration Detection with ML Analytics - ', parameters('ruleId'))]",
+    "alertRuleDescription": "Uses machine learning and behavioral analytics to detect sophisticated data exfiltration attempts including unusual file access patterns, bulk downloads, external sharing anomalies, and covert data transfer methods"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/alertRules",
+      "apiVersion": "2023-02-01-preview", 
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('ruleId'))]",
+      "properties": {
+        "displayName": "[variables('alertRuleName')]",
+        "description": "[variables('alertRuleDescription')]",
+        "enabled": true,
+        "kind": "Scheduled",
+        "severity": "High",
+        "queryFrequency": "PT15M",
+        "queryPeriod": "PT6H", 
+        "triggerOperator": "GreaterThan",
+        "triggerThreshold": 0,
+        "suppressionDuration": "PT1H",
+        "suppressionEnabled": true,
+        "tactics": ["Exfiltration", "CommandAndControl"],
+        "techniques": ["T1041", "T1567", "T1048"],
+        "subTechniques": ["T1041", "T1567.002", "T1048.003"],
+        "query": "let analysisWindow = 6h;\nlet baselineWindow = 14d;\nlet exfiltrationThreshold = toint('[parameters('exfiltrationThreshold')]');\nlet sensitiveKeywords = dynamic('[parameters('sensitiveDataKeywords')]');\nlet trustedDomains = dynamic('[parameters('trustedDomains')]');\nlet highValueSources = dynamic('[parameters('highValueDataSources')]');\n// User baseline behavior for file access and sharing\nlet userBaseline = \n    OfficeActivity\n    | where TimeGenerated between (ago(baselineWindow) .. ago(analysisWindow))\n    | where Operation in (\"FileAccessed\", \"FileDownloaded\", \"FileSyncDownloaded\", \"FileUploaded\", \"SharingSet\", \"SharingRevoked\")\n    | where isnotempty(UserId) and isnotempty(SourceFileName)\n    | extend \n        UserPrincipal = tolower(UserId),\n        FileSize = toint(coalesce(Size, 0)),\n        IsExternalSharing = not(UserAgent contains \"Microsoft\" or UserAgent contains \"Office\")\n    | summarize \n        BaselineFilesPerDay = avg(todouble(1)),\n        BaselineDownloadSize = avg(FileSize),\n        BaselineExternalShares = avg(case(IsExternalSharing, 1.0, 0.0)),\n        TypicalOperations = make_set(Operation, 20),\n        TypicalFileTypes = make_set(split(SourceFileName, \".\")[-1], 20)\n        by bin(TimeGenerated, 1d), UserPrincipal\n    | summarize \n        BaselineAvgFilesPerDay = avg(BaselineFilesPerDay),\n        BaselineStdDevFiles = stdev(BaselineFilesPerDay),\n        BaselineAvgDownloadSize = avg(BaselineDownloadSize),\n        BaselineStdDevSize = stdev(BaselineDownloadSize),\n        BaselineAvgExternalShares = avg(BaselineExternalShares),\n        CommonOperations = make_set_if(TypicalOperations, array_length(TypicalOperations) > 3),\n        CommonFileTypes = make_set_if(TypicalFileTypes, array_length(TypicalFileTypes) > 2)\n        by UserPrincipal;\n// Advanced file activity analysis\nlet fileActivityAnalysis = \n    OfficeActivity\n    | where TimeGenerated >= ago(analysisWindow)\n    | where Operation in (\"FileAccessed\", \"FileDownloaded\", \"FileSyncDownloaded\", \"FileUploaded\", \"SharingSet\", \"SharingRevoked\", \"SharingInvitationCreated\")\n    | where isnotempty(UserId) and isnotempty(SourceFileName)\n    | extend \n        UserPrincipal = tolower(UserId),\n        FileName = SourceFileName,\n        FileExtension = tolower(split(SourceFileName, \".\")[-1]),\n        FileSize = toint(coalesce(Size, 0)),\n        \n        // Sensitive data classification\n        IsSensitiveFile = (\n            SourceFileName has_any (sensitiveKeywords) or \n            OfficeWorkload in (\"Exchange\", \"OneDrive\", \"SharePoint\") and (\n                SourceFileName contains \"confidential\" or\n                SourceFileName contains \"personal\" or \n                SourceFileName contains \"salary\" or\n                SourceFileName contains \"financial\"\n            )\n        ),\n        \n        // High-risk file types\n        IsHighRiskFileType = FileExtension in (\"xlsx\", \"docx\", \"pdf\", \"pptx\", \"csv\", \"sql\", \"zip\", \"rar\", \"7z\"),\n        \n        // Source system classification\n        IsHighValueSource = SourceRelativeUrl has_any (highValueSources) or Site_Url has_any (highValueSources),\n        \n        // External sharing analysis\n        IsExternalSharing = case(\n            Operation in (\"SharingSet\", \"SharingInvitationCreated\"),\n            not(TargetUserOrGroupName contains \"@\" and split(TargetUserOrGroupName, \"@\")[1] in (trustedDomains)),\n            false\n        ),\n        \n        // Timing analysis\n        Hour = hourofday(TimeGenerated),\n        DayOfWeek = dayofweek(TimeGenerated),\n        IsAfterHours = Hour < 7 or Hour > 19,\n        IsWeekend = DayOfWeek == 0 or DayOfWeek == 6,\n        \n        // Device and location context\n        DeviceInfo = coalesce(UserAgent, \"Unknown\"),\n        IsUnmanagedDevice = not(UserAgent contains \"Microsoft\" or UserAgent contains \"Office\"),\n        \n        // Activity risk scoring\n        FileRiskScore = case(\n            IsSensitiveFile and FileSize > 10000000, 25, // 10MB+ sensitive files\n            IsSensitiveFile, 15,\n            IsHighRiskFileType and FileSize > 50000000, 20, // 50MB+ risky files\n            IsHighRiskFileType, 10,\n            5\n        ),\n        OperationRiskScore = case(\n            Operation in (\"FileDownloaded\", \"FileSyncDownloaded\"), 10,\n            Operation in (\"SharingSet\", \"SharingInvitationCreated\") and IsExternalSharing, 20,\n            Operation == \"FileUploaded\" and IsExternalSharing, 15,\n            5\n        ),\n        TimingRiskScore = case(\n            IsAfterHours and IsWeekend, 15,\n            IsAfterHours, 10,\n            IsWeekend, 8,\n            0\n        ),\n        SourceRiskScore = case(\n            IsHighValueSource, 20,\n            0\n        ),\n        DeviceRiskScore = case(\n            IsUnmanagedDevice, 15,\n            0\n        )\n    | extend \n        // Comprehensive activity risk score\n        ActivityRiskScore = FileRiskScore + OperationRiskScore + TimingRiskScore + SourceRiskScore + DeviceRiskScore;\n// Network traffic analysis for potential exfiltration\nlet networkTrafficAnalysis = \n    union \n    (\n        AzureActivity\n        | where TimeGenerated >= ago(analysisWindow)\n        | where Category == \"Administrative\" and ActivityStatusValue == \"Success\"\n        | where OperationNameValue has_any (\"storageAccounts\", \"blobServices\", \"fileServices\")\n        | extend \n            UserPrincipal = tolower(Caller),\n            NetworkActivity = \"Azure Storage Access\",\n            ResourceTarget = ResourceId,\n            TransferSize = 0 // Size not available in AzureActivity\n    ),\n    (\n        AzureDiagnostics\n        | where TimeGenerated >= ago(analysisWindow)\n        | where Category == \"StorageRead\" or Category == \"StorageWrite\"\n        | extend \n            UserPrincipal = tolower(caller_s),\n            NetworkActivity = Category,\n            ResourceTarget = resourceUri_s,\n            TransferSize = toint(coalesce(responseSize_d, requestSize_d, 0))\n    )\n    | where isnotempty(UserPrincipal)\n    | summarize \n        NetworkTransfers = count(),\n        TotalTransferSize = sum(TransferSize),\n        UniqueResources = dcount(ResourceTarget),\n        NetworkActivities = make_set(NetworkActivity, 10),\n        ResourceTargets = make_set(ResourceTarget, 50)\n        by bin(TimeGenerated, 15m), UserPrincipal\n    | extend \n        NetworkRiskScore = case(\n            TotalTransferSize > 1000000000, 30, // 1GB+\n            TotalTransferSize > 100000000, 20,  // 100MB+\n            TotalTransferSize > 10000000, 10,   // 10MB+\n            NetworkTransfers > 100, 15,\n            UniqueResources > 20, 12,\n            0\n        );\n// Email activity analysis for data exfiltration\nlet emailExfiltrationAnalysis = \n    OfficeActivity\n    | where TimeGenerated >= ago(analysisWindow)\n    | where OfficeWorkload == \"Exchange\" and Operation in (\"Send\", \"SendAs\", \"SendOnBehalf\")\n    | where isnotempty(UserId) and isnotempty(Recipients)\n    | extend \n        UserPrincipal = tolower(UserId),\n        RecipientList = split(Recipients, \";\"),\n        HasAttachment = AttachmentCount > 0,\n        AttachmentSize = toint(coalesce(Size, 0))\n    | mv-expand RecipientList to typeof(string)\n    | extend \n        RecipientDomain = split(trim(@\"\\s*<?>?\", RecipientList), \"@\")[1],\n        IsExternalRecipient = not(RecipientDomain in (trustedDomains)),\n        IsPersonalEmail = RecipientDomain in (\"gmail.com\", \"yahoo.com\", \"hotmail.com\", \"outlook.com\")\n    | summarize \n        EmailsSent = count(),\n        ExternalEmails = countif(IsExternalRecipient),\n        PersonalEmails = countif(IsPersonalEmail),\n        EmailsWithAttachments = countif(HasAttachment),\n        TotalAttachmentSize = sum(AttachmentSize),\n        UniqueExternalDomains = dcountif(RecipientDomain, IsExternalRecipient),\n        ExternalDomains = make_set_if(RecipientDomain, IsExternalRecipient, 20),\n        Recipients = make_set(RecipientList, 100)\n        by bin(TimeGenerated, 15m), UserPrincipal\n    | extend \n        EmailRiskScore = case(\n            PersonalEmails > 0 and TotalAttachmentSize > 50000000, 35, // 50MB+ to personal email\n            ExternalEmails > 0 and TotalAttachmentSize > 100000000, 30, // 100MB+ external\n            PersonalEmails > 0 and EmailsWithAttachments > 0, 25,\n            ExternalEmails > (EmailsSent * 0.8), 20, // Mostly external emails\n            UniqueExternalDomains > 10, 15,\n            0\n        );\n// Aggregate and correlate all exfiltration indicators\nlet exfiltrationAnalysis = \n    fileActivityAnalysis\n    | summarize \n        // File activity metrics\n        FileActivities = count(),\n        UniqueFiles = dcount(FileName),\n        SensitiveFileAccess = countif(IsSensitiveFile),\n        HighValueSourceAccess = countif(IsHighValueSource),\n        ExternalShares = countif(IsExternalSharing),\n        AfterHoursActivity = countif(IsAfterHours),\n        WeekendActivity = countif(IsWeekend),\n        UnmanagedDeviceAccess = countif(IsUnmanagedDevice),\n        TotalFileSize = sum(FileSize),\n        \n        // Risk assessment\n        MaxActivityRiskScore = max(ActivityRiskScore),\n        AvgActivityRiskScore = avg(ActivityRiskScore),\n        TotalActivityRiskExposure = sum(ActivityRiskScore),\n        \n        // Evidence collection\n        AccessedFiles = make_set(FileName, 100),\n        FileTypes = make_set(FileExtension, 50),\n        Operations = make_set(Operation, 20),\n        HighRiskFiles = make_set_if(FileName, IsSensitiveFile or IsHighValueSource, 50),\n        ExternalShareTargets = make_set_if(TargetUserOrGroupName, IsExternalSharing, 20)\n        \n        by bin(TimeGenerated, 15m), UserPrincipal\n    | join kind=leftouter (\n        networkTrafficAnalysis\n    ) on TimeGenerated, UserPrincipal\n    | join kind=leftouter (\n        emailExfiltrationAnalysis  \n    ) on TimeGenerated, UserPrincipal\n    | extend \n        // Comprehensive ML-based exfiltration risk score\n        MLExfiltrationScore = min_of(\n            round(\n                (AvgActivityRiskScore * 2) +\n                (case(SensitiveFileAccess > 0, SensitiveFileAccess * 10, 0)) +\n                (case(HighValueSourceAccess > 0, HighValueSourceAccess * 15, 0)) +\n                (case(ExternalShares > 0, ExternalShares * 12, 0)) +\n                (case(TotalFileSize > 100000000, 25, TotalFileSize > 10000000, 15, 0)) + // Size thresholds\n                (coalesce(NetworkRiskScore, 0)) +\n                (coalesce(EmailRiskScore, 0)) +\n                (case(AfterHoursActivity > (FileActivities * 0.7), 20, 0)) + // Mostly after-hours\n                (case(UnmanagedDeviceAccess > 0, 15, 0))\n            , 1),\n            100\n        ),\n        \n        // Exfiltration pattern classification\n        ExfiltrationPattern = case(\n            coalesce(PersonalEmails, 0) > 0 and TotalFileSize > 50000000, \"Email Data Exfiltration to Personal Accounts\",\n            ExternalShares > 0 and SensitiveFileAccess > 0, \"External Sharing of Sensitive Data\",\n            coalesce(TotalTransferSize, 0) > 500000000 and AfterHoursActivity > 0, \"Large Volume After-Hours Transfer\",\n            HighValueSourceAccess > 5 and FileActivities > 50, \"High-Volume High-Value Data Access\",\n            coalesce(UniqueExternalDomains, 0) > 5 and coalesce(EmailsWithAttachments, 0) > 0, \"Multi-Domain Email Exfiltration\",\n            UnmanagedDeviceAccess > 0 and SensitiveFileAccess > 0, \"Unmanaged Device Sensitive Data Access\",\n            WeekendActivity > 0 and TotalFileSize > 10000000, \"Weekend Large File Access\",\n            \"Suspicious Data Access Pattern\"\n        );\n// Join with baseline and detect anomalies\nexfiltrationAnalysis\n| join kind=leftouter (\n    userBaseline\n) on UserPrincipal\n| extend \n    // Baseline deviation analysis\n    FileVolumeDeviation = case(\n        isnotnull(BaselineAvgFilesPerDay),\n        round((FileActivities - BaselineAvgFilesPerDay) / BaselineAvgFilesPerDay * 100, 1),\n        0\n    ),\n    FileSizeDeviation = case(\n        isnotnull(BaselineAvgDownloadSize) and BaselineAvgDownloadSize > 0,\n        round((TotalFileSize - BaselineAvgDownloadSize) / BaselineAvgDownloadSize * 100, 1),\n        0\n    ),\n    ExternalShareDeviation = case(\n        isnotnull(BaselineAvgExternalShares),\n        round((ExternalShares - BaselineAvgExternalShares) / BaselineAvgExternalShares * 100, 1),\n        0\n    ),\n    \n    IsAnomalousVolume = abs(FileVolumeDeviation) > 500 or FileActivities > 100,\n    IsAnomalousSize = abs(FileSizeDeviation) > 1000 or TotalFileSize > 100000000,\n    IsAnomalousSharing = abs(ExternalShareDeviation) > 200 or ExternalShares > 10,\n    \n    BaselineComparison = case(\n        isnotnull(BaselineAvgFilesPerDay),\n        strcat(\"Files: \", FileVolumeDeviation, \"%, Size: \", FileSizeDeviation, \"%, Shares: \", ExternalShareDeviation, \"%\"),\n        \"No baseline available - new user or unusual activity\"\n    )\n| where MLExfiltrationScore >= exfiltrationThreshold or IsAnomalousVolume or IsAnomalousSize or IsAnomalousSharing\n| extend \n    // MITRE ATT&CK technique mapping\n    MitreTechnique = case(\n        coalesce(EmailRiskScore, 0) > 20, \"T1048.003\",\n        ExternalShares > 0, \"T1567.002\",\n        coalesce(NetworkRiskScore, 0) > 20, \"T1041\",\n        \"T1020\"\n    ),\n    MitreTactic = \"Exfiltration\",\n    \n    // Dynamic incident severity\n    IncidentSeverity = case(\n        MLExfiltrationScore >= 90 or (SensitiveFileAccess > 0 and coalesce(PersonalEmails, 0) > 0), \"Critical\",\n        MLExfiltrationScore >= 80 or (HighValueSourceAccess > 0 and ExternalShares > 0), \"High\",\n        MLExfiltrationScore >= 70 or IsAnomalousSize, \"Medium\",\n        \"Low\"\n    ),\n    \n    // Data protection impact assessment\n    DataProtectionImpact = case(\n        SensitiveFileAccess > 0 and coalesce(PersonalEmails, 0) > 0, \"Critical - GDPR Article 32 personal data breach\",\n        HighValueSourceAccess > 0 and ExternalShares > 0, \"High - ISO 27001 A.13.2.1 information transfer violation\",\n        TotalFileSize > 100000000, \"Medium - Large volume data transfer requires investigation\",\n        \"Low - Standard data access monitoring\"\n    ),\n    \n    // Response recommendations\n    RecommendedActions = case(\n        MLExfiltrationScore >= 90, \"IMMEDIATE: Block user access, preserve evidence, initiate DLP investigation, notify data protection officer\",\n        coalesce(PersonalEmails, 0) > 0 and SensitiveFileAccess > 0, \"URGENT: Review email content, block personal email, interview user, legal consultation\",\n        ExternalShares > 0 and HighValueSourceAccess > 0, \"HIGH: Revoke external shares, audit shared content, review business justification\",\n        IsAnomalousSize or IsAnomalousVolume, \"Monitor closely, validate business need, implement additional logging\",\n        \"Standard monitoring, document activity for compliance audit\"\n    )\n| project \n    TimeGenerated,\n    UserPrincipal,\n    ExfiltrationPattern,\n    IncidentSeverity,\n    MLExfiltrationScore,\n    FileActivities,\n    UniqueFiles,\n    SensitiveFileAccess,\n    HighValueSourceAccess,\n    ExternalShares,\n    TotalFileSize,\n    EmailsSent = coalesce(EmailsSent, 0),\n    PersonalEmails = coalesce(PersonalEmails, 0),\n    ExternalEmails = coalesce(ExternalEmails, 0),\n    NetworkTransfers = coalesce(NetworkTransfers, 0),\n    TotalTransferSize = coalesce(TotalTransferSize, 0),\n    BaselineComparison,\n    MitreTechnique,\n    MitreTactic,\n    DataProtectionImpact,\n    RecommendedActions,\n    // Evidence for investigation\n    AccessedFiles,\n    HighRiskFiles,\n    FileTypes,\n    Operations,\n    ExternalShareTargets,\n    ExternalDomains = coalesce(ExternalDomains, dynamic([])),\n    Recipients = coalesce(Recipients, dynamic([])),\n    ResourceTargets = coalesce(ResourceTargets, dynamic([])),\n    // Risk breakdown\n    MaxActivityRiskScore,\n    AvgActivityRiskScore,\n    NetworkRiskScore = coalesce(NetworkRiskScore, 0),\n    EmailRiskScore = coalesce(EmailRiskScore, 0),\n    AfterHoursActivity,\n    WeekendActivity,\n    UnmanagedDeviceAccess\n| order by MLExfiltrationScore desc, TotalFileSize desc",
+        "entityMappings": [
+          {
+            "entityType": "Account",
+            "fieldMappings": [
+              {
+                "columnName": "UserPrincipal",
+                "identifier": "Name"
+              }
+            ]
+          },
+          {
+            "entityType": "File",
+            "fieldMappings": [
+              {
+                "columnName": "AccessedFiles",
+                "identifier": "Name"
+              }
+            ]
+          },
+          {
+            "entityType": "URL",
+            "fieldMappings": [
+              {
+                "columnName": "ExternalDomains",
+                "identifier": "Url"
+              }
+            ]
+          }
+        ],
+        "alertDetailsOverride": {
+          "alertDisplayNameFormat": "ML Data Exfiltration: {{UserPrincipal}} - {{ExfiltrationPattern}} (Score: {{MLExfiltrationScore}}/100)",
+          "alertDescriptionFormat": "Machine learning detected data exfiltration activity: {{ExfiltrationPattern}}\\n\\nUser: {{UserPrincipal}}\\n\\nExfiltration Assessment:\\n- ML Risk Score: {{MLExfiltrationScore}}/100\\n- File Activities: {{FileActivities}}\\n- Unique Files: {{UniqueFiles}}\\n- Sensitive File Access: {{SensitiveFileAccess}}\\n- High-Value Source Access: {{HighValueSourceAccess}}\\n- External Shares: {{ExternalShares}}\\n- Total File Size: {{TotalFileSize}} bytes\\n- Personal Emails: {{PersonalEmails}}\\n- External Emails: {{ExternalEmails}}\\n- Network Transfers: {{NetworkTransfers}}\\n- MITRE Technique: {{MitreTechnique}}\\n\\nBaseline Deviation: {{BaselineComparison}}\\nData Protection Impact: {{DataProtectionImpact}}\\n\\nIMMEDIATE ACTIONS: {{RecommendedActions}}\\n\\nEvidence:\\n- Accessed Files: {{AccessedFiles}}\\n- High-Risk Files: {{HighRiskFiles}}\\n- External Share Targets: {{ExternalShareTargets}}\\n- External Domains: {{ExternalDomains}}\\n- Email Recipients: {{Recipients}}",
+          "alertSeverityColumnName": "IncidentSeverity",
+          "alertDynamicProperties": [
+            {
+              "alertProperty": "AlertLink",
+              "value": "ExfiltrationPattern"
+            },
+            {
+              "alertProperty": "ProviderName",
+              "value": "ML Data Exfiltration Analytics"
+            },
+            {
+              "alertProperty": "RemediationSteps",
+              "value": "RecommendedActions"
+            }
+          ]
+        },
+        "customDetails": {
+          "ExfiltrationPattern": "ExfiltrationPattern",
+          "MLExfiltrationScore": "MLExfiltrationScore",
+          "MitreTechnique": "MitreTechnique",
+          "SensitiveFileAccess": "SensitiveFileAccess", 
+          "HighValueSourceAccess": "HighValueSourceAccess",
+          "ExternalShares": "ExternalShares",
+          "PersonalEmails": "PersonalEmails",
+          "DataProtectionImpact": "DataProtectionImpact",
+          "BaselineDeviation": "BaselineComparison",
+          "TotalFileSize": "TotalFileSize",
+          "UnmanagedDeviceAccess": "UnmanagedDeviceAccess"
+        },
+        "eventGroupingSettings": {
+          "aggregationKind": "AlertPerResult"
+        },
+        "incidentConfiguration": {
+          "createIncident": true,
+          "groupingConfiguration": {
+            "enabled": true,
+            "reopenClosedIncident": true,
+            "lookbackDuration": "PT12H",
+            "matchingMethod": "AllEntities",
+            "groupByEntities": ["Account", "File"],
+            "groupByAlertDetails": ["DisplayName"],
+            "groupByCustomDetails": ["ExfiltrationPattern", "UserPrincipal"]
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "alertRuleId": {
+      "type": "string",
+      "value": "[resourceId('Microsoft.OperationalInsights/workspaces/providers/alertRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', parameters('ruleId'))]"
+    },
+    "alertRuleName": {
+      "type": "string",
+      "value": "[variables('alertRuleName')]"
+    }
+  }
+}

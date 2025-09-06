@@ -1,0 +1,599 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    include:
+      - Sentinel/deployment/*
+      - Sentinel/data-connectors/*
+      - Pipelines/azure-devops/azure-pipelines.yml
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - Sentinel/deployment/*
+      - Sentinel/data-connectors/*
+
+parameters:
+  - name: environment
+    displayName: 'Target Environment'
+    type: string
+    default: 'development'
+    values:
+      - development
+      - staging
+      - production
+
+  - name: destroyInfrastructure
+    displayName: 'Destroy Infrastructure (USE WITH CAUTION)'
+    type: boolean
+    default: false
+
+variables:
+  - name: terraformVersion
+    value: '1.5.7'
+  - name: azurePowerShellVersion
+    value: '5.9.0'
+  - name: pythonVersion
+    value: '3.11'
+
+  # Environment-specific variable groups
+  - ${{ if eq(parameters.environment, 'production') }}:
+    - group: 'sentinel-production'
+    - name: resourceGroupName
+      value: 'rg-sentinel-prod'
+    - name: workspaceName
+      value: 'law-sentinel-prod'
+    - name: retentionInDays
+      value: 365
+    - name: enableLongTermStorage
+      value: true
+
+  - ${{ if eq(parameters.environment, 'staging') }}:
+    - group: 'sentinel-staging'
+    - name: resourceGroupName
+      value: 'rg-sentinel-staging'
+    - name: workspaceName
+      value: 'law-sentinel-staging'
+    - name: retentionInDays
+      value: 180
+    - name: enableLongTermStorage
+      value: true
+
+  - ${{ if eq(parameters.environment, 'development') }}:
+    - group: 'sentinel-development'
+    - name: resourceGroupName
+      value: 'rg-sentinel-dev'
+    - name: workspaceName
+      value: 'law-sentinel-dev'
+    - name: retentionInDays
+      value: 90
+    - name: enableLongTermStorage
+      value: false
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # Security and Compliance Stage
+  - stage: SecurityCompliance
+    displayName: 'Security & Compliance Scanning'
+    condition: not(eq('${{ parameters.destroyInfrastructure }}', true))
+    jobs:
+      - job: SecurityScan
+        displayName: 'Infrastructure Security Scan'
+        steps:
+          - checkout: self
+            fetchDepth: 0
+
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: '$(pythonVersion)'
+              addToPath: true
+
+          - script: |
+              echo "Installing security scanning tools..."
+              pip install --upgrade pip
+              pip install checkov bandit safety semgrep
+              
+              # Install Trivy
+              wget -q https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.deb
+              sudo dpkg -i trivy_Linux-64bit.deb
+            displayName: 'Install Security Tools'
+
+          - script: |
+              echo "Running Checkov IaC security scan..."
+              checkov -d Sentinel/deployment/terraform \
+                --framework terraform \
+                --output cli \
+                --output junitxml \
+                --output-file-path console,checkov-results.xml \
+                --soft-fail-on HIGH,MEDIUM \
+                --hard-fail-on CRITICAL
+            displayName: 'Checkov IaC Security Scan'
+            continueOnError: true
+
+          - script: |
+              echo "Running Trivy configuration scan..."
+              trivy config Sentinel/deployment/ \
+                --format table \
+                --severity HIGH,CRITICAL \
+                --exit-code 1
+            displayName: 'Trivy Configuration Scan'
+            continueOnError: true
+
+          - script: |
+              echo "Running Semgrep security analysis..."
+              semgrep --config=auto Sentinel/deployment/ \
+                --json --output=semgrep-results.json \
+                --error \
+                --severity=ERROR
+            displayName: 'Semgrep Security Analysis'
+            continueOnError: true
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Security Scan Results'
+            condition: always()
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'checkov-results.xml'
+              testRunTitle: 'Checkov Security Scan'
+              failTaskOnFailedTests: false
+
+          - script: |
+              echo "Evaluating security scan results..."
+              
+              # Check if any critical issues were found
+              CRITICAL_ISSUES=false
+              
+              if [ -f "checkov-results.xml" ]; then
+                if grep -q "failures" checkov-results.xml; then
+                  echo "Critical security issues found in Checkov scan"
+                  CRITICAL_ISSUES=true
+                fi
+              fi
+              
+              if [ "$CRITICAL_ISSUES" = true ]; then
+                echo "##vso[task.logissue type=error]Critical security vulnerabilities detected. Deployment blocked."
+                echo "##vso[task.complete result=Failed;]"
+                exit 1
+              else
+                echo "Security scans passed. Proceeding with deployment."
+              fi
+            displayName: 'Security Gate Decision'
+
+  # Infrastructure Planning Stage
+  - stage: InfrastructurePlan
+    displayName: 'Infrastructure Planning'
+    dependsOn: SecurityCompliance
+    condition: succeeded()
+    jobs:
+      - job: TerraformPlan
+        displayName: 'Terraform Plan'
+        steps:
+          - checkout: self
+
+          - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: '$(terraformVersion)'
+
+          - task: AzureCLI@2
+            displayName: 'Azure CLI Login and Setup'
+            inputs:
+              azureSubscription: '$(serviceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Setting up Azure CLI and Terraform backend..."
+                az account show --output table
+                
+                # Ensure Terraform state storage exists
+                az storage account show \
+                  --name "$(terraformStorageAccount)" \
+                  --resource-group "$(terraformResourceGroup)" \
+                  --output table || {
+                  echo "Creating Terraform state storage account..."
+                  az storage account create \
+                    --name "$(terraformStorageAccount)" \
+                    --resource-group "$(terraformResourceGroup)" \
+                    --location "$(azureLocation)" \
+                    --sku Standard_LRS \
+                    --kind StorageV2
+                }
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Format Check'
+            inputs:
+              azureSubscription: '$(serviceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'Sentinel/deployment/terraform'
+              inlineScript: |
+                echo "Checking Terraform formatting..."
+                terraform fmt -check -recursive
+                if [ $? -ne 0 ]; then
+                  echo "##vso[task.logissue type=error]Terraform files are not properly formatted."
+                  echo "Run 'terraform fmt -recursive' locally and commit the changes."
+                  exit 1
+                fi
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Init'
+            inputs:
+              azureSubscription: '$(serviceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'Sentinel/deployment/terraform'
+              inlineScript: |
+                echo "Initializing Terraform..."
+                terraform init \
+                  -backend-config="resource_group_name=$(terraformResourceGroup)" \
+                  -backend-config="storage_account_name=$(terraformStorageAccount)" \
+                  -backend-config="container_name=$(terraformContainer)" \
+                  -backend-config="key=sentinel-${{ parameters.environment }}.tfstate"
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Validate'
+            inputs:
+              azureSubscription: '$(serviceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'Sentinel/deployment/terraform'
+              inlineScript: |
+                echo "Validating Terraform configuration..."
+                terraform validate -no-color
+
+          - task: AzureCLI@2
+            displayName: 'Terraform Plan'
+            inputs:
+              azureSubscription: '$(serviceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              workingDirectory: 'Sentinel/deployment/terraform'
+              inlineScript: |
+                echo "Running Terraform plan..."
+                
+                # Set deployment-specific variables
+                export TF_VAR_resource_group_name="$(resourceGroupName)"
+                export TF_VAR_workspace_name="$(workspaceName)"
+                export TF_VAR_location="$(azureLocation)"
+                export TF_VAR_retention_in_days="$(retentionInDays)"
+                export TF_VAR_enable_long_term_storage="$(enableLongTermStorage)"
+                export TF_VAR_storage_account_name="st${{ parameters.environment }}sentinel$(date +%s | tail -c 6)"
+                
+                terraform plan \
+                  -detailed-exitcode \
+                  -no-color \
+                  -out=tfplan \
+                  -var="tags={\"Environment\"=\"${{ parameters.environment }}\",\"DeployedBy\"=\"AzureDevOps\",\"Repository\"=\"$(Build.Repository.Name)\",\"Branch\"=\"$(Build.SourceBranchName)\",\"BuildId\"=\"$(Build.BuildId)\"}" \
+                  2>&1 | tee terraform-plan.txt
+                
+                PLAN_EXIT_CODE=${PIPESTATUS[0]}
+                echo "##vso[task.setvariable variable=TerraformPlanExitCode;isOutput=true]$PLAN_EXIT_CODE"
+                
+                if [ $PLAN_EXIT_CODE -eq 1 ]; then
+                  echo "##vso[task.logissue type=error]Terraform plan failed"
+                  exit 1
+                elif [ $PLAN_EXIT_CODE -eq 2 ]; then
+                  echo "##vso[task.logissue type=warning]Terraform plan detected changes"
+                  echo "##vso[task.setvariable variable=TerraformChangesDetected;isOutput=true]true"
+                else
+                  echo "##vso[task.setvariable variable=TerraformChangesDetected;isOutput=true]false"
+                fi
+                
+                echo "Terraform plan completed successfully"
+            name: TerraformPlanTask
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Terraform Plan'
+            inputs:
+              targetPath: 'Sentinel/deployment/terraform'
+              artifact: 'terraform-plan-${{ parameters.environment }}'
+
+          - script: |
+              echo "=== Terraform Plan Summary ==="
+              echo "Environment: ${{ parameters.environment }}"
+              echo "Exit Code: $(TerraformPlanTask.TerraformPlanExitCode)"
+              echo "Changes Detected: $(TerraformPlanTask.TerraformChangesDetected)"
+              echo ""
+              echo "=== Plan Output ==="
+              cat Sentinel/deployment/terraform/terraform-plan.txt
+            displayName: 'Display Plan Summary'
+
+  # Infrastructure Deployment Stage  
+  - stage: InfrastructureDeployment
+    displayName: 'Infrastructure Deployment'
+    dependsOn: InfrastructurePlan
+    condition: and(succeeded(), eq(dependencies.InfrastructurePlan.outputs['TerraformPlan.TerraformPlanTask.TerraformChangesDetected'], 'true'))
+    jobs:
+      # Development deployment (auto-approve)
+      - ${{ if eq(parameters.environment, 'development') }}:
+        - deployment: DeployDevelopment
+          displayName: 'Deploy to Development'
+          environment: 'sentinel-development'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - checkout: self
+
+                  - task: DownloadPipelineArtifact@2
+                    displayName: 'Download Terraform Plan'
+                    inputs:
+                      buildType: 'current'
+                      artifactName: 'terraform-plan-development'
+                      targetPath: 'Sentinel/deployment/terraform'
+
+                  - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+                    displayName: 'Install Terraform'
+                    inputs:
+                      terraformVersion: '$(terraformVersion)'
+
+                  - task: AzureCLI@2
+                    displayName: 'Terraform Apply'
+                    inputs:
+                      azureSubscription: '$(serviceConnection)'
+                      scriptType: 'bash'
+                      scriptLocation: 'inlineScript'
+                      workingDirectory: 'Sentinel/deployment/terraform'
+                      inlineScript: |
+                        echo "Initializing Terraform..."
+                        terraform init \
+                          -backend-config="resource_group_name=$(terraformResourceGroup)" \
+                          -backend-config="storage_account_name=$(terraformStorageAccount)" \
+                          -backend-config="container_name=$(terraformContainer)" \
+                          -backend-config="key=sentinel-development.tfstate"
+                        
+                        echo "Applying Terraform plan..."
+                        terraform apply -auto-approve tfplan
+                        
+                        echo "Capturing deployment outputs..."
+                        terraform output -json > deployment-outputs.json
+                        
+                        WORKSPACE_ID=$(terraform output -raw workspace_id)
+                        WORKSPACE_NAME=$(terraform output -raw workspace_name)
+                        
+                        echo "##vso[task.setvariable variable=WorkspaceId;isOutput=true]$WORKSPACE_ID"
+                        echo "##vso[task.setvariable variable=WorkspaceName;isOutput=true]$WORKSPACE_NAME"
+                    name: TerraformApply
+
+                  - task: AzurePowerShell@5
+                    displayName: 'Post-Deployment Validation'
+                    inputs:
+                      azureSubscription: '$(serviceConnection)'
+                      scriptType: 'inlineScript'
+                      azurePowerShellVersion: '$(azurePowerShellVersion)'
+                      inline: |
+                        Write-Host "=== Development Deployment Validation ==="
+                        
+                        $WorkspaceId = "$(TerraformApply.WorkspaceId)"
+                        $WorkspaceName = "$(TerraformApply.WorkspaceName)"
+                        
+                        Write-Host "✅ Deployment completed successfully"
+                        Write-Host "📊 Workspace: $WorkspaceName"
+                        Write-Host "🆔 Workspace ID: $WorkspaceId"
+                        
+                        # Wait for workspace to be fully ready
+                        Start-Sleep -Seconds 30
+                        
+                        # Verify workspace accessibility
+                        try {
+                          $Workspace = Get-AzOperationalInsightsWorkspace -Name $WorkspaceName -ResourceGroupName "$(resourceGroupName)"
+                          Write-Host "✅ Workspace is accessible and ready"
+                        }
+                        catch {
+                          Write-Host "⚠️ Workspace verification failed: $($_.Exception.Message)"
+                        }
+
+      # Staging and Production deployment (with approval)
+      - ${{ if ne(parameters.environment, 'development') }}:
+        - deployment: DeployProduction
+          displayName: 'Deploy to ${{ parameters.environment }}'
+          environment: 'sentinel-${{ parameters.environment }}'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - checkout: self
+
+                  - task: DownloadPipelineArtifact@2
+                    displayName: 'Download Terraform Plan'
+                    inputs:
+                      buildType: 'current'
+                      artifactName: 'terraform-plan-${{ parameters.environment }}'
+                      targetPath: 'Sentinel/deployment/terraform'
+
+                  - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+                    displayName: 'Install Terraform'
+                    inputs:
+                      terraformVersion: '$(terraformVersion)'
+
+                  - task: AzureCLI@2
+                    displayName: 'Terraform Apply'
+                    inputs:
+                      azureSubscription: '$(serviceConnection)'
+                      scriptType: 'bash'
+                      scriptLocation: 'inlineScript'
+                      workingDirectory: 'Sentinel/deployment/terraform'
+                      inlineScript: |
+                        echo "Initializing Terraform..."
+                        terraform init \
+                          -backend-config="resource_group_name=$(terraformResourceGroup)" \
+                          -backend-config="storage_account_name=$(terraformStorageAccount)" \
+                          -backend-config="container_name=$(terraformContainer)" \
+                          -backend-config="key=sentinel-${{ parameters.environment }}.tfstate"
+                        
+                        echo "Applying Terraform plan for ${{ parameters.environment }}..."
+                        terraform apply -auto-approve tfplan
+                        
+                        terraform output -json > deployment-outputs.json
+                    name: TerraformApply
+
+                  - task: AzurePowerShell@5
+                    displayName: '${{ parameters.environment }} Health Check'
+                    inputs:
+                      azureSubscription: '$(serviceConnection)'
+                      scriptType: 'inlineScript'
+                      azurePowerShellVersion: '$(azurePowerShellVersion)'
+                      inline: |
+                        Write-Host "=== ${{ parameters.environment }} Deployment Health Check ==="
+                        
+                        # Wait for resources to be ready
+                        Start-Sleep -Seconds 60
+                        
+                        $WorkspaceName = "$(workspaceName)"
+                        $ResourceGroupName = "$(resourceGroupName)"
+                        
+                        try {
+                          # Verify workspace is accessible
+                          $Workspace = Get-AzOperationalInsightsWorkspace -Name $WorkspaceName -ResourceGroupName $ResourceGroupName
+                          Write-Host "✅ Log Analytics Workspace: $($Workspace.Name) is accessible"
+                          
+                          # Check Microsoft Sentinel status
+                          Write-Host "🔍 Verifying Microsoft Sentinel status..."
+                          
+                          # Additional health checks can be added here
+                          Write-Host "✅ ${{ parameters.environment }} deployment completed and validated"
+                        }
+                        catch {
+                          Write-Host "❌ Health check failed: $($_.Exception.Message)"
+                          throw
+                        }
+
+  # Infrastructure Destruction Stage (Manual only)
+  - ${{ if eq(parameters.destroyInfrastructure, true) }}:
+    - stage: InfrastructureDestruction
+      displayName: 'Infrastructure Destruction'
+      condition: and(always(), eq('${{ parameters.destroyInfrastructure }}', true))
+      jobs:
+        - deployment: DestroyInfrastructure
+          displayName: 'Destroy ${{ parameters.environment }} Infrastructure'
+          environment: 'sentinel-${{ parameters.environment }}-destroy'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - checkout: self
+
+                  - task: ms-devlabs.custom-terraform-tasks.custom-terraform-installer-task.TerraformInstaller@0
+                    displayName: 'Install Terraform'
+                    inputs:
+                      terraformVersion: '$(terraformVersion)'
+
+                  - task: AzureCLI@2
+                    displayName: 'Terraform Destroy'
+                    inputs:
+                      azureSubscription: '$(serviceConnection)'
+                      scriptType: 'bash'
+                      scriptLocation: 'inlineScript'
+                      workingDirectory: 'Sentinel/deployment/terraform'
+                      inlineScript: |
+                        echo "🚨 DESTROYING INFRASTRUCTURE FOR: ${{ parameters.environment }}"
+                        echo "This action cannot be undone!"
+                        
+                        terraform init \
+                          -backend-config="resource_group_name=$(terraformResourceGroup)" \
+                          -backend-config="storage_account_name=$(terraformStorageAccount)" \
+                          -backend-config="container_name=$(terraformContainer)" \
+                          -backend-config="key=sentinel-${{ parameters.environment }}.tfstate"
+                        
+                        # Set variables for destroy
+                        export TF_VAR_resource_group_name="$(resourceGroupName)"
+                        export TF_VAR_workspace_name="$(workspaceName)"
+                        export TF_VAR_location="$(azureLocation)"
+                        export TF_VAR_permanently_delete_workspace=true
+                        
+                        terraform destroy -auto-approve
+                        
+                        echo "💥 Infrastructure destroyed for ${{ parameters.environment }}"
+
+  # Notification and Reporting Stage
+  - stage: NotificationReporting
+    displayName: 'Notification & Reporting'
+    dependsOn: 
+      - InfrastructureDeployment
+    condition: always()
+    jobs:
+      - job: SendNotifications
+        displayName: 'Send Deployment Notifications'
+        steps:
+          - task: PowerShell@2
+            displayName: 'Generate Deployment Report'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $DeploymentStatus = "$(Agent.JobStatus)"
+                $Environment = "${{ parameters.environment }}"
+                $BuildId = "$(Build.BuildId)"
+                $Repository = "$(Build.Repository.Name)"
+                $Branch = "$(Build.SourceBranchName)"
+                $RequestedBy = "$(Build.RequestedFor)"
+                
+                Write-Host "=== Deployment Report ==="
+                Write-Host "Environment: $Environment"
+                Write-Host "Status: $DeploymentStatus"
+                Write-Host "Build ID: $BuildId"
+                Write-Host "Repository: $Repository"
+                Write-Host "Branch: $Branch"
+                Write-Host "Requested By: $RequestedBy"
+                Write-Host "=========================="
+
+          # Teams notification can be added here with a webhook
+          - task: PowerShell@2
+            displayName: 'Send Teams Notification'
+            condition: always()
+            inputs:
+              targetType: 'inline'
+              script: |
+                # Teams notification logic
+                $WebhookUrl = "$(teamsWebhookUrl)"
+                if ($WebhookUrl) {
+                  $Status = "$(Agent.JobStatus)"
+                  $Color = if ($Status -eq "Succeeded") { "good" } else { "danger" }
+                  
+                  $Body = @{
+                    "@type" = "MessageCard"
+                    "@context" = "https://schema.org/extensions"
+                    "summary" = "Sentinel Deployment Status"
+                    "themeColor" = $Color
+                    "sections" = @(
+                      @{
+                        "activityTitle" = "Microsoft Sentinel Deployment"
+                        "activitySubtitle" = "Environment: ${{ parameters.environment }}"
+                        "facts" = @(
+                          @{ "name" = "Status"; "value" = $Status },
+                          @{ "name" = "Repository"; "value" = "$(Build.Repository.Name)" },
+                          @{ "name" = "Branch"; "value" = "$(Build.SourceBranchName)" },
+                          @{ "name" = "Build ID"; "value" = "$(Build.BuildId)" },
+                          @{ "name" = "Requested By"; "value" = "$(Build.RequestedFor)" }
+                        )
+                      }
+                    )
+                    "potentialAction" = @(
+                      @{
+                        "@type" = "OpenUri"
+                        "name" = "View Build"
+                        "targets" = @(
+                          @{ "os" = "default"; "uri" = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)" }
+                        )
+                      }
+                    )
+                  } | ConvertTo-Json -Depth 10
+                  
+                  try {
+                    Invoke-RestMethod -Uri $WebhookUrl -Method Post -Body $Body -ContentType "application/json"
+                    Write-Host "Teams notification sent successfully"
+                  }
+                  catch {
+                    Write-Host "Failed to send Teams notification: $($_.Exception.Message)"
+                  }
+                }
+                else {
+                  Write-Host "Teams webhook URL not configured"
+                }

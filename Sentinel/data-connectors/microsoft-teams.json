@@ -1,0 +1,126 @@
+{
+  "kind": "Office365",
+  "properties": {
+    "tenantId": "{{tenantId}}",
+    "dataTypes": [
+      {
+        "name": "Teams",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Microsoft Teams",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "Microsoft Teams audit logs provide detailed information about user activities within Teams including meetings, chats, file sharing, and team management. Monitor for security threats and compliance violations in your collaboration environment.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "OfficeActivity (Teams)",
+          "baseQuery": "OfficeActivity | where OfficeWorkload == \"MicrosoftTeams\""
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "External user activities in Teams",
+          "query": "OfficeActivity | where OfficeWorkload == \"MicrosoftTeams\" and UserType == \"Guest\" | summarize count() by UserId, Operation, bin(TimeGenerated, 1d) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Teams meeting recordings and transcripts",
+          "query": "OfficeActivity | where OfficeWorkload == \"MicrosoftTeams\" and Operation in (\"MeetingRecordingStarted\", \"MeetingTranscriptionStarted\") | project TimeGenerated, UserId, Operation, Members"
+        },
+        {
+          "description": "Sensitive file sharing in Teams",
+          "query": "OfficeActivity | where OfficeWorkload == \"MicrosoftTeams\" and Operation contains \"FileUpload\" | extend FileName = tostring(OfficeObjectId) | where FileName contains \".xlsx\" or FileName contains \".docx\" | project TimeGenerated, UserId, FileName, TeamName"
+        },
+        {
+          "description": "Teams app installations and permissions",
+          "query": "OfficeActivity | where OfficeWorkload == \"MicrosoftTeams\" and Operation in (\"AppInstalled\", \"BotAddedToTeam\") | project TimeGenerated, UserId, Operation, AppName, TeamName"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "OfficeActivity (Teams)",
+          "lastDataReceivedQuery": "OfficeActivity | where OfficeWorkload == \"MicrosoftTeams\" | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "SentinelKindsV2",
+          "value": ["Office365"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "tenant": ["GlobalAdmin", "SecurityAdmin", "TeamsServiceAdministrator"]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Configure Teams audit settings",
+          "description": "Configure Microsoft Teams audit settings to capture the events you need for security monitoring.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Teams Audit Configuration",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Go to **Microsoft Teams Admin Center** (https://admin.teams.microsoft.com)\n2. Navigate to **Org-wide settings** > **Audit logs**\n3. Enable audit logging for Teams activities\n4. Configure **Meeting policies** to control recording and transcription\n5. Set **App permission policies** to control app installations\n6. Configure **External access** and **Guest access** settings"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Enable advanced Teams events",
+          "description": "Enable advanced audit events for comprehensive Teams monitoring.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Advanced Events Configuration",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. In **PowerShell**, connect to Exchange Online: `Connect-ExchangeOnline`\n2. Enable Teams audit events: `Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled $true`\n3. Configure mailbox auditing: `Get-Mailbox | Set-Mailbox -AuditEnabled $true`\n4. Enable advanced events: `Set-OrganizationConfig -ReadTrackingEnabled $true`\n5. Verify configuration: `Get-AdminAuditLogConfig | fl`"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "3. Connect Microsoft Teams",
+          "description": "Connect Teams audit logs to Microsoft Sentinel through the Office 365 connector.",
+          "instructions": [
+            {
+              "parameters": {
+                "connectorKind": "Office365",
+                "title": "Microsoft Teams (via Office 365)",
+                "enable": true
+              },
+              "type": "SentinelResourceProvider"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

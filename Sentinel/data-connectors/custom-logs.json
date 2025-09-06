@@ -1,0 +1,155 @@
+{
+  "kind": "CustomLogs",
+  "properties": {
+    "dataTypes": [
+      {
+        "name": "CustomLog_CL",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Custom Logs via AMA",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "Collect custom logs from files on Linux and Windows machines using Azure Monitor Agent (AMA). Define custom log formats and parsing rules to ingest application logs, security logs, or any text-based log files into Microsoft Sentinel.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "Custom Logs",
+          "baseQuery": "CustomLog_CL"
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "Recent custom log entries",
+          "query": "CustomLog_CL | where TimeGenerated > ago(1h) | take 100"
+        },
+        {
+          "description": "Custom log entries by computer",
+          "query": "CustomLog_CL | summarize count() by Computer, bin(TimeGenerated, 1h) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Error entries in custom logs",
+          "query": "CustomLog_CL | where RawData contains \"ERROR\" or RawData contains \"FATAL\" | project TimeGenerated, Computer, RawData"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "CustomLog_CL",
+          "lastDataReceivedQuery": "CustomLog_CL | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "HasDataConnectors",
+          "value": ["CustomLogs"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "customs": [
+          {
+            "name": "Azure Monitor Agent",
+            "description": "Azure Monitor Agent (AMA) must be installed on machines with custom logs."
+          }
+        ]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Install Azure Monitor Agent",
+          "description": "Install AMA on the machines where custom logs are located.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "AMA Installation",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "**For Azure VMs:**\n1. Go to your VM in Azure portal\n2. Select **Extensions + applications**\n3. Add **AzureMonitorWindowsAgent** or **AzureMonitorLinuxAgent**\n\n**For on-premises machines:**\n1. Create **Data Collection Endpoint** (DCE) in Azure Monitor\n2. Download and run the agent installer\n3. Associate machine with DCE using Azure Arc (for non-Azure machines)\n\n**Using PowerShell (Windows):**\n```powershell\nInvoke-WebRequest -Uri https://aka.ms/AMAWindows -OutFile AzureMonitorAgentWindows.msi\nmsiexec /i AzureMonitorAgentWindows.msi /quiet\n```"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Create Data Collection Rule",
+          "description": "Create a Data Collection Rule (DCR) to define which log files to collect and how to parse them.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "DCR Configuration",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. In Azure portal, go to **Monitor** > **Data Collection Rules**\n2. Click **Create** to create a new DCR\n3. Configure basic settings:\n   - Name: `DCR-CustomLogs`\n   - Resource group and region\n4. Add **Data Sources**:\n   - Type: **Custom Text Logs**\n   - File pattern: `/var/log/myapp/*.log` (Linux) or `C:\\Logs\\*.log` (Windows)\n   - Table name: `MyAppLog_CL`\n   - Record delimiter: `\\n`\n5. Add **Destinations**:\n   - Type: **Azure Monitor Logs**\n   - Workspace: Your Sentinel workspace\n6. Add **Resources** (VMs to collect from)\n7. Review and create"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "3. Configure log parsing (Optional)",
+          "description": "Configure advanced parsing rules to extract structured data from log entries.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Advanced Parsing",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "**KQL Transformation Example:**\n```kql\nsource\n| extend ParsedLog = parse_json(RawData)\n| extend \n    Timestamp = ParsedLog.timestamp,\n    Level = ParsedLog.level,\n    Message = ParsedLog.message,\n    Source = ParsedLog.source\n| project \n    TimeGenerated,\n    Computer,\n    Timestamp,\n    Level,\n    Message,\n    Source\n```\n\n**Regex Parsing Example:**\n```kql\nsource\n| parse RawData with \n    Timestamp:datetime \" \" \n    Level:string \" [\" \n    Thread:string \"] \" \n    Logger:string \" - \" \n    Message:string\n```"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "4. Validate custom log ingestion",
+          "description": "Verify that custom logs are being collected and parsed correctly.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Validation Steps",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Generate test log entries on monitored machines\n2. Wait 5-10 minutes for data ingestion\n3. Run validation queries in Microsoft Sentinel\n4. Check DCR status in Azure Monitor\n5. Verify agent health:\n   ```bash\n   # Linux\n   sudo systemctl status azuremonitoragent\n   \n   # Windows\n   Get-Service -Name AzureMonitorAgent\n   ```"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            },
+            {
+              "parameters": {
+                "query": "CustomLog_CL | where TimeGenerated > ago(1h) | take 10",
+                "label": "Validation Query"
+              },
+              "type": "CopyableLabel"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

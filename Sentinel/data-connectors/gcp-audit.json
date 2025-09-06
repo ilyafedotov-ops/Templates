@@ -1,0 +1,153 @@
+{
+  "kind": "GoogleCloudPlatformAuditLogs",
+  "properties": {
+    "projectId": "{{gcpProjectId}}",
+    "dataTypes": [
+      {
+        "name": "GCPAuditLogs",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Google Cloud Platform (GCP) Audit Logs",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "Google Cloud Audit Logs record administrative activities and accesses within your Google Cloud resources. Connect to stream GCP audit logs into Microsoft Sentinel for comprehensive multi-cloud security monitoring and compliance.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "GCPAuditLogs",
+          "baseQuery": "GCPAuditLogs"
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "Failed GCP operations",
+          "query": "GCPAuditLogs | where Status != \"OK\" | summarize count() by MethodName, Status, bin(TimeGenerated, 1h) | order by TimeGenerated desc"
+        },
+        {
+          "description": "GCP resource deletions",
+          "query": "GCPAuditLogs | where MethodName contains \"delete\" | project TimeGenerated, MethodName, CallerIP, PrincipalEmail, ResourceName"
+        },
+        {
+          "description": "IAM policy changes",
+          "query": "GCPAuditLogs | where ServiceName == \"iam.googleapis.com\" and MethodName contains \"Policy\" | project TimeGenerated, MethodName, PrincipalEmail, ResourceName, RequestMetadata"
+        },
+        {
+          "description": "High-privilege operations",
+          "query": "GCPAuditLogs | where MethodName in (\"SetIamPolicy\", \"CreateServiceAccount\", \"DeleteServiceAccount\") | project TimeGenerated, MethodName, PrincipalEmail, CallerIP, ResourceName"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "GCPAuditLogs",
+          "lastDataReceivedQuery": "GCPAuditLogs | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "SentinelKindsV2", 
+          "value": ["GoogleCloudPlatformAuditLogs"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": true
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "customs": [
+          {
+            "name": "GCP Audit Logs",
+            "description": "GCP Audit Logs must be enabled and configured to export logs to Pub/Sub or Cloud Storage."
+          },
+          {
+            "name": "GCP Service Account",
+            "description": "A GCP service account with appropriate permissions must be created for Microsoft Sentinel."
+          }
+        ]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Enable GCP Audit Logs",
+          "description": "Enable audit logging in your Google Cloud Platform project.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Audit Logs Configuration",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. In GCP Console, go to **IAM & Admin** > **Audit Logs**\n2. Select the services you want to audit\n3. Enable **Admin Activity** logs (always enabled by default)\n4. Enable **Data Access** logs for sensitive services\n5. Configure **System Event** logs\n6. Review and apply the configuration\n7. Set up **Cloud Logging** sinks for log export"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Configure log export to Pub/Sub",
+          "description": "Set up a Pub/Sub topic and subscription for real-time log streaming.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Pub/Sub Configuration",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. In GCP Console, go to **Pub/Sub**\n2. Create a new **Topic** (e.g., `sentinel-audit-logs`)\n3. Create a **Subscription** for the topic\n4. Go to **Cloud Logging** > **Log Router**\n5. Create a new **Sink**\n6. Set destination to your Pub/Sub topic\n7. Configure filter to include audit logs:\n   ```\n   protoPayload.@type=\"type.googleapis.com/google.cloud.audit.AuditLog\"\n   ```"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "3. Create GCP Service Account",
+          "description": "Create a service account that allows Microsoft Sentinel to read audit logs.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Service Account Setup",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. In GCP Console, go to **IAM & Admin** > **Service Accounts**\n2. Click **Create Service Account**\n3. Provide name: `microsoft-sentinel-connector`\n4. Grant the following roles:\n   - `Pub/Sub Subscriber`\n   - `Logging Viewer`\n   - `Monitoring Viewer`\n5. Create and download the **JSON key**\n6. Store the key securely for Sentinel configuration"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "4. Connect GCP to Sentinel",
+          "description": "Configure the connection using the service account credentials.",
+          "instructions": [
+            {
+              "parameters": {
+                "connectorKind": "GoogleCloudPlatformAuditLogs",
+                "title": "GCP Audit Logs",
+                "enable": true
+              },
+              "type": "SentinelResourceProvider"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

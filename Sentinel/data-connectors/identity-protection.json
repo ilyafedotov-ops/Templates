@@ -1,0 +1,128 @@
+{
+  "kind": "AzureActiveDirectoryIdentityProtection",
+  "properties": {
+    "tenantId": "{{tenantId}}",
+    "dataTypes": [
+      {
+        "name": "SecurityAlert",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Azure AD Identity Protection",
+      "publisher": "Microsoft", 
+      "descriptionMarkdown": "Azure Active Directory Identity Protection uses adaptive machine learning algorithms and heuristics to detect anomalies and suspicious activities that indicate potentially compromised identities. Connect to stream identity risk events and alerts.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "SecurityAlert",
+          "baseQuery": "SecurityAlert | where ProductName == \"Azure Active Directory Identity Protection\""
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "Identity Protection alerts by risk level",
+          "query": "SecurityAlert | where ProductName == \"Azure Active Directory Identity Protection\" | summarize count() by AlertSeverity, bin(TimeGenerated, 1d) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Risky users detected",
+          "query": "SecurityAlert | where ProductName == \"Azure Active Directory Identity Protection\" and AlertName contains \"risky user\" | project TimeGenerated, AlertName, CompromisedEntity, AlertSeverity"
+        },
+        {
+          "description": "Impossible travel alerts", 
+          "query": "SecurityAlert | where ProductName == \"Azure Active Directory Identity Protection\" and AlertName contains \"impossible travel\" | project TimeGenerated, CompromisedEntity, ExtendedProperties"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "SecurityAlert",
+          "lastDataReceivedQuery": "SecurityAlert | where ProductName == \"Azure Active Directory Identity Protection\" | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "SentinelKindsV2", 
+          "value": ["AzureActiveDirectoryIdentityProtection"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "tenant": ["GlobalAdmin", "SecurityAdmin"],
+        "customs": [
+          {
+            "name": "Azure AD Premium P2",
+            "description": "Azure AD Premium P2 license is required for Identity Protection features."
+          }
+        ]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Prerequisites",
+          "description": "Ensure you have the required Azure AD Premium P2 licenses and permissions to access Identity Protection.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "License Requirements",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Verify you have **Azure AD Premium P2** licenses\n2. Ensure **Identity Protection** is enabled in your tenant\n3. Configure **Identity Protection policies** for user and sign-in risk\n4. Enable **Microsoft Cloud App Security** integration (recommended)"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Connect Identity Protection",
+          "description": "Connect Azure AD Identity Protection to stream risk alerts and events to Microsoft Sentinel.",
+          "instructions": [
+            {
+              "parameters": {
+                "connectorKind": "AzureActiveDirectoryIdentityProtection",
+                "title": "Azure AD Identity Protection",
+                "enable": true
+              },
+              "type": "SentinelResourceProvider"
+            }
+          ]
+        },
+        {
+          "title": "3. Configure Identity Protection policies",
+          "description": "Configure risk-based policies in Azure AD to generate alerts for investigation.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Policy Configuration",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Go to **Azure AD** > **Security** > **Identity Protection**\n2. Configure **User risk policy** with appropriate risk levels\n3. Configure **Sign-in risk policy** with appropriate risk levels\n4. Set **Actions** to generate alerts for investigation\n5. Monitor the **Risky users** and **Risk detections** reports"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

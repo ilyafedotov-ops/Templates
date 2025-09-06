@@ -1,0 +1,205 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace"
+      }
+    },
+    "subscriptionId": {
+      "type": "string",
+      "defaultValue": "[subscription().subscriptionId]",
+      "metadata": {
+        "description": "Azure subscription ID"
+      }
+    },
+    "tenantId": {
+      "type": "string",
+      "defaultValue": "[tenant().tenantId]",
+      "metadata": {
+        "description": "Azure tenant ID"
+      }
+    },
+    "enableAzureActivity": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable Azure Activity Log connector"
+      }
+    },
+    "enableAzureAD": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable Azure Active Directory connector"
+      }
+    },
+    "enableSecurityCenter": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable Microsoft Defender for Cloud connector"
+      }
+    },
+    "enableOffice365": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Enable Office 365 connector"
+      }
+    },
+    "enableIdentityProtection": {
+      "type": "bool",
+      "defaultValue": false,
+      "metadata": {
+        "description": "Enable Azure AD Identity Protection connector (requires P2 license)"
+      }
+    },
+    "office365DataTypes": {
+      "type": "object",
+      "defaultValue": {
+        "exchange": "Enabled",
+        "sharepoint": "Enabled",
+        "teams": "Enabled"
+      },
+      "metadata": {
+        "description": "Office 365 data types to enable"
+      }
+    }
+  },
+  "variables": {
+    "workspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', parameters('workspaceName'))]"
+  },
+  "resources": [
+    {
+      "condition": "[parameters('enableAzureActivity')]",
+      "type": "Microsoft.SecurityInsights/dataConnectors",
+      "apiVersion": "2023-02-01",
+      "name": "[guid(subscription().subscriptionId, parameters('workspaceName'), 'AzureActivity')]",
+      "scope": "[variables('workspaceResourceId')]",
+      "kind": "AzureActivityLog",
+      "properties": {
+        "tenantId": "[parameters('tenantId')]",
+        "subscriptionId": "[parameters('subscriptionId')]",
+        "dataTypes": {
+          "logs": [
+            {
+              "state": "Enabled"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "condition": "[parameters('enableAzureAD')]",
+      "type": "Microsoft.SecurityInsights/dataConnectors",
+      "apiVersion": "2023-02-01", 
+      "name": "[guid(subscription().subscriptionId, parameters('workspaceName'), 'AzureAD')]",
+      "scope": "[variables('workspaceResourceId')]",
+      "kind": "AzureActiveDirectory",
+      "properties": {
+        "tenantId": "[parameters('tenantId')]",
+        "dataTypes": {
+          "signInLogs": {
+            "state": "Enabled"
+          },
+          "auditLogs": {
+            "state": "Enabled"
+          },
+          "nonInteractiveUserSignInLogs": {
+            "state": "Enabled"
+          },
+          "servicePrincipalSignInLogs": {
+            "state": "Enabled"
+          },
+          "managedIdentitySignInLogs": {
+            "state": "Enabled"
+          },
+          "provisioningLogs": {
+            "state": "Enabled"
+          },
+          "adfsSignInLogs": {
+            "state": "Enabled"
+          },
+          "riskyUsers": {
+            "state": "Enabled"
+          },
+          "userRiskEvents": {
+            "state": "Enabled"
+          }
+        }
+      }
+    },
+    {
+      "condition": "[parameters('enableSecurityCenter')]",
+      "type": "Microsoft.SecurityInsights/dataConnectors",
+      "apiVersion": "2023-02-01",
+      "name": "[guid(subscription().subscriptionId, parameters('workspaceName'), 'SecurityCenter')]",
+      "scope": "[variables('workspaceResourceId')]",
+      "kind": "AzureSecurityCenter",
+      "properties": {
+        "subscriptionId": "[parameters('subscriptionId')]",
+        "dataTypes": {
+          "alerts": {
+            "state": "Enabled"
+          },
+          "recommendations": {
+            "state": "Enabled"
+          }
+        }
+      }
+    },
+    {
+      "condition": "[parameters('enableOffice365')]",
+      "type": "Microsoft.SecurityInsights/dataConnectors",
+      "apiVersion": "2023-02-01",
+      "name": "[guid(subscription().subscriptionId, parameters('workspaceName'), 'Office365')]",
+      "scope": "[variables('workspaceResourceId')]",
+      "kind": "Office365",
+      "properties": {
+        "tenantId": "[parameters('tenantId')]",
+        "dataTypes": {
+          "exchange": {
+            "state": "[parameters('office365DataTypes').exchange]"
+          },
+          "sharepoint": {
+            "state": "[parameters('office365DataTypes').sharepoint]"
+          },
+          "teams": {
+            "state": "[parameters('office365DataTypes').teams]"
+          }
+        }
+      }
+    },
+    {
+      "condition": "[parameters('enableIdentityProtection')]",
+      "type": "Microsoft.SecurityInsights/dataConnectors",
+      "apiVersion": "2023-02-01",
+      "name": "[guid(subscription().subscriptionId, parameters('workspaceName'), 'IdentityProtection')]",
+      "scope": "[variables('workspaceResourceId')]",
+      "kind": "AzureActiveDirectoryIdentityProtection",
+      "properties": {
+        "tenantId": "[parameters('tenantId')]",
+        "dataTypes": {
+          "alerts": {
+            "state": "Enabled"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "enabledConnectors": {
+      "type": "array",
+      "value": [
+        "[if(parameters('enableAzureActivity'), 'AzureActivity', '')]",
+        "[if(parameters('enableAzureAD'), 'AzureAD', '')]", 
+        "[if(parameters('enableSecurityCenter'), 'SecurityCenter', '')]",
+        "[if(parameters('enableOffice365'), 'Office365', '')]",
+        "[if(parameters('enableIdentityProtection'), 'IdentityProtection', '')]"
+      ]
+    }
+  }
+}

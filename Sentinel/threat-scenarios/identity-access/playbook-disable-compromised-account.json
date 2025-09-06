@@ -1,0 +1,686 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "2.0.0.0",
+  "parameters": {
+    "logicAppName": {
+      "type": "string",
+      "defaultValue": "la-disable-compromised-account",
+      "metadata": {
+        "description": "Name of the Logic App"
+      }
+    },
+    "teamsWebhookUrl": {
+      "type": "string",
+      "metadata": {
+        "description": "Microsoft Teams webhook URL for notifications"
+      }
+    },
+    "securityGroupEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address of the security team"
+      }
+    },
+    "keyVaultName": {
+      "type": "string",
+      "metadata": {
+        "description": "Key Vault name for storing sensitive data"
+      }
+    }
+  },
+  "variables": {
+    "azureADConnectionName": "azuread",
+    "office365ConnectionName": "office365",
+    "keyVaultConnectionName": "keyvault",
+    "azureMonitorConnectionName": "azuremonitorlogs"
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('azureADConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Azure AD Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuread')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections", 
+      "apiVersion": "2016-06-01",
+      "name": "[variables('office365ConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Office 365 Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01", 
+      "name": "[variables('keyVaultConnectionName')]",
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Key Vault Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/keyvault')]"
+        },
+        "parameterValues": {
+          "vaultName": "[parameters('keyVaultName')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Web/connections",
+      "apiVersion": "2016-06-01",
+      "name": "[variables('azureMonitorConnectionName')]", 
+      "location": "[resourceGroup().location]",
+      "properties": {
+        "displayName": "Azure Monitor Logs Connection",
+        "api": {
+          "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Logic/workflows",
+      "apiVersion": "2019-05-01", 
+      "name": "[parameters('logicAppName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/connections', variables('azureADConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('office365ConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('keyVaultConnectionName'))]",
+        "[resourceId('Microsoft.Web/connections', variables('azureMonitorConnectionName'))]"
+      ],
+      "properties": {
+        "state": "Enabled",
+        "definition": {
+          "$schema": "https://schema.management.azure.com/schemas/2016-06-01/workflowdefinition.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {
+            "teamsWebhookUrl": {
+              "type": "String"
+            },
+            "securityGroupEmail": {
+              "type": "String" 
+            }
+          },
+          "triggers": {
+            "When_Azure_Sentinel_incident_is_created": {
+              "type": "ApiConnectionWebhook",
+              "inputs": {
+                "host": {
+                  "connection": {
+                    "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                  }
+                },
+                "body": {
+                  "callback_url": "@{listCallbackUrl()}"
+                },
+                "path": "/incident-creation"
+              }
+            }
+          },
+          "actions": {
+            "Initialize_Variables": {
+              "type": "InitializeVariable",
+              "inputs": {
+                "variables": [
+                  {
+                    "name": "incidentId", 
+                    "type": "string",
+                    "value": "@{triggerBody()?['object']?['id']}"
+                  },
+                  {
+                    "name": "userPrincipal",
+                    "type": "string", 
+                    "value": "@{triggerBody()?['object']?['properties']?['relatedEntities']?[0]?['properties']?['accountName']}"
+                  },
+                  {
+                    "name": "severity",
+                    "type": "string",
+                    "value": "@{triggerBody()?['object']?['properties']?['severity']}"
+                  },
+                  {
+                    "name": "title",
+                    "type": "string",
+                    "value": "@{triggerBody()?['object']?['properties']?['title']}"
+                  },
+                  {
+                    "name": "disableActions",
+                    "type": "array",
+                    "value": []
+                  },
+                  {
+                    "name": "evidenceCollected",
+                    "type": "object",
+                    "value": {}
+                  }
+                ]
+              },
+              "runAfter": {}
+            },
+            "Check_Incident_Severity": {
+              "type": "Condition",
+              "expression": {
+                "or": [
+                  {
+                    "equals": [
+                      "@variables('severity')",
+                      "High"
+                    ]
+                  },
+                  {
+                    "equals": [
+                      "@variables('severity')", 
+                      "Critical"
+                    ]
+                  }
+                ]
+              },
+              "actions": {
+                "Get_User_Details": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuread']['connectionId']"
+                      }
+                    },
+                    "method": "get",
+                    "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}"
+                  },
+                  "runAfter": {}
+                },
+                "Get_User_Sign_In_Logs": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/queryData",
+                    "queries": {
+                      "resourcegroups": "@{resourceGroup().name}",
+                      "resourcename": "sentinel-workspace", 
+                      "resourcetype": "Log Analytics Workspace",
+                      "subscriptions": "@{subscription().subscriptionId}",
+                      "timerange": "P1D"
+                    },
+                    "body": {
+                      "query": "SigninLogs | where UserPrincipalName == '@{variables('userPrincipal')}' | where TimeGenerated >= ago(24h) | project TimeGenerated, IPAddress, LocationDetails, DeviceDetail, AppDisplayName, ResultType | order by TimeGenerated desc | take 50"
+                    }
+                  },
+                  "runAfter": {
+                    "Get_User_Details": ["Succeeded"]
+                  }
+                },
+                "Get_User_Activities": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuremonitorlogs']['connectionId']" 
+                      }
+                    },
+                    "method": "post",
+                    "path": "/queryData",
+                    "queries": {
+                      "resourcegroups": "@{resourceGroup().name}",
+                      "resourcename": "sentinel-workspace",
+                      "resourcetype": "Log Analytics Workspace", 
+                      "subscriptions": "@{subscription().subscriptionId}",
+                      "timerange": "P1D"
+                    },
+                    "body": {
+                      "query": "AzureActivity | where Caller == '@{variables('userPrincipal')}' | where TimeGenerated >= ago(24h) | project TimeGenerated, OperationNameValue, ResourceGroup, ResourceProvider, ActivityStatusValue | order by TimeGenerated desc | take 100"
+                    }
+                  },
+                  "runAfter": {
+                    "Get_User_Sign_In_Logs": ["Succeeded"] 
+                  }
+                },
+                "Store_Evidence_in_KeyVault": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['keyvault']['connectionId']"
+                      }
+                    },
+                    "method": "put",
+                    "path": "/secrets/@{encodeURIComponent(concat('incident-', variables('incidentId'), '-evidence'))}/value",
+                    "body": {
+                      "value": "@{json(concat('{\"userDetails\":', string(body('Get_User_Details')), ',\"signInLogs\":', string(body('Get_User_Sign_In_Logs')), ',\"activities\":', string(body('Get_User_Activities')), ',\"timestamp\":\"', utcNow(), '\"}'))}"
+                    }
+                  },
+                  "runAfter": {
+                    "Get_User_Activities": ["Succeeded"]
+                  }
+                },
+                "Check_If_Critical_Account": {
+                  "type": "Condition",
+                  "expression": {
+                    "or": [
+                      {
+                        "contains": [
+                          "@body('Get_User_Details')?['jobTitle']",
+                          "Admin"
+                        ]
+                      },
+                      {
+                        "contains": [
+                          "@body('Get_User_Details')?['jobTitle']", 
+                          "Executive"
+                        ]
+                      },
+                      {
+                        "contains": [
+                          "@body('Get_User_Details')?['department']",
+                          "IT"
+                        ]
+                      },
+                      {
+                        "equals": [
+                          "@variables('severity')",
+                          "Critical"
+                        ]
+                      }
+                    ]
+                  },
+                  "actions": {
+                    "Disable_User_Account": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuread']['connectionId']"
+                          }
+                        },
+                        "method": "patch",
+                        "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}",
+                        "body": {
+                          "accountEnabled": false
+                        }
+                      },
+                      "runAfter": {}
+                    },
+                    "Revoke_User_Sessions": {
+                      "type": "ApiConnection", 
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuread']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}/revokeSignInSessions"
+                      },
+                      "runAfter": {
+                        "Disable_User_Account": ["Succeeded"]
+                      }
+                    },
+                    "Get_User_Group_Memberships": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['azuread']['connectionId']"
+                          }
+                        },
+                        "method": "get", 
+                        "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}/transitiveMemberOf"
+                      },
+                      "runAfter": {
+                        "Revoke_User_Sessions": ["Succeeded"]
+                      }
+                    },
+                    "Remove_From_Privileged_Groups": {
+                      "type": "Foreach",
+                      "foreach": "@body('Get_User_Group_Memberships')?['value']",
+                      "actions": {
+                        "Check_If_Privileged_Group": {
+                          "type": "Condition",
+                          "expression": {
+                            "or": [
+                              {
+                                "contains": [
+                                  "@items('Remove_From_Privileged_Groups')?['displayName']",
+                                  "Admin"
+                                ]
+                              },
+                              {
+                                "contains": [
+                                  "@items('Remove_From_Privileged_Groups')?['displayName']",
+                                  "Privileged"
+                                ]
+                              },
+                              {
+                                "contains": [
+                                  "@items('Remove_From_Privileged_Groups')?['displayName']", 
+                                  "Security"
+                                ]
+                              }
+                            ]
+                          },
+                          "actions": {
+                            "Remove_Group_Membership": {
+                              "type": "ApiConnection",
+                              "inputs": {
+                                "host": {
+                                  "connection": {
+                                    "name": "@parameters('$connections')['azuread']['connectionId']"
+                                  }
+                                },
+                                "method": "delete",
+                                "path": "/v1.0/groups/@{items('Remove_From_Privileged_Groups')?['id']}/members/@{body('Get_User_Details')?['id']}/$ref"
+                              },
+                              "runAfter": {}
+                            }
+                          },
+                          "runAfter": {}
+                        }
+                      },
+                      "runAfter": {
+                        "Get_User_Group_Memberships": ["Succeeded"]
+                      }
+                    },
+                    "Update_Actions_Variable_Critical": {
+                      "type": "AppendToArrayVariable",
+                      "inputs": {
+                        "name": "disableActions",
+                        "value": {
+                          "action": "Account Disabled",
+                          "timestamp": "@{utcNow()}",
+                          "details": "User account disabled due to critical security incident"
+                        }
+                      },
+                      "runAfter": {
+                        "Remove_From_Privileged_Groups": ["Succeeded"]
+                      }
+                    },
+                    "Notify_Manager": {
+                      "type": "ApiConnection",
+                      "inputs": {
+                        "host": {
+                          "connection": {
+                            "name": "@parameters('$connections')['office365']['connectionId']"
+                          }
+                        },
+                        "method": "post",
+                        "path": "/v2/Mail",
+                        "body": {
+                          "To": "@{body('Get_User_Details')?['manager']?['mail']}",
+                          "Subject": "URGENT: Security Incident - Employee Account Disabled",
+                          "Body": "Dear Manager,<br><br>We have detected a critical security incident involving your team member @{variables('userPrincipal')}. Their account has been temporarily disabled as a precautionary measure.<br><br>Incident Details:<br>- Incident ID: @{variables('incidentId')}<br>- Severity: @{variables('severity')}<br>- Detection: @{variables('title')}<br><br>Please contact the Security Team immediately at @{parameters('securityGroupEmail')} to discuss next steps.<br><br>Security Team",
+                          "Importance": "High"
+                        }
+                      },
+                      "runAfter": {
+                        "Update_Actions_Variable_Critical": ["Succeeded"]
+                      }
+                    }
+                  },
+                  "else": {
+                    "actions": {
+                      "Force_Password_Reset": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['azuread']['connectionId']"
+                            }
+                          },
+                          "method": "patch",
+                          "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}",
+                          "body": {
+                            "passwordProfile": {
+                              "forceChangePasswordNextSignIn": true
+                            }
+                          }
+                        },
+                        "runAfter": {}
+                      },
+                      "Revoke_Sessions_Non_Critical": {
+                        "type": "ApiConnection",
+                        "inputs": {
+                          "host": {
+                            "connection": {
+                              "name": "@parameters('$connections')['azuread']['connectionId']"
+                            }
+                          },
+                          "method": "post", 
+                          "path": "/v1.0/users/@{encodeURIComponent(variables('userPrincipal'))}/revokeSignInSessions"
+                        },
+                        "runAfter": {
+                          "Force_Password_Reset": ["Succeeded"]
+                        }
+                      },
+                      "Update_Actions_Variable_Standard": {
+                        "type": "AppendToArrayVariable",
+                        "inputs": {
+                          "name": "disableActions",
+                          "value": {
+                            "action": "Sessions Revoked and Password Reset Required",
+                            "timestamp": "@{utcNow()}",
+                            "details": "User sessions terminated and password reset forced"
+                          }
+                        },
+                        "runAfter": {
+                          "Revoke_Sessions_Non_Critical": ["Succeeded"]
+                        }
+                      }
+                    }
+                  },
+                  "runAfter": {
+                    "Store_Evidence_in_KeyVault": ["Succeeded"]
+                  }
+                },
+                "Send_Teams_Notification": {
+                  "type": "Http",
+                  "inputs": {
+                    "method": "POST",
+                    "uri": "@parameters('teamsWebhookUrl')",
+                    "headers": {
+                      "Content-Type": "application/json"
+                    },
+                    "body": {
+                      "@type": "MessageCard",
+                      "@context": "http://schema.org/extensions",
+                      "themeColor": "@{if(equals(variables('severity'), 'Critical'), 'FF0000', if(equals(variables('severity'), 'High'), 'FF6600', 'FFCC00'))}",
+                      "summary": "Security Incident Response - Account Action Taken",
+                      "sections": [
+                        {
+                          "activityTitle": "🚨 Security Incident Response Executed",
+                          "activitySubtitle": "Automated response for incident @{variables('incidentId')}",
+                          "facts": [
+                            {
+                              "name": "User Account",
+                              "value": "@{variables('userPrincipal')}"
+                            },
+                            {
+                              "name": "Incident Severity",
+                              "value": "@{variables('severity')}"
+                            },
+                            {
+                              "name": "Detection Title",
+                              "value": "@{variables('title')}"
+                            },
+                            {
+                              "name": "Actions Taken",
+                              "value": "@{join(variables('disableActions'), '; ')}"
+                            },
+                            {
+                              "name": "Evidence Stored",
+                              "value": "Key Vault: incident-@{variables('incidentId')}-evidence"
+                            },
+                            {
+                              "name": "Response Time",
+                              "value": "@{utcNow()}"
+                            }
+                          ],
+                          "markdown": true
+                        }
+                      ],
+                      "potentialAction": [
+                        {
+                          "@type": "OpenUri",
+                          "name": "View Incident in Sentinel",
+                          "targets": [
+                            {
+                              "os": "default",
+                              "uri": "https://portal.azure.com/#blade/Microsoft_Azure_Security_Insights/IncidentBlade/incidentId/@{variables('incidentId')}"
+                            }
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "runAfter": {
+                    "Check_If_Critical_Account": ["Succeeded", "Failed"]
+                  }
+                },
+                "Send_Security_Team_Email": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['office365']['connectionId']"
+                      }
+                    },
+                    "method": "post",
+                    "path": "/v2/Mail",
+                    "body": {
+                      "To": "@parameters('securityGroupEmail')",
+                      "Subject": "Security Incident Response Executed - @{variables('incidentId')}",
+                      "Body": "<html><body><h2>🚨 Automated Security Response Completed</h2><p><strong>Incident Details:</strong></p><ul><li><strong>Incident ID:</strong> @{variables('incidentId')}</li><li><strong>User Account:</strong> @{variables('userPrincipal')}</li><li><strong>Severity:</strong> @{variables('severity')}</li><li><strong>Detection:</strong> @{variables('title')}</li><li><strong>Response Time:</strong> @{utcNow()}</li></ul><p><strong>Actions Taken:</strong></p><ul>@{join(map(variables('disableActions'), lambda('item', concat('<li>', item['action'], ' at ', item['timestamp'], '</li>'))), '')}</ul><p><strong>Evidence Collection:</strong></p><ul><li>User details, sign-in logs, and recent activities stored in Key Vault</li><li>Key: incident-@{variables('incidentId')}-evidence</li></ul><p><strong>Next Steps:</strong></p><ol><li>Review collected evidence</li><li>Interview user if account was not compromised</li><li>Investigate root cause of detection</li><li>Update incident status in Sentinel</li><li>Restore access if false positive</li></ol><p><strong>Links:</strong></p><ul><li><a href=\"https://portal.azure.com/#blade/Microsoft_Azure_Security_Insights/IncidentBlade/incidentId/@{variables('incidentId')}\">View Incident in Sentinel</a></li></ul></body></html>",
+                      "Importance": "High"
+                    }
+                  },
+                  "runAfter": {
+                    "Send_Teams_Notification": ["Succeeded"]
+                  }
+                },
+                "Update_Incident_Comment": {
+                  "type": "ApiConnection",
+                  "inputs": {
+                    "host": {
+                      "connection": {
+                        "name": "@parameters('$connections')['azuresentinel']['connectionId']"
+                      }
+                    },
+                    "method": "put",
+                    "path": "/Incidents/subscriptions/@{encodeURIComponent(subscription().subscriptionId)}/resourceGroups/@{encodeURIComponent(resourceGroup().name)}/workspaces/@{encodeURIComponent('sentinel-workspace')}/incidents/@{encodeURIComponent(variables('incidentId'))}/comments/@{encodeURIComponent(guid())}",
+                    "body": {
+                      "message": "🤖 **AUTOMATED RESPONSE EXECUTED**\\n\\n**Actions Taken:**\\n@{join(map(variables('disableActions'), lambda('item', concat('- ', item['action'], ' (', item['timestamp'], ')'))), '\\n')}\\n\\n**Evidence Collected:**\\n- User account details\\n- Sign-in logs (last 24h)\\n- Azure activity logs (last 24h)\\n- Evidence stored in Key Vault: incident-@{variables('incidentId')}-evidence\\n\\n**Notifications Sent:**\\n- Security team notified via email\\n- Teams notification posted\\n- Manager notified (if critical account)\\n\\n**Next Steps:**\\n1. Review evidence in Key Vault\\n2. Validate incident legitimacy\\n3. Interview user if necessary\\n4. Restore access if false positive\\n5. Update incident status"
+                    }
+                  },
+                  "runAfter": {
+                    "Send_Security_Team_Email": ["Succeeded"]
+                  }
+                }
+              },
+              "else": {
+                "actions": {
+                  "Low_Severity_Notification": {
+                    "type": "Http",
+                    "inputs": {
+                      "method": "POST",
+                      "uri": "@parameters('teamsWebhookUrl')",
+                      "headers": {
+                        "Content-Type": "application/json"
+                      },
+                      "body": {
+                        "@type": "MessageCard",
+                        "@context": "http://schema.org/extensions", 
+                        "themeColor": "36A64F",
+                        "summary": "Security Incident - Manual Review Required",
+                        "sections": [
+                          {
+                            "activityTitle": "ℹ️ Security Incident Detected",
+                            "activitySubtitle": "Manual review required for incident @{variables('incidentId')}",
+                            "facts": [
+                              {
+                                "name": "User Account",
+                                "value": "@{variables('userPrincipal')}"
+                              },
+                              {
+                                "name": "Incident Severity", 
+                                "value": "@{variables('severity')}"
+                              },
+                              {
+                                "name": "Detection Title",
+                                "value": "@{variables('title')}"
+                              },
+                              {
+                                "name": "Action Required",
+                                "value": "Manual investigation and response"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    "runAfter": {}
+                  }
+                }
+              },
+              "runAfter": {
+                "Initialize_Variables": ["Succeeded"]
+              }
+            }
+          },
+          "parameters": {
+            "$connections": {
+              "value": {
+                "azuread": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('azureADConnectionName'))]",
+                  "connectionName": "[variables('azureADConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuread')]"
+                },
+                "office365": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('office365ConnectionName'))]",
+                  "connectionName": "[variables('office365ConnectionName')]", 
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/office365')]"
+                },
+                "keyvault": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('keyVaultConnectionName'))]",
+                  "connectionName": "[variables('keyVaultConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/keyvault')]"
+                },
+                "azuremonitorlogs": {
+                  "connectionId": "[resourceId('Microsoft.Web/connections', variables('azureMonitorConnectionName'))]",
+                  "connectionName": "[variables('azureMonitorConnectionName')]",
+                  "id": "[concat('/subscriptions/', subscription().subscriptionId, '/providers/Microsoft.Web/locations/', resourceGroup().location, '/managedApis/azuremonitorlogs')]"
+                }
+              }
+            },
+            "teamsWebhookUrl": {
+              "value": "[parameters('teamsWebhookUrl')]"
+            },
+            "securityGroupEmail": {
+              "value": "[parameters('securityGroupEmail')]"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "logicAppUrl": {
+      "type": "string",
+      "value": "[concat('https://portal.azure.com/#resource/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/', parameters('logicAppName'), '/overview')]"
+    },
+    "logicAppTriggerUrl": {
+      "type": "string", 
+      "value": "[listCallbackURL(concat(resourceId('Microsoft.Logic/workflows', parameters('logicAppName')), '/triggers/When_Azure_Sentinel_incident_is_created'), '2019-05-01').value]"
+    }
+  }
+}

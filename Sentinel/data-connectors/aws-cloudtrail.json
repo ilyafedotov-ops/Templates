@@ -1,0 +1,148 @@
+{
+  "kind": "AmazonWebServicesCloudTrail",
+  "properties": {
+    "awsRoleArn": "{{awsRoleArn}}",
+    "dataTypes": [
+      {
+        "name": "AWSCloudTrail",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Amazon Web Services CloudTrail",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "AWS CloudTrail is a service that enables governance, compliance, operational auditing, and risk auditing of your AWS account. Connect to stream CloudTrail logs into Microsoft Sentinel for unified security monitoring across multi-cloud environments.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "AWSCloudTrail",
+          "baseQuery": "AWSCloudTrail"
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "Failed AWS API calls",
+          "query": "AWSCloudTrail | where ErrorCode != \"\" | summarize count() by EventName, ErrorCode, bin(TimeGenerated, 1h) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Root account usage",
+          "query": "AWSCloudTrail | where UserIdentityType == \"Root\" | project TimeGenerated, EventName, SourceIPAddress, UserAgent, AWSRegion"
+        },
+        {
+          "description": "Console logins without MFA",
+          "query": "AWSCloudTrail | where EventName == \"ConsoleLogin\" and ResponseElements.ConsoleLogin != \"Success\" | project TimeGenerated, SourceIPAddress, UserIdentityUserName, ErrorMessage"
+        },
+        {
+          "description": "High-risk AWS operations",
+          "query": "AWSCloudTrail | where EventName in (\"DeleteUser\", \"DeleteRole\", \"CreateUser\", \"PutUserPolicy\", \"AttachUserPolicy\") | project TimeGenerated, EventName, UserIdentityUserName, SourceIPAddress, AWSRegion"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "AWSCloudTrail",
+          "lastDataReceivedQuery": "AWSCloudTrail | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "SentinelKindsV2",
+          "value": ["AmazonWebServicesCloudTrail"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "customs": [
+          {
+            "name": "AWS CloudTrail",
+            "description": "AWS CloudTrail must be enabled and configured to deliver logs to an S3 bucket or SQS queue."
+          },
+          {
+            "name": "AWS IAM Role",
+            "description": "An AWS IAM role with appropriate permissions must be created for Microsoft Sentinel to access CloudTrail logs."
+          }
+        ]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Configure AWS CloudTrail",
+          "description": "Ensure CloudTrail is enabled and properly configured in your AWS account.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "CloudTrail Configuration",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. In AWS Console, go to **CloudTrail**\n2. Create or verify existing trail configuration\n3. Ensure **Multi-region trail** is enabled\n4. Configure **S3 bucket** for log storage\n5. Enable **CloudWatch Logs** integration (optional)\n6. Configure **SQS queue** for real-time delivery (recommended)\n7. Enable **Data events** for S3 and Lambda if needed"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Create AWS IAM Role for Sentinel",
+          "description": "Create an IAM role that allows Microsoft Sentinel to read CloudTrail logs from your AWS account.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "IAM Role Setup",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. In AWS IAM, create a new **Role**\n2. Select **Another AWS account** as trusted entity\n3. Use Microsoft Sentinel Account ID: **197857026523**\n4. Attach the following permissions:\n   - `AWSCloudTrailReadOnlyAccess`\n   - `AmazonS3ReadOnlyAccess` (for S3 bucket access)\n   - `AmazonSQSReadOnlyAccess` (for SQS queue access)\n5. Add **External ID** provided by Microsoft Sentinel\n6. Name the role (e.g., `MicrosoftSentinelCloudTrailRole`)\n7. Copy the **Role ARN** for configuration"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "3. Connect AWS CloudTrail to Sentinel",
+          "description": "Configure the connection using the IAM role created in the previous step.",
+          "instructions": [
+            {
+              "parameters": {
+                "connectorKind": "AmazonWebServicesCloudTrail",
+                "title": "AWS CloudTrail",
+                "enable": true
+              },
+              "type": "SentinelResourceProvider"
+            }
+          ]
+        },
+        {
+          "title": "4. Validate data ingestion",
+          "description": "Verify that CloudTrail logs are being ingested into Microsoft Sentinel.",
+          "instructions": [
+            {
+              "parameters": {
+                "query": "AWSCloudTrail | take 10",
+                "label": "Validation Query"
+              },
+              "type": "CopyableLabel"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

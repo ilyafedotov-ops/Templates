@@ -1,0 +1,496 @@
+// Performance Monitoring Queries for Microsoft Sentinel
+// These queries help monitor query performance, workspace utilization, and system efficiency
+
+//==========================================
+// 1. QUERY PERFORMANCE ANALYSIS
+//==========================================
+
+// Slow queries analysis - queries taking longer than expected
+LAQueryLogs
+| where TimeGenerated > ago(24h)
+| where ResponseCode == 200  // Successful queries only
+| extend DurationSeconds = DurationMs / 1000.0
+| where DurationSeconds > 30  // Focus on slow queries (>30 seconds)
+| summarize 
+    QueryCount = count(),
+    AvgDurationSeconds = avg(DurationSeconds),
+    MaxDurationSeconds = max(DurationSeconds),
+    AvgDataScannedGB = avg(DataScanned_GB),
+    TotalDataScannedGB = sum(DataScanned_GB)
+by QueryHash_g
+| join kind=inner (
+    LAQueryLogs
+    | where TimeGenerated > ago(24h)
+    | where ResponseCode == 200
+    | summarize arg_max(TimeGenerated, QueryText_s) by QueryHash_g
+) on QueryHash_g
+| extend 
+    PerformanceCategory = case(
+        AvgDurationSeconds > 300, "Very Slow (5+ min)",
+        AvgDurationSeconds > 120, "Slow (2-5 min)",
+        AvgDurationSeconds > 60, "Moderate (1-2 min)",
+        "Acceptable (30s-1min)"
+    ),
+    OptimizationPriority = case(
+        QueryCount > 10 and AvgDurationSeconds > 120, "Critical",
+        QueryCount > 5 and AvgDurationSeconds > 60, "High",
+        AvgDurationSeconds > 180, "Medium",
+        "Low"
+    )
+| project 
+    QuerySnippet = substring(QueryText_s, 0, 100),
+    QueryCount,
+    AvgDurationSeconds = round(AvgDurationSeconds, 1),
+    MaxDurationSeconds = round(MaxDurationSeconds, 1),
+    AvgDataScannedGB = round(AvgDataScannedGB, 2),
+    TotalDataScannedGB = round(TotalDataScannedGB, 2),
+    PerformanceCategory,
+    OptimizationPriority
+| order by AvgDurationSeconds desc
+
+// Query efficiency analysis - data scanned vs results returned
+LAQueryLogs
+| where TimeGenerated > ago(7d)
+| where ResponseCode == 200
+| where DataScanned_GB > 0
+| extend 
+    DurationSeconds = DurationMs / 1000.0,
+    EfficiencyRatio = ResultRows / (DataScanned_GB * 1024 * 1024 * 1024)  // Results per byte scanned
+| summarize 
+    QueryCount = count(),
+    AvgDurationSeconds = avg(DurationSeconds),
+    AvgDataScannedGB = avg(DataScanned_GB),
+    AvgResultRows = avg(ResultRows),
+    AvgEfficiencyRatio = avg(EfficiencyRatio)
+by bin(TimeGenerated, 1h)
+| extend 
+    PerformanceTrend = case(
+        AvgDurationSeconds > prev(AvgDurationSeconds) * 1.2, "Degrading",
+        AvgDurationSeconds < prev(AvgDurationSeconds) * 0.8, "Improving", 
+        "Stable"
+    )
+| project 
+    Hour = format_datetime(TimeGenerated, "MM-dd HH:mm"),
+    QueryCount,
+    AvgDurationSeconds = round(AvgDurationSeconds, 1),
+    AvgDataScannedGB = round(AvgDataScannedGB, 2),
+    AvgResultRows = round(AvgResultRows, 0),
+    PerformanceTrend
+| order by TimeGenerated desc
+
+//==========================================
+// 2. WORKSPACE RESOURCE UTILIZATION
+//==========================================
+
+// Data ingestion rate analysis
+Usage
+| where TimeGenerated > ago(7d)
+| where IsBillable == true
+| summarize 
+    TotalVolumeGB = sum(Quantity) / 1024,
+    RecordCount = sum(Quantity)
+by bin(TimeGenerated, 1h), DataType
+| extend IngestionRateGBPerHour = TotalVolumeGB
+| summarize 
+    AvgIngestionRateGB = avg(IngestionRateGBPerHour),
+    MaxIngestionRateGB = max(IngestionRateGBPerHour),
+    PeakHourlyRecords = max(RecordCount)
+by DataType
+| extend 
+    IngestionPattern = case(
+        MaxIngestionRateGB > AvgIngestionRateGB * 3, "Highly Variable",
+        MaxIngestionRateGB > AvgIngestionRateGB * 2, "Variable",
+        "Consistent"
+    ),
+    OptimizationOpportunity = case(
+        AvgIngestionRateGB > 10, "High volume - consider filtering",
+        IngestionPattern == "Highly Variable", "Irregular pattern - investigate peaks",
+        "Normal"
+    )
+| project 
+    DataSource = DataType,
+    AvgIngestionRateGB = round(AvgIngestionRateGB, 3),
+    MaxIngestionRateGB = round(MaxIngestionRateGB, 3),
+    PeakHourlyRecords,
+    IngestionPattern,
+    OptimizationOpportunity
+| order by AvgIngestionRateGB desc
+
+// Storage utilization by table
+union withsource=TableName *
+| where TimeGenerated > ago(1d)
+| summarize 
+    RecordCount = count(),
+    EstimatedSizeMB = count() * 0.5 / 1024,  // Rough size estimate
+    OldestRecord = min(TimeGenerated),
+    NewestRecord = max(TimeGenerated)
+by TableName
+| extend 
+    DataSpan = format_timespan(NewestRecord - OldestRecord, "dd.hh:mm:ss"),
+    RecordsPerHour = RecordCount / (datetime_diff("hour", NewestRecord, OldestRecord) + 1),
+    StorageEfficiency = case(
+        EstimatedSizeMB / RecordCount > 0.001, "Large records",
+        EstimatedSizeMB / RecordCount < 0.0001, "Small records", 
+        "Normal"
+    )
+| project 
+    TableName,
+    RecordCount,
+    EstimatedSizeMB = round(EstimatedSizeMB, 2),
+    RecordsPerHour = round(RecordsPerHour, 0),
+    DataSpan,
+    StorageEfficiency
+| order by RecordCount desc
+
+//==========================================
+// 3. CONCURRENT QUERY ANALYSIS
+//==========================================
+
+// Query concurrency and system load analysis
+LAQueryLogs
+| where TimeGenerated > ago(24h)
+| where ResponseCode == 200
+| extend 
+    QueryStart = TimeGenerated - totimespan(DurationMs * 1000000),  // Convert to timespan nanoseconds
+    QueryEnd = TimeGenerated
+| extend TimeWindow = bin(QueryStart, 5m)  // 5-minute windows
+| summarize 
+    ConcurrentQueries = count(),
+    AvgDurationMs = avg(DurationMs),
+    AvgDataScannedGB = avg(DataScanned_GB),
+    MaxDurationMs = max(DurationMs)
+by TimeWindow
+| extend 
+    SystemLoad = case(
+        ConcurrentQueries > 50, "Very High",
+        ConcurrentQueries > 30, "High", 
+        ConcurrentQueries > 15, "Medium",
+        "Low"
+    ),
+    PerformanceImpact = case(
+        ConcurrentQueries > 30 and AvgDurationMs > 60000, "Likely degraded",
+        ConcurrentQueries > 50, "Possible degradation",
+        "Normal"
+    )
+| project 
+    TimeWindow = format_datetime(TimeWindow, "MM-dd HH:mm"),
+    ConcurrentQueries,
+    AvgDurationMs = round(AvgDurationMs, 0),
+    MaxDurationMs,
+    AvgDataScannedGB = round(AvgDataScannedGB, 2),
+    SystemLoad,
+    PerformanceImpact
+| order by TimeWindow desc
+
+//==========================================
+// 4. ANALYTICS RULE PERFORMANCE
+//==========================================
+
+// Analytics rule execution performance
+SecurityIncident
+| where TimeGenerated > ago(7d)
+| join kind=inner (
+    SecurityAlert
+    | where TimeGenerated > ago(7d)
+    | summarize AlertCount = count() by AlertName, ProductName
+) on $left.Title == $right.AlertName
+| summarize 
+    IncidentCount = count(),
+    AlertsPerIncident = avg(AlertCount),
+    FirstIncident = min(TimeGenerated),
+    LastIncident = max(TimeGenerated)
+by Title, ProductName
+| extend 
+    IncidentFrequency = datetime_diff("hour", LastIncident, FirstIncident) / IncidentCount,
+    RuleEffectiveness = case(
+        AlertsPerIncident > 10, "High noise (many alerts per incident)",
+        AlertsPerIncident < 2, "Efficient (few alerts per incident)",
+        "Moderate"
+    )
+| project 
+    RuleName = Title,
+    ProductName,
+    IncidentCount,
+    AlertsPerIncident = round(AlertsPerIncident, 1),
+    IncidentFrequencyHours = round(IncidentFrequency, 1),
+    RuleEffectiveness,
+    FirstIncident,
+    LastIncident
+| order by IncidentCount desc
+
+//==========================================
+// 5. DATA FRESHNESS AND INGESTION DELAYS
+//==========================================
+
+// Data ingestion latency analysis across sources
+let DataFreshnessCheck = (TableName:string, EventTimeField:string) {
+    let QueryText = strcat("
+    ", TableName, "
+    | where TimeGenerated > ago(2h)
+    | where isnotempty(", EventTimeField, ")
+    | extend IngestionDelay = TimeGenerated - ", EventTimeField, "
+    | where IngestionDelay > 0s and IngestionDelay < 1d
+    | summarize 
+        RecordCount = count(),
+        AvgDelayMinutes = avg(IngestionDelay) / 1m,
+        P50DelayMinutes = percentile(IngestionDelay, 50) / 1m,
+        P95DelayMinutes = percentile(IngestionDelay, 95) / 1m,
+        MaxDelayMinutes = max(IngestionDelay) / 1m
+    | extend TableName = '", TableName, "'
+    ");
+    toscalar(QueryText)
+};
+
+union 
+(AzureActivity 
+ | where TimeGenerated > ago(2h)
+ | where isnotempty(EventSubmissionTimestamp)
+ | extend IngestionDelay = TimeGenerated - EventSubmissionTimestamp
+ | where IngestionDelay > 0s and IngestionDelay < 1d
+ | summarize 
+    RecordCount = count(),
+    AvgDelayMinutes = avg(IngestionDelay) / 1m,
+    P50DelayMinutes = percentile(IngestionDelay, 50) / 1m,
+    P95DelayMinutes = percentile(IngestionDelay, 95) / 1m,
+    MaxDelayMinutes = max(IngestionDelay) / 1m
+ | extend TableName = "AzureActivity"),
+(SigninLogs
+ | where TimeGenerated > ago(2h) 
+ | where isnotempty(CreatedDateTime)
+ | extend IngestionDelay = TimeGenerated - CreatedDateTime
+ | where IngestionDelay > 0s and IngestionDelay < 1d
+ | summarize 
+    RecordCount = count(),
+    AvgDelayMinutes = avg(IngestionDelay) / 1m,
+    P50DelayMinutes = percentile(IngestionDelay, 50) / 1m,
+    P95DelayMinutes = percentile(IngestionDelay, 95) / 1m,
+    MaxDelayMinutes = max(IngestionDelay) / 1m
+ | extend TableName = "SigninLogs")
+| extend 
+    DelayStatus = case(
+        P95DelayMinutes <= 15, "Excellent (<15min)",
+        P95DelayMinutes <= 30, "Good (15-30min)",
+        P95DelayMinutes <= 60, "Acceptable (30-60min)",
+        "Concerning (>60min)"
+    )
+| project 
+    DataSource = TableName,
+    RecordCount,
+    AvgDelayMinutes = round(AvgDelayMinutes, 1),
+    P50DelayMinutes = round(P50DelayMinutes, 1),
+    P95DelayMinutes = round(P95DelayMinutes, 1),
+    MaxDelayMinutes = round(MaxDelayMinutes, 1),
+    DelayStatus
+| order by P95DelayMinutes desc
+
+//==========================================
+// 6. WORKBOOK AND DASHBOARD PERFORMANCE
+//==========================================
+
+// Workbook query performance analysis
+LAQueryLogs
+| where TimeGenerated > ago(7d)
+| where ResponseCode == 200
+| where RequestClientApp_s contains "Workbook" or RequestClientApp_s contains "Dashboard"
+| extend DurationSeconds = DurationMs / 1000.0
+| summarize 
+    QueryCount = count(),
+    AvgDurationSeconds = avg(DurationSeconds),
+    P95DurationSeconds = percentile(DurationSeconds, 95),
+    AvgDataScannedGB = avg(DataScanned_GB),
+    SlowQueries = countif(DurationSeconds > 30)
+by RequestClientApp_s
+| extend 
+    PerformanceRating = case(
+        P95DurationSeconds <= 10, "Excellent",
+        P95DurationSeconds <= 30, "Good", 
+        P95DurationSeconds <= 60, "Acceptable",
+        "Poor"
+    ),
+    SlowQueryRate = round(todouble(SlowQueries) / QueryCount * 100, 1)
+| project 
+    ClientApp = RequestClientApp_s,
+    QueryCount,
+    AvgDurationSeconds = round(AvgDurationSeconds, 1),
+    P95DurationSeconds = round(P95DurationSeconds, 1),
+    AvgDataScannedGB = round(AvgDataScannedGB, 2),
+    SlowQueryRate,
+    PerformanceRating
+| order by P95DurationSeconds desc
+
+//==========================================
+// 7. MEMORY AND CPU UTILIZATION ANALYSIS
+//==========================================
+
+// Resource usage patterns analysis
+LAQueryLogs
+| where TimeGenerated > ago(24h)
+| where ResponseCode == 200
+| extend 
+    DurationSeconds = DurationMs / 1000.0,
+    DataScannedGB = DataScanned_GB
+| summarize 
+    QueryCount = count(),
+    AvgCpuTimeMs = avg(CpuTimeMs),
+    AvgMemoryUsageMB = avg(MemoryUsage_MB),
+    AvgDurationSeconds = avg(DurationSeconds),
+    MaxMemoryUsageMB = max(MemoryUsage_MB)
+by bin(TimeGenerated, 1h)
+| extend 
+    ResourceEfficiency = case(
+        AvgMemoryUsageMB > 1000, "Memory intensive",
+        AvgCpuTimeMs > AvgDurationSeconds * 1000 * 0.8, "CPU intensive",
+        "Balanced"
+    ),
+    PerformanceTrend = case(
+        AvgDurationSeconds > prev(AvgDurationSeconds, 1, 0) * 1.2, "Degrading",
+        AvgDurationSeconds < prev(AvgDurationSeconds, 1, 999) * 0.8, "Improving",
+        "Stable"
+    )
+| project 
+    Hour = format_datetime(TimeGenerated, "MM-dd HH:mm"),
+    QueryCount,
+    AvgCpuTimeMs = round(AvgCpuTimeMs, 0),
+    AvgMemoryUsageMB = round(AvgMemoryUsageMB, 0),
+    MaxMemoryUsageMB,
+    AvgDurationSeconds = round(AvgDurationSeconds, 1),
+    ResourceEfficiency,
+    PerformanceTrend
+| order by TimeGenerated desc
+
+//==========================================
+// 8. OPTIMIZATION RECOMMENDATIONS
+//==========================================
+
+// Performance optimization recommendations
+let QueryPerformanceAnalysis = 
+    LAQueryLogs
+    | where TimeGenerated > ago(7d)
+    | where ResponseCode == 200
+    | extend DurationSeconds = DurationMs / 1000.0
+    | summarize 
+        QueryCount = count(),
+        AvgDurationSeconds = avg(DurationSeconds),
+        AvgDataScannedGB = avg(DataScanned_GB),
+        SlowQueryCount = countif(DurationSeconds > 60)
+    | extend 
+        SlowQueryPercentage = round(todouble(SlowQueryCount) / QueryCount * 100, 1),
+        DataScanEfficiency = case(
+            AvgDataScannedGB > 10, "Review large scans",
+            AvgDataScannedGB > 5, "Monitor scan sizes", 
+            "Good"
+        );
+
+let RecommendationSummary = datatable(
+    Category:string,
+    Recommendation:string, 
+    Priority:string,
+    EstimatedImpact:string
+) [
+    "Query Optimization", "Add time filters to reduce data scanning", "High", "30-50% performance improvement",
+    "Indexing", "Use summarize and bin operations for time series", "Medium", "20-40% faster queries", 
+    "Data Retention", "Review retention policies for old data", "Medium", "Reduced storage costs",
+    "Concurrent Queries", "Limit dashboard auto-refresh rates", "Low", "Better system responsiveness",
+    "Workbook Design", "Cache expensive visualizations", "Medium", "Improved user experience"
+];
+
+RecommendationSummary
+| extend 
+    CurrentMetrics = case(
+        Category == "Query Optimization", strcat("Slow queries: ", toscalar(QueryPerformanceAnalysis | project SlowQueryPercentage), "%"),
+        Category == "Data Retention", strcat("Avg scan size: ", round(toscalar(QueryPerformanceAnalysis | project AvgDataScannedGB), 1), "GB"),
+        "See detailed analysis above"
+    )
+| project Category, Recommendation, Priority, EstimatedImpact, CurrentMetrics
+
+//==========================================
+// 9. REAL-TIME PERFORMANCE MONITORING
+//==========================================
+
+// Current system status for real-time monitoring
+let CurrentQueries = 
+    LAQueryLogs
+    | where TimeGenerated > ago(5m)
+    | where ResponseCode == 200
+    | summarize 
+        ActiveQueries = count(),
+        AvgDurationMs = avg(DurationMs)
+    | extend SystemStatus = case(
+        ActiveQueries > 20, "High Load",
+        ActiveQueries > 10, "Medium Load",
+        "Normal Load"
+    );
+
+let DataIngestionRate = 
+    Usage
+    | where TimeGenerated > ago(5m)
+    | where IsBillable == true
+    | summarize CurrentIngestionRate = sum(Quantity) / 1024 / 5 * 60;  // GB per hour
+
+datatable(
+    Metric:string,
+    Value:string,
+    Status:string,
+    Threshold:string
+) [
+    "Active Queries (5min)", 
+    strcat(toscalar(CurrentQueries | project ActiveQueries)), 
+    toscalar(CurrentQueries | project SystemStatus),
+    ">20 = High Load",
+    
+    "Avg Query Duration",
+    strcat(round(toscalar(CurrentQueries | project AvgDurationMs) / 1000, 1), "s"),
+    iff(toscalar(CurrentQueries | project AvgDurationMs) > 30000, "Slow", "Normal"),
+    ">30s = Concerning",
+    
+    "Data Ingestion Rate",
+    strcat(round(toscalar(DataIngestionRate), 2), " GB/hour"),
+    iff(toscalar(DataIngestionRate) > 100, "High", "Normal"),
+    ">100GB/h = High Volume"
+]
+
+//==========================================
+// 10. PERFORMANCE BASELINE COMPARISON
+//==========================================
+
+// Compare current performance against historical baseline
+let BaselinePeriod = ago(14d);
+let ComparisonPeriod = ago(7d);
+
+let Baseline = 
+    LAQueryLogs
+    | where TimeGenerated between (BaselinePeriod .. ComparisonPeriod)
+    | where ResponseCode == 200
+    | summarize 
+        BaselineAvgDuration = avg(DurationMs),
+        BaselineAvgDataScanned = avg(DataScanned_GB),
+        BaselineQueryCount = count();
+
+let Current = 
+    LAQueryLogs
+    | where TimeGenerated > ComparisonPeriod
+    | where ResponseCode == 200
+    | summarize 
+        CurrentAvgDuration = avg(DurationMs),
+        CurrentAvgDataScanned = avg(DataScanned_GB),
+        CurrentQueryCount = count();
+
+union Baseline, Current
+| extend 
+    DurationChange = (CurrentAvgDuration - BaselineAvgDuration) / BaselineAvgDuration * 100,
+    DataScanChange = (CurrentAvgDataScanned - BaselineAvgDataScanned) / BaselineAvgDataScanned * 100,
+    QueryVolumeChange = (CurrentQueryCount - BaselineQueryCount) / BaselineQueryCount * 100
+| extend 
+    PerformanceTrend = case(
+        DurationChange > 20, "Significant Degradation",
+        DurationChange > 10, "Some Degradation",
+        DurationChange < -10, "Improvement", 
+        "Stable"
+    )
+| project 
+    BaselineAvgDurationMs = round(BaselineAvgDuration, 0),
+    CurrentAvgDurationMs = round(CurrentAvgDuration, 0),
+    DurationChangePercent = round(DurationChange, 1),
+    DataScanChangePercent = round(DataScanChange, 1), 
+    QueryVolumeChangePercent = round(QueryVolumeChange, 1),
+    PerformanceTrend

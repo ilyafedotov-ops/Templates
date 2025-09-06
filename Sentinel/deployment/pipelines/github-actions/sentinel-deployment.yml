@@ -1,0 +1,522 @@
+name: 'Deploy Microsoft Sentinel Infrastructure'
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'Sentinel/deployment/**'
+      - 'Sentinel/data-connectors/**'
+      - '.github/workflows/sentinel-deployment.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'Sentinel/deployment/**'
+      - 'Sentinel/data-connectors/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+      destroy:
+        description: 'Destroy infrastructure (use with caution)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  TERRAFORM_VERSION: '1.5.7'
+  TF_VAR_environment: ${{ github.event.inputs.environment || 'development' }}
+  ARM_USE_OIDC: true
+  ARM_USE_AZUREAD: true
+  ARM_SKIP_PROVIDER_REGISTRATION: false
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+  issues: write
+  security-events: write
+
+jobs:
+  # Security and compliance scanning
+  security-scan:
+    name: 'Security & Compliance Scan'
+    runs-on: ubuntu-latest
+    outputs:
+      security-passed: ${{ steps.security-gate.outputs.passed }}
+    
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 'Setup Python'
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: 'Install Security Tools'
+        run: |
+          pip install --upgrade pip
+          pip install checkov bandit safety semgrep
+          curl -L https://github.com/aquasecurity/trivy/releases/latest/download/trivy_$(uname -s)_$(uname -m).tar.gz | tar xvz
+          sudo mv trivy /usr/local/bin/
+
+      - name: 'Checkov IaC Security Scan'
+        id: checkov
+        continue-on-error: true
+        run: |
+          echo "Running Checkov security scan..."
+          checkov -d Sentinel/deployment/terraform \
+            --framework terraform \
+            --output cli \
+            --output sarif \
+            --output-file-path console,checkov-results.sarif \
+            --soft-fail-on HIGH,MEDIUM \
+            --hard-fail-on CRITICAL
+          
+          # Check exit code
+          if [ $? -eq 0 ]; then
+            echo "checkov-status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "checkov-status=failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 'Trivy Configuration Scan'
+        id: trivy
+        continue-on-error: true
+        run: |
+          echo "Running Trivy configuration scan..."
+          trivy config Sentinel/deployment/ \
+            --format sarif \
+            --output trivy-results.sarif \
+            --severity HIGH,CRITICAL \
+            --exit-code 1
+          
+          if [ $? -eq 0 ]; then
+            echo "trivy-status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "trivy-status=failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 'Semgrep Security Analysis'
+        id: semgrep
+        continue-on-error: true
+        run: |
+          echo "Running Semgrep security analysis..."
+          semgrep --config=auto Sentinel/deployment/ \
+            --sarif --output=semgrep-results.sarif \
+            --error \
+            --severity=ERROR
+          
+          if [ $? -eq 0 ]; then
+            echo "semgrep-status=passed" >> $GITHUB_OUTPUT
+          else
+            echo "semgrep-status=failed" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 'Upload Security Scan Results'
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: |
+            checkov-results.sarif
+            trivy-results.sarif
+            semgrep-results.sarif
+          category: 'Sentinel Infrastructure Security'
+
+      - name: 'Security Gate Decision'
+        id: security-gate
+        run: |
+          CHECKOV_STATUS="${{ steps.checkov.outputs.checkov-status }}"
+          TRIVY_STATUS="${{ steps.trivy.outputs.trivy-status }}"
+          SEMGREP_STATUS="${{ steps.semgrep.outputs.semgrep-status }}"
+          
+          echo "Security Scan Results:"
+          echo "- Checkov: $CHECKOV_STATUS"
+          echo "- Trivy: $TRIVY_STATUS" 
+          echo "- Semgrep: $SEMGREP_STATUS"
+          
+          # Allow deployment if no critical issues found
+          if [[ "$CHECKOV_STATUS" != "failed" && "$TRIVY_STATUS" != "failed" && "$SEMGREP_STATUS" != "failed" ]]; then
+            echo "passed=true" >> $GITHUB_OUTPUT
+            echo "✅ Security gate: PASSED"
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo "❌ Security gate: FAILED"
+            echo "::error::Security vulnerabilities found. Deployment blocked."
+          fi
+
+  # Terraform plan and validation
+  terraform-plan:
+    name: 'Terraform Plan'
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: needs.security-scan.outputs.security-passed == 'true'
+    environment: ${{ github.event.inputs.environment || 'development' }}
+    outputs:
+      tf-plan-status: ${{ steps.plan.outputs.status }}
+      tf-plan-output: ${{ steps.plan.outputs.stdout }}
+    
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Azure Login via OIDC'
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 'Setup Terraform'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: 'Terraform Format Check'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          terraform fmt -check -recursive
+          if [ $? -ne 0 ]; then
+            echo "::error::Terraform files are not properly formatted. Run 'terraform fmt -recursive' locally."
+            exit 1
+          fi
+
+      - name: 'Terraform Init'
+        id: init
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ secrets.TF_STATE_CONTAINER }}" \
+            -backend-config="key=sentinel-${{ env.TF_VAR_environment }}.tfstate"
+
+      - name: 'Terraform Validate'
+        id: validate
+        working-directory: Sentinel/deployment/terraform
+        run: terraform validate -no-color
+
+      - name: 'Load Environment Variables'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          # Set Terraform variables based on environment
+          case "${{ env.TF_VAR_environment }}" in
+            "production")
+              echo "TF_VAR_resource_group_name=rg-sentinel-prod" >> $GITHUB_ENV
+              echo "TF_VAR_workspace_name=law-sentinel-prod" >> $GITHUB_ENV
+              echo "TF_VAR_retention_in_days=365" >> $GITHUB_ENV
+              echo "TF_VAR_enable_long_term_storage=true" >> $GITHUB_ENV
+              ;;
+            "staging")
+              echo "TF_VAR_resource_group_name=rg-sentinel-staging" >> $GITHUB_ENV
+              echo "TF_VAR_workspace_name=law-sentinel-staging" >> $GITHUB_ENV
+              echo "TF_VAR_retention_in_days=180" >> $GITHUB_ENV
+              echo "TF_VAR_enable_long_term_storage=true" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "TF_VAR_resource_group_name=rg-sentinel-dev" >> $GITHUB_ENV
+              echo "TF_VAR_workspace_name=law-sentinel-dev" >> $GITHUB_ENV
+              echo "TF_VAR_retention_in_days=90" >> $GITHUB_ENV
+              echo "TF_VAR_enable_long_term_storage=false" >> $GITHUB_ENV
+              ;;
+          esac
+          
+          echo "TF_VAR_location=${{ secrets.AZURE_LOCATION || 'East US 2' }}" >> $GITHUB_ENV
+          echo "TF_VAR_storage_account_name=st${{ env.TF_VAR_environment }}sentinel$(date +%s | tail -c 6)" >> $GITHUB_ENV
+
+      - name: 'Terraform Plan'
+        id: plan
+        working-directory: Sentinel/deployment/terraform
+        continue-on-error: true
+        run: |
+          terraform plan \
+            -detailed-exitcode \
+            -no-color \
+            -out=tfplan \
+            -var="tags={\"Environment\"=\"${{ env.TF_VAR_environment }}\",\"DeployedBy\"=\"GitHubActions\",\"Repository\"=\"${{ github.repository }}\",\"Branch\"=\"${{ github.ref_name }}\",\"Commit\"=\"${{ github.sha }}\"}" \
+            2>&1 | tee terraform-plan.txt
+          
+          EXIT_CODE=${PIPESTATUS[0]}
+          echo "status=$EXIT_CODE" >> $GITHUB_OUTPUT
+          
+          # Upload plan output
+          cat terraform-plan.txt >> $GITHUB_STEP_SUMMARY
+          
+          exit $EXIT_CODE
+
+      - name: 'Upload Terraform Plan'
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-${{ env.TF_VAR_environment }}
+          path: |
+            Sentinel/deployment/terraform/tfplan
+            Sentinel/deployment/terraform/terraform-plan.txt
+          retention-days: 5
+
+      - name: 'Comment PR with Plan'
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('Sentinel/deployment/terraform/terraform-plan.txt', 'utf8');
+            const truncatedOutput = planOutput.length > 60000 ? 
+              planOutput.substring(0, 60000) + '\n... (truncated)' : planOutput;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Terraform Plan - ${{ env.TF_VAR_environment }}
+            
+            <details><summary>Show Plan Output</summary>
+            
+            \`\`\`hcl
+            ${truncatedOutput}
+            \`\`\`
+            
+            </details>
+            
+            **Environment:** ${{ env.TF_VAR_environment }}
+            **Plan Status:** ${{ steps.plan.outputs.status == '0' && '✅ Success' || steps.plan.outputs.status == '2' && '📋 Changes Detected' || '❌ Failed' }}
+            **Commit:** ${{ github.sha }}
+            `
+            });
+
+  # Terraform apply for non-production environments
+  terraform-apply-dev:
+    name: 'Deploy to Development'
+    runs-on: ubuntu-latest
+    needs: [terraform-plan]
+    if: |
+      needs.terraform-plan.outputs.tf-plan-status == '2' &&
+      (github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'development') &&
+      github.event.inputs.destroy != 'true'
+    environment: development
+    
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Azure Login via OIDC'
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 'Setup Terraform'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: 'Download Terraform Plan'
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-development
+          path: Sentinel/deployment/terraform/
+
+      - name: 'Terraform Init'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ secrets.TF_STATE_CONTAINER }}" \
+            -backend-config="key=sentinel-development.tfstate"
+
+      - name: 'Terraform Apply'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          terraform apply -auto-approve tfplan
+          
+      - name: 'Post-deployment Validation'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          echo "=== Deployment Validation ==="
+          terraform output -json > deployment-outputs.json
+          
+          # Extract key information
+          WORKSPACE_ID=$(terraform output -raw workspace_id)
+          WORKSPACE_NAME=$(terraform output -raw workspace_name)
+          
+          echo "✅ Deployment completed successfully"
+          echo "📊 Workspace: $WORKSPACE_NAME"
+          echo "🆔 Workspace ID: $WORKSPACE_ID"
+          
+          # Upload outputs for later use
+          echo "workspace_id=$WORKSPACE_ID" >> $GITHUB_OUTPUT
+          echo "workspace_name=$WORKSPACE_NAME" >> $GITHUB_OUTPUT
+
+  # Production deployment with approval
+  terraform-apply-prod:
+    name: 'Deploy to Production'
+    runs-on: ubuntu-latest
+    needs: [terraform-plan]
+    if: |
+      needs.terraform-plan.outputs.tf-plan-status == '2' &&
+      (github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production') &&
+      github.event.inputs.destroy != 'true'
+    environment: 
+      name: production
+      url: https://portal.azure.com/#view/Microsoft_Azure_Security_Insights/MainMenuBlade/~/0/id/${{ steps.deploy.outputs.workspace_resource_id }}
+    
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Azure Login via OIDC'
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 'Setup Terraform'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: 'Download Terraform Plan'
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-plan-production
+          path: Sentinel/deployment/terraform/
+
+      - name: 'Terraform Init'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ secrets.TF_STATE_CONTAINER }}" \
+            -backend-config="key=sentinel-production.tfstate"
+
+      - name: 'Production Deployment'
+        id: deploy
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          terraform apply -auto-approve tfplan
+          
+          # Capture outputs
+          WORKSPACE_RESOURCE_ID=$(terraform output -raw workspace_resource_id)
+          echo "workspace_resource_id=$WORKSPACE_RESOURCE_ID" >> $GITHUB_OUTPUT
+
+      - name: 'Production Health Check'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          echo "=== Production Deployment Health Check ==="
+          
+          # Wait for resources to be ready
+          sleep 60
+          
+          # Verify workspace is accessible
+          WORKSPACE_ID=$(terraform output -raw workspace_id)
+          az monitor log-analytics workspace show \
+            --workspace-name $(terraform output -raw workspace_name) \
+            --resource-group $(terraform output -raw resource_group_name) \
+            --output table
+          
+          echo "✅ Production deployment completed and validated"
+
+  # Infrastructure destruction (manual trigger only)
+  terraform-destroy:
+    name: 'Destroy Infrastructure'
+    runs-on: ubuntu-latest
+    if: github.event.inputs.destroy == 'true' && github.actor == github.repository_owner
+    environment: 
+      name: ${{ github.event.inputs.environment }}
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    
+    steps:
+      - name: 'Checkout Repository'
+        uses: actions/checkout@v4
+
+      - name: 'Azure Login via OIDC'
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: 'Setup Terraform'
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: 'Load Environment Variables'
+        run: |
+          case "${{ github.event.inputs.environment }}" in
+            "production")
+              echo "TF_VAR_resource_group_name=rg-sentinel-prod" >> $GITHUB_ENV
+              echo "TF_VAR_workspace_name=law-sentinel-prod" >> $GITHUB_ENV
+              ;;
+            "staging")
+              echo "TF_VAR_resource_group_name=rg-sentinel-staging" >> $GITHUB_ENV
+              echo "TF_VAR_workspace_name=law-sentinel-staging" >> $GITHUB_ENV
+              ;;
+            *)
+              echo "TF_VAR_resource_group_name=rg-sentinel-dev" >> $GITHUB_ENV
+              echo "TF_VAR_workspace_name=law-sentinel-dev" >> $GITHUB_ENV
+              ;;
+          esac
+
+      - name: 'Terraform Init'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.TF_STATE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ secrets.TF_STATE_CONTAINER }}" \
+            -backend-config="key=sentinel-${{ github.event.inputs.environment }}.tfstate"
+
+      - name: 'Terraform Destroy'
+        working-directory: Sentinel/deployment/terraform
+        run: |
+          echo "🚨 DESTROYING INFRASTRUCTURE FOR: ${{ github.event.inputs.environment }}"
+          echo "This action cannot be undone!"
+          
+          terraform destroy \
+            -auto-approve \
+            -var="permanently_delete_workspace=true"
+          
+          echo "💥 Infrastructure destroyed for ${{ github.event.inputs.environment }}"
+
+  # Notification and reporting
+  deployment-notification:
+    name: 'Deployment Notification'
+    runs-on: ubuntu-latest
+    needs: [terraform-apply-dev, terraform-apply-prod]
+    if: always() && !cancelled()
+    
+    steps:
+      - name: 'Send Teams Notification'
+        if: always()
+        uses: aliencube/microsoft-teams-actions@v0.8.0
+        with:
+          webhook_uri: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          title: 'Sentinel Deployment Status'
+          summary: 'Microsoft Sentinel infrastructure deployment completed'
+          text: |
+            **Repository:** ${{ github.repository }}
+            **Branch:** ${{ github.ref_name }}
+            **Environment:** ${{ env.TF_VAR_environment }}
+            **Status:** ${{ job.status }}
+            **Actor:** ${{ github.actor }}
+            **Commit:** ${{ github.sha }}
+            
+            **Development:** ${{ needs.terraform-apply-dev.result || 'skipped' }}
+            **Production:** ${{ needs.terraform-apply-prod.result || 'skipped' }}
+            
+            [View Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          theme_color: ${{ job.status == 'success' && '00FF00' || 'FF0000' }}

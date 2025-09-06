@@ -1,0 +1,147 @@
+{
+  "kind": "CommonEventsFormat",
+  "properties": {
+    "dataTypes": [
+      {
+        "name": "CommonSecurityLog",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Common Event Format (CEF)",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "Common Event Format (CEF) is an industry standard format for security event logs. Many security devices and applications support CEF for log export. Connect CEF logs to Microsoft Sentinel for centralized security monitoring and analysis.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "CommonSecurityLog",
+          "baseQuery": "CommonSecurityLog"
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "High severity security events",
+          "query": "CommonSecurityLog | where LogSeverity >= 7 | summarize count() by DeviceProduct, Activity, bin(TimeGenerated, 1h) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Firewall blocked connections",
+          "query": "CommonSecurityLog | where DeviceAction == \"blocked\" or DeviceAction == \"deny\" | project TimeGenerated, SourceIP, DestinationIP, DestinationPort, DeviceProduct"
+        },
+        {
+          "description": "IDS/IPS alerts by signature",
+          "query": "CommonSecurityLog | where DeviceProduct contains \"IDS\" or DeviceProduct contains \"IPS\" | summarize count() by Activity, SourceIP, bin(TimeGenerated, 1d)"
+        },
+        {
+          "description": "Authentication failures",
+          "query": "CommonSecurityLog | where Activity contains \"authentication\" and DeviceAction == \"failed\" | project TimeGenerated, SourceIP, DestinationIP, AdditionalExtensions"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "CommonSecurityLog",
+          "lastDataReceivedQuery": "CommonSecurityLog | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "SentinelKindsV2",
+          "value": ["CommonEventsFormat"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace",
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "customs": [
+          {
+            "name": "Linux Syslog Agent",
+            "description": "A Linux machine with syslog-ng or rsyslog agent installed to collect CEF logs."
+          }
+        ]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Deploy CEF Log Collector",
+          "description": "Deploy a Linux machine or container to act as a CEF log collector and forwarder.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "CEF Collector Setup",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Deploy a **Linux VM** in Azure or on-premises\n2. Install the **Azure Monitor Agent** or **Log Analytics Agent**\n3. Configure **rsyslog** or **syslog-ng** to receive CEF logs:\n   ```\n   # Add to /etc/rsyslog.conf\n   $ModLoad imudp\n   $UDPServerRun 514\n   $UDPServerAddress 0.0.0.0\n   *.* @@localhost:25226\n   ```\n4. Restart syslog service: `sudo systemctl restart rsyslog`\n5. Configure **iptables** to allow inbound connections on port 514"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "2. Configure security devices",
+          "description": "Configure your security devices to send CEF logs to the collector.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "Device Configuration Examples",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "**Palo Alto Networks Firewall:**\n1. Go to **Device** > **Server Profiles** > **Syslog**\n2. Create new syslog server profile\n3. Add CEF collector IP and port 514\n4. Set format to **CEF**\n\n**Cisco ASA:**\n1. Configure logging: `logging host <collector-ip>`\n2. Set message format: `logging message 106023 level 4`\n3. Enable CEF format: `logging format emblem`\n\n**Check Point:**\n1. In SmartConsole, go to **Logs & Monitor** > **Log Exporter**\n2. Create new export and select CEF format\n3. Configure target syslog server"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "3. Install CEF processor script",
+          "description": "Install the Microsoft CEF processor script on your collector machine.",
+          "instructions": [
+            {
+              "parameters": {
+                "title": "CEF Processor Installation",
+                "instructionSteps": [
+                  {
+                    "title": "",
+                    "description": "1. Download the CEF processor script:\n   ```bash\n   wget https://raw.githubusercontent.com/Azure/Azure-Sentinel/master/DataConnectors/CEF/cef_installer.py\n   ```\n2. Run the installer:\n   ```bash\n   sudo python cef_installer.py [workspace_id] [workspace_key]\n   ```\n3. Verify installation:\n   ```bash\n   sudo /opt/microsoft/omsagent/bin/troubleshoot_agent.py\n   ```\n4. Test CEF parsing:\n   ```bash\n   logger -p local4.warn \"CEF:0|Microsoft|Product|1.0|100|Test|High|src=1.1.1.1\"\n   ```"
+                  }
+                ]
+              },
+              "type": "InstructionStepsGroup"
+            }
+          ]
+        },
+        {
+          "title": "4. Validate CEF data ingestion",
+          "description": "Verify that CEF logs are being parsed and ingested correctly.",
+          "instructions": [
+            {
+              "parameters": {
+                "query": "CommonSecurityLog | where TimeGenerated > ago(30m) | take 10",
+                "label": "Validation Query"
+              },
+              "type": "CopyableLabel"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,127 @@
+{
+  "kind": "AzureActiveDirectory",
+  "properties": {
+    "tenantId": "{{tenantId}}",
+    "dataTypes": [
+      {
+        "name": "SigninLogs",
+        "state": "enabled"
+      },
+      {
+        "name": "AuditLogs", 
+        "state": "enabled"
+      },
+      {
+        "name": "NonInteractiveUserSignInLogs",
+        "state": "enabled"
+      },
+      {
+        "name": "ServicePrincipalSignInLogs",
+        "state": "enabled"
+      },
+      {
+        "name": "ManagedIdentitySignInLogs",
+        "state": "enabled"
+      },
+      {
+        "name": "ProvisioningLogs",
+        "state": "enabled"
+      },
+      {
+        "name": "ADFSSignInLogs",
+        "state": "enabled"
+      },
+      {
+        "name": "RiskyUsers",
+        "state": "enabled"
+      },
+      {
+        "name": "UserRiskEvents",
+        "state": "enabled"
+      }
+    ],
+    "connectorUiConfig": {
+      "title": "Azure Active Directory",
+      "publisher": "Microsoft",
+      "descriptionMarkdown": "Azure Active Directory (Azure AD) is Microsoft's cloud-based identity and access management service. This connector allows you to stream Azure AD logs into Microsoft Sentinel, enabling you to view dashboards, create custom alerts, and improve your investigation.",
+      "graphQueries": [
+        {
+          "metricName": "Total data received",
+          "legend": "SigninLogs",
+          "baseQuery": "SigninLogs"
+        },
+        {
+          "metricName": "Total data received", 
+          "legend": "AuditLogs",
+          "baseQuery": "AuditLogs"
+        }
+      ],
+      "sampleQueries": [
+        {
+          "description": "Failed sign-ins by IP address",
+          "query": "SigninLogs | where ResultType != 0 | summarize count() by IPAddress, bin(TimeGenerated, 1h) | order by TimeGenerated desc"
+        },
+        {
+          "description": "Administrative activities in Azure AD",
+          "query": "AuditLogs | where Category == \"UserManagement\" or Category == \"GroupManagement\" | project TimeGenerated, OperationName, Result, TargetResources"
+        },
+        {
+          "description": "Risky sign-in events", 
+          "query": "SigninLogs | where RiskLevelDuringSignIn != \"none\" | project TimeGenerated, UserPrincipalName, IPAddress, RiskLevelDuringSignIn, RiskDetail"
+        }
+      ],
+      "dataTypes": [
+        {
+          "name": "SigninLogs",
+          "lastDataReceivedQuery": "SigninLogs | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        },
+        {
+          "name": "AuditLogs",
+          "lastDataReceivedQuery": "AuditLogs | summarize Time = max(TimeGenerated) | where isnotempty(Time)"
+        }
+      ],
+      "connectivityCriteria": [
+        {
+          "type": "SentinelKindsV2",
+          "value": ["AzureActiveDirectory"]
+        }
+      ],
+      "availability": {
+        "status": 1,
+        "isPreview": false
+      },
+      "permissions": {
+        "resourceProvider": [
+          {
+            "provider": "Microsoft.OperationalInsights/workspaces",
+            "permissionsDisplayText": "Write permissions are required.",
+            "providerDisplayName": "Workspace",
+            "scope": "Workspace", 
+            "requiredPermissions": {
+              "write": true,
+              "read": false,
+              "delete": false
+            }
+          }
+        ],
+        "tenant": ["GlobalAdmin", "SecurityAdmin"]
+      },
+      "instructionSteps": [
+        {
+          "title": "1. Connect Azure Active Directory",
+          "description": "Select the logs you want to stream to Microsoft Sentinel. We recommend selecting all available logs for complete visibility.",
+          "instructions": [
+            {
+              "parameters": {
+                "connectorKind": "AzureActiveDirectory", 
+                "title": "Azure Active Directory",
+                "enable": true
+              },
+              "type": "SentinelResourceProvider"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

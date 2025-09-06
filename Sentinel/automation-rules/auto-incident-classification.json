@@ -1,0 +1,710 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "title": "Automated Incident Classification and Enrichment",
+    "description": "Advanced automation rule for intelligent incident classification, severity assignment, owner assignment, and enrichment based on machine learning insights and threat intelligence",
+    "author": "Enterprise Security Team",
+    "version": "2.0.0",
+    "lastModified": "2025-01-01T00:00:00Z"
+  },
+  "parameters": {
+    "workspaceName": {
+      "type": "string",
+      "metadata": {
+        "description": "Name of the Log Analytics workspace"
+      }
+    },
+    "automationRuleName": {
+      "type": "string",
+      "defaultValue": "auto-incident-classification",
+      "metadata": {
+        "description": "Name of the automation rule"
+      }
+    },
+    "securityTeamEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address for security team assignments"
+      }
+    },
+    "tier1AnalystEmail": {
+      "type": "string", 
+      "metadata": {
+        "description": "Email address for Tier 1 analyst assignments"
+      }
+    },
+    "tier2AnalystEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address for Tier 2 analyst assignments"
+      }
+    },
+    "incidentResponseTeamEmail": {
+      "type": "string",
+      "metadata": {
+        "description": "Email address for incident response team assignments"
+      }
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), parameters('automationRuleName'))]",
+      "properties": {
+        "displayName": "Advanced Incident Classification and Enrichment",
+        "order": 1,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentStatus",
+                "operator": "Equals",
+                "propertyValues": ["New"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": null,
+              "classificationComment": null,
+              "classificationReason": null,
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('tier1AnalystEmail')]",
+                "assignedTo": "Tier 1 Analyst",
+                "userPrincipalName": null
+              },
+              "severity": "Medium",
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "AutoClassified"
+                },
+                {
+                  "tag": "NeedsReview"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-incident-enrichment')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview", 
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-high-severity'))]",
+      "properties": {
+        "displayName": "High Severity Incident Classification",
+        "order": 2,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentSeverity",
+                "operator": "Equals", 
+                "propertyValues": ["High", "Critical"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('tier2AnalystEmail')]",
+                "assignedTo": "Tier 2 Analyst - High Priority",
+                "userPrincipalName": null
+              },
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "HighPriority"
+                },
+                {
+                  "tag": "EscalatedTier2"
+                },
+                {
+                  "tag": "AutoClassified"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-high-severity-response')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-critical-incidents'))]",
+      "properties": {
+        "displayName": "Critical Incident Emergency Response",
+        "order": 3,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentSeverity",
+                "operator": "Equals",
+                "propertyValues": ["Critical"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties", 
+            "actionConfiguration": {
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('incidentResponseTeamEmail')]",
+                "assignedTo": "Incident Response Team - CRITICAL",
+                "userPrincipalName": null
+              },
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "CRITICAL"
+                },
+                {
+                  "tag": "EmergencyResponse"
+                },
+                {
+                  "tag": "IRTeamOwned"
+                },
+                {
+                  "tag": "AutoEscalated"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-critical-incident-response')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules", 
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-data-exfiltration'))]",
+      "properties": {
+        "displayName": "Data Exfiltration Incident Classification",
+        "order": 4,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentTitle",
+                "operator": "Contains",
+                "propertyValues": ["Data Exfiltration", "Exfiltration", "External Sharing"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": "TruePositive",
+              "classificationComment": "Potential data exfiltration detected - requires immediate investigation",
+              "classificationReason": "SuspiciousActivity",
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('incidentResponseTeamEmail')]",
+                "assignedTo": "IR Team - Data Protection",
+                "userPrincipalName": null
+              },
+              "severity": "High",
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "DataExfiltration"
+                },
+                {
+                  "tag": "DataProtection"
+                },
+                {
+                  "tag": "DLPIncident"
+                },
+                {
+                  "tag": "IRTeamOwned"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-data-loss-response')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-ransomware'))]", 
+      "properties": {
+        "displayName": "Ransomware Incident Classification",
+        "order": 5,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentTitle",
+                "operator": "Contains",
+                "propertyValues": ["Ransomware", "Encryption", "File Encrypted"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": "TruePositive",
+              "classificationComment": "Ransomware activity detected - EMERGENCY RESPONSE REQUIRED",
+              "classificationReason": "SuspiciousActivity",
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('incidentResponseTeamEmail')]",
+                "assignedTo": "IR Team - RANSOMWARE RESPONSE",
+                "userPrincipalName": null
+              },
+              "severity": "Critical",
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "Ransomware"
+                },
+                {
+                  "tag": "EMERGENCY"
+                },
+                {
+                  "tag": "BusinessContinuity"
+                },
+                {
+                  "tag": "IRTeamOwned"
+                },
+                {
+                  "tag": "NetworkIsolationRequired"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-ransomware-response')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-privileged-account'))]",
+      "properties": {
+        "displayName": "Privileged Account Incident Classification", 
+        "order": 6,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentTitle",
+                "operator": "Contains",
+                "propertyValues": ["Privileged Account", "Admin", "Global Administrator"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": null,
+              "classificationComment": "Privileged account anomaly detected - requires priority investigation",
+              "classificationReason": null,
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('tier2AnalystEmail')]",
+                "assignedTo": "Tier 2 Analyst - Identity Security",
+                "userPrincipalName": null
+              },
+              "severity": "High",
+              "status": "Active", 
+              "tags": [
+                {
+                  "tag": "PrivilegedAccount"
+                },
+                {
+                  "tag": "IdentitySecurity"
+                },
+                {
+                  "tag": "HighPriority"
+                },
+                {
+                  "tag": "ComplianceImpact"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-disable-compromised-account')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-false-positive-filter'))]",
+      "properties": {
+        "displayName": "False Positive Filtering and Auto-Resolution",
+        "order": 7,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentSeverity",
+                "operator": "Equals",
+                "propertyValues": ["Low", "Informational"]
+              }
+            },
+            {
+              "conditionType": "Property", 
+              "conditionProperties": {
+                "propertyName": "IncidentTitle",
+                "operator": "Contains",
+                "propertyValues": ["Test", "Scheduled", "Maintenance", "Backup"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": "BenignPositive",
+              "classificationComment": "Auto-classified as likely false positive based on keywords and severity",
+              "classificationReason": "InaccurateData",
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('tier1AnalystEmail')]",
+                "assignedTo": "Tier 1 Analyst - Review Queue",
+                "userPrincipalName": null
+              },
+              "severity": "Low",
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "LikelyFalsePositive"
+                },
+                {
+                  "tag": "AutoClassified"
+                },
+                {
+                  "tag": "LowPriority"
+                },
+                {
+                  "tag": "ScheduledReview"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview", 
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-ml-anomaly'))]",
+      "properties": {
+        "displayName": "ML Anomaly Incident Classification",
+        "order": 8,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentTitle",
+                "operator": "Contains",
+                "propertyValues": ["ML", "Machine Learning", "Anomaly", "Behavior"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": null,
+              "classificationComment": "Machine learning anomaly detected - requires behavioral analysis",
+              "classificationReason": null,
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('tier2AnalystEmail')]",
+                "assignedTo": "Tier 2 Analyst - Behavioral Analysis",
+                "userPrincipalName": null
+              },
+              "severity": "Medium",
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "MLAnomaly"
+                },
+                {
+                  "tag": "BehavioralAnalysis"
+                },
+                {
+                  "tag": "RequiresExpertise"
+                },
+                {
+                  "tag": "DataScience"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-ml-anomaly-enrichment')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-compliance-impact'))]",
+      "properties": {
+        "displayName": "Compliance Impact Incident Classification",
+        "order": 9,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents", 
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentDescription",
+                "operator": "Contains",
+                "propertyValues": ["GDPR", "SOC2", "ISO27001", "PCI", "HIPAA", "Compliance"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": null,
+              "classificationComment": "Compliance-impacting incident detected - regulatory review required",
+              "classificationReason": null,
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('incidentResponseTeamEmail')]",
+                "assignedTo": "IR Team - Compliance Officer",
+                "userPrincipalName": null
+              },
+              "severity": "High",
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "ComplianceImpact"
+                },
+                {
+                  "tag": "RegulatoryReview"
+                },
+                {
+                  "tag": "LegalConsultation"
+                },
+                {
+                  "tag": "DataProtection"
+                },
+                {
+                  "tag": "AuditTrail"
+                }
+              ]
+            }
+          },
+          {
+            "order": 2,
+            "actionType": "RunPlaybook",
+            "actionConfiguration": {
+              "logicAppResourceId": "[concat('/subscriptions/', subscription().subscriptionId, '/resourceGroups/', resourceGroup().name, '/providers/Microsoft.Logic/workflows/la-compliance-notification')]",
+              "tenantId": "[subscription().tenantId]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "Microsoft.OperationalInsights/workspaces/providers/automationRules",
+      "apiVersion": "2022-12-01-preview",
+      "name": "[format('{0}/Microsoft.SecurityInsights/{1}', parameters('workspaceName'), concat(parameters('automationRuleName'), '-after-hours-activity'))]",
+      "properties": {
+        "displayName": "After-Hours Activity Incident Classification",
+        "order": 10,
+        "triggeringLogic": {
+          "isEnabled": true,
+          "expirationTimeUtc": null,
+          "triggersOn": "Incidents",
+          "triggersWhen": "Created",
+          "conditions": [
+            {
+              "conditionType": "Property",
+              "conditionProperties": {
+                "propertyName": "IncidentTitle",
+                "operator": "Contains", 
+                "propertyValues": ["After-Hours", "Weekend", "Unusual Timing"]
+              }
+            }
+          ]
+        },
+        "actions": [
+          {
+            "order": 1,
+            "actionType": "ModifyProperties",
+            "actionConfiguration": {
+              "classification": null,
+              "classificationComment": "After-hours activity detected - requires timing verification",
+              "classificationReason": null,
+              "owner": {
+                "objectId": null,
+                "email": "[parameters('tier1AnalystEmail')]",
+                "assignedTo": "Tier 1 Analyst - After Hours Queue",
+                "userPrincipalName": null
+              },
+              "severity": "Medium",
+              "status": "Active",
+              "tags": [
+                {
+                  "tag": "AfterHours"
+                },
+                {
+                  "tag": "TimingAnomaly"
+                },
+                {
+                  "tag": "BusinessJustification"
+                },
+                {
+                  "tag": "ManagerApproval"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "outputs": {
+    "automationRuleIds": {
+      "type": "array",
+      "value": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', parameters('automationRuleName'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-high-severity'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-critical-incidents'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-data-exfiltration'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-ransomware'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-privileged-account'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-false-positive-filter'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-ml-anomaly'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-compliance-impact'))]",
+        "[resourceId('Microsoft.OperationalInsights/workspaces/providers/automationRules', parameters('workspaceName'), 'Microsoft.SecurityInsights', concat(parameters('automationRuleName'), '-after-hours-activity'))]"
+      ]
+    }
+  }
+}
