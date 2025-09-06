@@ -1,0 +1,65 @@
+# Semgrep Configuration for Static Application Security Testing (SAST)
+# This configuration provides comprehensive security rule coverage
+
+rules:
+  # Security rulesets from Semgrep Registry
+  - p/security-audit      # Generic security patterns
+  - p/owasp-top-ten      # OWASP Top 10 vulnerabilities  
+  - p/cwe-top-25         # CWE Top 25 most dangerous weaknesses
+  - p/r2c-security-audit # r2c security audit rules
+  - p/insecure-transport # Insecure transport protocols
+  - p/secrets            # Secret detection patterns
+  
+  # Language-specific security rules
+  - p/javascript         # JavaScript/Node.js security
+  - p/python            # Python security patterns
+  - p/java              # Java security rules
+  - p/go                # Go security patterns
+  - p/dockerfile        # Dockerfile security
+  - p/kubernetes        # Kubernetes security
+  - p/terraform         # Terraform security
+
+# Path configurations
+paths:
+  include:
+    - "."
+  exclude:
+    - "tests/"
+    - "test/"
+    - "spec/"
+    - "node_modules/"
+    - "vendor/"
+    - ".git/"
+    - "build/"
+    - "dist/"
+    - "*.test.js"
+    - "*.spec.js"
+    - "*.min.js"
+
+# Output configuration
+severity:
+  - ERROR
+  - WARNING
+  - INFO
+
+# Custom rules directory
+rules_dir: .semgrep/rules/
+
+# Performance optimization  
+max_target_bytes: 1000000  # 1MB per file
+timeout: 30                # 30 seconds per rule
+timeout_threshold: 10      # Skip files after 10 timeouts
+
+# Metrics collection (disable in CI for privacy)
+metrics: off
+
+# Custom rule exclusions (use with documented justification)
+disable_rules:
+  # Example: Disable specific rules that cause false positives
+  # - javascript.lang.security.audit.unsafe-eval.unsafe-eval
+
+# Autofix configuration (use with caution)
+autofix: false
+
+# Baseline configuration for tracking improvements
+# baseline_ref: main

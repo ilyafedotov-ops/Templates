@@ -1,0 +1,357 @@
+variables:
+  # Environment Configuration
+  environment: 'production'
+  environmentDisplayName: 'Production'
+  
+  # Azure Service Connection and Subscription
+  azureServiceConnection: 'Azure-Production-Service-Connection'
+  subscriptionId: '$(AZURE_PRODUCTION_SUBSCRIPTION_ID)'
+  tenantId: '$(AZURE_TENANT_ID)'
+  
+  # Resource Group and Location
+  resourceGroup: 'rg-multienv-prod'
+  location: 'eastus2'
+  secondaryLocation: 'westus2'
+  
+  # Naming Convention Variables
+  resourceNamePrefix: 'multienv-prod'
+  environmentSuffix: 'prod'
+  
+  # App Service Configuration
+  appServiceName: 'app-multienv-prod-$(Build.BuildId)'
+  appServicePlan: 'asp-multienv-prod'
+  appServicePlanSku: 'P2v3'
+  
+  # Database Configuration  
+  sqlServerName: 'sql-multienv-prod-$(environmentSuffix)'
+  sqlDatabaseName: 'sqldb-multienv-prod'
+  sqlServerAdminLogin: 'sqladmin'
+  sqlDatabaseSku: 'S2'
+  sqlDatabaseMaxSize: '100GB'
+  
+  # Storage Configuration
+  storageAccountName: 'stmultienvprod$(Build.BuildId)'
+  storageAccountSku: 'Standard_RAGRS'
+  storageAccountKind: 'StorageV2'
+  
+  # Azure Kubernetes Service Configuration
+  aksClusterName: 'aks-multienv-prod'
+  aksNodeCount: 3
+  aksNodeVmSize: 'Standard_D4s_v3'
+  aksKubernetesVersion: '1.28.3'
+  aksSystemPoolNodeCount: 3
+  aksUserPoolNodeCount: 5
+  
+  # Application Insights and Monitoring
+  appInsightsName: 'ai-multienv-prod'
+  logAnalyticsWorkspace: 'law-multienv-prod'
+  
+  # Container Registry
+  containerRegistry: 'acrmultienvprod'
+  containerRegistrySku: 'Premium'
+  
+  # Key Vault Configuration
+  keyVaultName: 'kv-multienv-prod-$(Build.BuildId)'
+  keyVaultSku: 'Premium'
+  keyVaultHsmEnabled: true
+  
+  # Virtual Network Configuration
+  virtualNetworkName: 'vnet-multienv-prod'
+  virtualNetworkAddressSpace: '10.0.0.0/16'
+  subnetName: 'subnet-multienv-prod'
+  subnetAddressPrefix: '10.0.1.0/24'
+  gatewaySubnetPrefix: '10.0.2.0/24'
+  
+  # Feature Flags and Configuration
+  featureFlagConnectionString: '$(PRODUCTION_FEATURE_FLAG_CONNECTION_STRING)'
+  appConfigurationName: 'appconfig-multienv-prod'
+  
+  # Deployment Configuration
+  deploymentSlots: true
+  deploymentSlotName: 'staging'
+  deploymentStrategy: 'canary'
+  healthCheckPath: '/health'
+  healthCheckInterval: 15
+  
+  # Blue-Green Deployment Configuration
+  enableBlueGreen: false
+  blueGreenSlotName: 'production'
+  blueGreenWarmupTime: 600
+  blueGreenValidationTimeout: 1200
+  
+  # Canary Deployment Configuration
+  enableCanary: true
+  canaryPercentage: 10
+  canaryDuration: 1800
+  canarySuccessThreshold: 99
+  canaryIncrements: |
+    - percentage: 10
+      duration: 600
+    - percentage: 25
+      duration: 900
+    - percentage: 50
+      duration: 900
+    - percentage: 100
+      duration: 300
+  
+  # Security Configuration
+  enableTLS: true
+  minTlsVersion: '1.2'
+  httpsOnly: true
+  enableManagedIdentity: true
+  enablePrivateEndpoints: true
+  enableNetworkSecurityGroups: true
+  
+  # Backup Configuration
+  enableBackup: true
+  backupRetentionDays: 365
+  backupFrequency: 'Daily'
+  enableGeoBackup: true
+  
+  # Auto-scaling Configuration
+  enableAutoScale: true
+  minReplicas: 3
+  maxReplicas: 20
+  cpuThreshold: 60
+  memoryThreshold: 70
+  requestsPerSecondThreshold: 1000
+  
+  # Performance Configuration
+  enableApplicationInsights: true
+  enableSqlInsights: true
+  enableLogging: true
+  logRetentionDays: 365
+  enableDistributedTracing: true
+  enableCustomMetrics: true
+  
+  # Cost Management
+  budgetName: 'budget-multienv-prod'
+  budgetAmount: 5000
+  budgetAlertThreshold: 80
+  budgetCriticalThreshold: 95
+  
+  # Testing Configuration
+  runLoadTests: true
+  loadTestDuration: 600
+  loadTestUsers: 500
+  performanceTestThreshold: 1000
+  enableChaosEngineering: true
+  
+  # Database Migration Configuration
+  runDatabaseMigrations: true
+  databaseMigrationTimeout: 1800
+  enableDatabaseBackup: true
+  requireMigrationApproval: true
+  
+  # Environment-Specific Tags
+  tags: |
+    Environment=Production
+    Application=MultiEnvApp
+    CostCenter=Production
+    Owner=DevOps-Team
+    Project=MultiEnvironment-Pipeline
+    Backup=Critical
+    Monitoring=Premium
+    Compliance=Production
+    DataClassification=Confidential
+    AutoShutdown=Disabled
+    HighAvailability=Required
+    DisasterRecovery=Enabled
+    BusinessCritical=True
+  
+  # Production Environment Variables
+  environmentVariables: |
+    ASPNETCORE_ENVIRONMENT=Production
+    AZURE_ENVIRONMENT=Production
+    LOG_LEVEL=Warning
+    ENABLE_SWAGGER=false
+    DATABASE_CONNECTION_TIMEOUT=120
+    CACHE_ENABLED=true
+    EXTERNAL_API_TIMEOUT=60000
+    FEATURE_FLAG_REFRESH_INTERVAL=300
+    HEALTH_CHECK_INTERVAL=15
+    METRICS_ENABLED=true
+    DEBUG_MODE=false
+    RATE_LIMITING_ENABLED=true
+    CIRCUIT_BREAKER_ENABLED=true
+    
+  # Production Security Configuration
+  enableRemoteDebugging: false
+  enableProfiler: false
+  enableNetworkTrace: false
+  enableSyntheticMonitoring: true
+  enableRealUserMonitoring: true
+  
+  # Security Scanning Configuration
+  skipSecurityScans: false
+  securityScanTimeout: 900
+  allowHighVulnerabilities: false
+  allowCriticalVulnerabilities: false
+  enablePenetrationTesting: true
+  enableVulnerabilityAssessment: true
+  
+  # Approval and Governance Configuration
+  requireApproval: true
+  approvalTimeout: 480
+  approvers: |
+    - platform-team@company.com
+    - security-team@company.com
+    - product-owners@company.com
+  emergencyDeploymentApprovers: |
+    - cto@company.com
+    - vp-engineering@company.com
+  
+  # Change Management Configuration
+  requireChangeRequest: true
+  changeRequestSystem: 'ServiceNow'
+  changeRequestWebhook: '$(SERVICENOW_WEBHOOK)'
+  maintenanceWindow: |
+    - day: 'Sunday'
+      startTime: '02:00'
+      endTime: '06:00'
+      timezone: 'UTC'
+  
+  # Notification Configuration
+  slackChannel: '#production-deployments'
+  teamsWebhook: '$(PRODUCTION_TEAMS_WEBHOOK)'
+  emailNotification: 'production-alerts@company.com'
+  notifyOnSuccess: true
+  notifyOnFailure: true
+  notifyOnApprovalRequired: true
+  escalationEmailList: |
+    - oncall@company.com
+    - management@company.com
+  
+  # Infrastructure as Code Configuration
+  terraformStateStorageAccount: 'stterraformprod'
+  terraformStateContainer: 'tfstate'
+  terraformStateKey: 'multienv-prod.tfstate'
+  bicepParametersFile: 'parameters.prod.json'
+  
+  # Database Configuration
+  enableSqlAudit: true
+  sqlAuditRetentionDays: 365
+  enableSqlAdvancedThreatProtection: true
+  enableSqlVulnerabilityAssessment: true
+  sqlBackupRetentionDays: 365
+  enableTransparentDataEncryption: true
+  sqlFirewallRules: |
+    - name: "AllowAllAzureServices"
+      startIpAddress: "0.0.0.0"
+      endIpAddress: "0.0.0.0"
+    - name: "AllowProductionNetwork"
+      startIpAddress: "10.0.0.0"
+      endIpAddress: "10.0.255.255"
+  
+  # Network Security Configuration
+  enableWAF: true
+  wafMode: 'Prevention'
+  enableDDoSProtection: true
+  enableVPNGateway: true
+  allowedIpRanges: |
+    - "10.0.0.0/16"
+    - "172.16.0.0/12"
+  
+  # Resource Limits and Performance
+  cpuLimit: '4'
+  memoryLimit: '8Gi'
+  storageLimit: '1Ti'
+  
+  # Disaster Recovery Configuration
+  enableGeoReplication: true
+  backupRegion: 'westus2'
+  rpoTarget: 15
+  rtoTarget: 60
+  enableFailoverGroup: true
+  failoverPolicy: 'Automatic'
+  
+  # High Availability Configuration
+  enableAvailabilityZones: true
+  availabilityZones: |
+    - zone1
+    - zone2
+    - zone3
+  enableLoadBalancer: true
+  loadBalancerSku: 'Standard'
+  
+  # Compliance and Auditing
+  enableAuditLogs: true
+  auditLogRetentionDays: 2555
+  enableComplianceScanning: true
+  complianceFrameworks: |
+    - ISO27001
+    - SOC2
+    - PCI-DSS
+    - GDPR
+    - HIPAA
+  
+  # Service Level Objectives
+  availabilityTarget: 99.9
+  performanceTarget: 98
+  errorRateThreshold: 0.1
+  mttrTarget: 30
+  mtbfTarget: 720
+  
+  # Monitoring and Alerting Configuration
+  enableAdvancedMonitoring: true
+  customMetrics: |
+    - name: 'business_transactions_per_second'
+      threshold: 1000
+    - name: 'revenue_impact'
+      threshold: 10000
+  alertingRules: |
+    - name: 'HighErrorRate'
+      condition: 'error_rate > 1%'
+      severity: 'Critical'
+      escalation: 'immediate'
+    - name: 'HighLatency'
+      condition: 'response_time > 1000ms'
+      severity: 'High'
+      escalation: '15min'
+  
+  # Data Protection Configuration
+  enableDataEncryption: true
+  encryptionKeyRotationDays: 30
+  enableDataMasking: true
+  enableDataLossPreventionPolicies: true
+  
+  # Business Continuity Configuration
+  enableBusinessContinuityPlan: true
+  recoveryTimeObjective: 60
+  recoveryPointObjective: 15
+  enableDisasterRecoveryTesting: true
+  drTestFrequency: 'Quarterly'
+  
+  # Rollback Configuration
+  enableAutomaticRollback: true
+  rollbackThreshold: 95
+  rollbackTimeout: 180
+  rollbackValidationChecks: |
+    - healthCheck
+    - performanceCheck
+    - errorRateCheck
+    - businessMetricsCheck
+  
+  # Traffic Management Configuration
+  enableTrafficManager: true
+  trafficRoutingMethod: 'Performance'
+  enableCDN: true
+  cdnSku: 'Standard_Microsoft'
+  
+  # Container Security Configuration
+  enableContainerScanning: true
+  enableImageSigning: true
+  enablePodSecurityPolicies: true
+  enableNetworkPolicies: true
+  
+  # API Management Configuration
+  enableAPIManagement: true
+  apiManagementSku: 'Premium'
+  enableAPIGateway: true
+  rateLimit: 10000
+  
+  # DevSecOps Configuration
+  enableShiftLeftSecurity: true
+  enableRuntimeProtection: true
+  enableThreatDetection: true
+  securityScanSchedule: 'Daily'

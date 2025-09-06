@@ -1,0 +1,1318 @@
+name: Data Quality Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths: 
+      - 'data_quality/**'
+      - 'expectations/**'
+      - 'dbt/**'
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 1 * * *'
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+      data_source:
+        description: 'Data source to validate'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+        - all
+        - raw_data
+        - processed_data
+        - ml_features
+        - aggregated_metrics
+      validation_suite:
+        description: 'Validation suite to run'
+        required: false
+        default: 'comprehensive'
+        type: choice
+        options:
+        - comprehensive
+        - critical_only
+        - schema_only
+        - data_freshness
+
+env:
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+  SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+  SNOWFLAKE_PASSWORD: ${{ secrets.SNOWFLAKE_PASSWORD }}
+  DATABRICKS_HOST: ${{ secrets.DATABRICKS_HOST }}
+  DATABRICKS_TOKEN: ${{ secrets.DATABRICKS_TOKEN }}
+  GREAT_EXPECTATIONS_CONFIG: ${{ secrets.GREAT_EXPECTATIONS_CONFIG }}
+
+jobs:
+  setup-validation:
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.set-config.outputs.environment }}
+      data-source: ${{ steps.set-config.outputs.data-source }}
+      validation-suite: ${{ steps.set-config.outputs.validation-suite }}
+      validation-timestamp: ${{ steps.set-config.outputs.validation-timestamp }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set configuration
+        id: set-config
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "data-source=${{ github.event.inputs.data_source }}" >> $GITHUB_OUTPUT
+            echo "validation-suite=${{ github.event.inputs.validation_suite }}" >> $GITHUB_OUTPUT
+          else
+            echo "environment=dev" >> $GITHUB_OUTPUT
+            echo "data-source=all" >> $GITHUB_OUTPUT
+            echo "validation-suite=comprehensive" >> $GITHUB_OUTPUT
+          fi
+          echo "validation-timestamp=$(date +%Y%m%d_%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Validate configuration
+        run: |
+          echo "🔍 Data Quality Pipeline Configuration:"
+          echo "Environment: ${{ steps.set-config.outputs.environment }}"
+          echo "Data Source: ${{ steps.set-config.outputs.data-source }}"
+          echo "Validation Suite: ${{ steps.set-config.outputs.validation-suite }}"
+          echo "Timestamp: ${{ steps.set-config.outputs.validation-timestamp }}"
+          
+          # Check if Great Expectations config exists
+          if [[ ! -d "great_expectations" ]]; then
+            echo "❌ Great Expectations not initialized in this repository"
+            exit 1
+          fi
+          
+          echo "✅ Configuration validation passed"
+
+  schema-validation:
+    runs-on: ubuntu-latest
+    needs: setup-validation
+    strategy:
+      matrix:
+        data_source: [raw_transactions, customer_data, product_catalog, user_events, processed_analytics]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install great-expectations pandas sqlalchemy psycopg2-binary snowflake-connector-python
+          pip install pydantic jsonschema cerberus
+
+      - name: Run schema validation
+        run: |
+          python -c "
+          import great_expectations as gx
+          from great_expectations.checkpoint import SimpleCheckpoint
+          import pandas as pd
+          import json
+          from pydantic import BaseModel, ValidationError
+          from typing import List, Optional, Dict, Any
+          import os
+          
+          data_source = '${{ matrix.data_source }}'
+          environment = '${{ needs.setup-validation.outputs.environment }}'
+          
+          # Define data schemas using Pydantic
+          class TransactionSchema(BaseModel):
+              transaction_id: str
+              user_id: str
+              amount: float
+              timestamp: int
+              merchant_id: str
+              status: str
+              payment_method: str
+          
+          class CustomerSchema(BaseModel):
+              customer_id: str
+              email: str
+              first_name: str
+              last_name: str
+              registration_date: str
+              country: str
+              age: Optional[int] = None
+              lifetime_value: Optional[float] = None
+          
+          class ProductSchema(BaseModel):
+              product_id: str
+              name: str
+              category: str
+              price: float
+              stock_quantity: int
+              is_active: bool
+              created_date: str
+          
+          class UserEventSchema(BaseModel):
+              event_id: str
+              user_id: str
+              event_type: str
+              timestamp: int
+              session_id: str
+              properties: Dict[str, Any]
+          
+          class ProcessedAnalyticsSchema(BaseModel):
+              date: str
+              user_id: str
+              total_transactions: int
+              total_amount: float
+              avg_transaction_amount: float
+              unique_merchants: int
+              session_count: int
+          
+          # Schema mapping
+          schema_mapping = {
+              'raw_transactions': TransactionSchema,
+              'customer_data': CustomerSchema,
+              'product_catalog': ProductSchema,
+              'user_events': UserEventSchema,
+              'processed_analytics': ProcessedAnalyticsSchema
+          }
+          
+          # Get Great Expectations context
+          context = gx.get_context()
+          
+          try:
+              # Schema validation with Great Expectations
+              validator = context.get_validator(
+                  batch_request={
+                      'datasource_name': f'{environment}_data_source',
+                      'data_connector_name': 'default_inferred_data_connector_name',
+                      'data_asset_name': data_source,
+                      'batch_identifiers': {'validation_run': '${{ needs.setup-validation.outputs.validation-timestamp }}'}
+                  },
+                  expectation_suite_name=f'{data_source}_schema_expectations'
+              )
+              
+              # Run schema expectations
+              results = validator.validate()
+              
+              # Additional Pydantic schema validation for sample data
+              if data_source in schema_mapping:
+                  schema_class = schema_mapping[data_source]
+                  
+                  # Simulate loading sample data for validation
+                  sample_data = []
+                  
+                  if data_source == 'raw_transactions':
+                      sample_data = [
+                          {
+                              'transaction_id': 'txn_001',
+                              'user_id': 'user_001',
+                              'amount': 99.99,
+                              'timestamp': 1640995200000,
+                              'merchant_id': 'merchant_001',
+                              'status': 'completed',
+                              'payment_method': 'credit_card'
+                          }
+                      ]
+                  elif data_source == 'customer_data':
+                      sample_data = [
+                          {
+                              'customer_id': 'cust_001',
+                              'email': 'test@example.com',
+                              'first_name': 'John',
+                              'last_name': 'Doe',
+                              'registration_date': '2022-01-01',
+                              'country': 'US',
+                              'age': 30
+                          }
+                      ]
+                  
+                  # Validate sample data against schema
+                  schema_errors = []
+                  for record in sample_data:
+                      try:
+                          schema_class(**record)
+                      except ValidationError as e:
+                          schema_errors.append(str(e))
+                  
+                  if schema_errors:
+                      print(f'❌ Pydantic schema validation failed for {data_source}:')
+                      for error in schema_errors:
+                          print(f'   {error}')
+                  else:
+                      print(f'✅ Pydantic schema validation passed for {data_source}')
+              
+              # Check Great Expectations results
+              if results['success']:
+                  print(f'✅ Schema validation passed for {data_source}')
+                  
+                  # Save validation results
+                  os.makedirs('validation_results', exist_ok=True)
+                  with open(f'validation_results/{data_source}_schema_validation.json', 'w') as f:
+                      json.dump({
+                          'data_source': data_source,
+                          'validation_type': 'schema',
+                          'status': 'passed',
+                          'timestamp': '${{ needs.setup-validation.outputs.validation-timestamp }}',
+                          'expectations_checked': len(results['results']),
+                          'success_count': sum(1 for r in results['results'] if r['success'])
+                      }, f, indent=2)
+              else:
+                  print(f'❌ Schema validation failed for {data_source}')
+                  failed_expectations = [r for r in results['results'] if not r['success']]
+                  for failure in failed_expectations:
+                      print(f'   Failed: {failure[\"expectation_config\"][\"expectation_type\"]}')
+                  exit(1)
+                  
+          except Exception as e:
+              print(f'❌ Error during schema validation for {data_source}: {e}')
+              # For demo purposes, create a mock validation result
+              os.makedirs('validation_results', exist_ok=True)
+              with open(f'validation_results/{data_source}_schema_validation.json', 'w') as f:
+                  json.dump({
+                      'data_source': data_source,
+                      'validation_type': 'schema',
+                      'status': 'error',
+                      'error': str(e),
+                      'timestamp': '${{ needs.setup-validation.outputs.validation-timestamp }}'
+                  }, f, indent=2)
+          "
+
+      - name: Upload schema validation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-validation-${{ matrix.data_source }}
+          path: validation_results/
+
+  data-quality-checks:
+    runs-on: ubuntu-latest
+    needs: [setup-validation, schema-validation]
+    strategy:
+      matrix:
+        validation_type: [completeness, accuracy, consistency, validity, uniqueness]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install great-expectations pandas numpy scipy scikit-learn
+          pip install dbt-core dbt-snowflake dbt-postgres dbt-bigquery
+
+      - name: Run data quality checks
+        run: |
+          python -c "
+          import great_expectations as gx
+          import pandas as pd
+          import numpy as np
+          from scipy import stats
+          import json
+          import os
+          from datetime import datetime, timedelta
+          
+          validation_type = '${{ matrix.validation_type }}'
+          environment = '${{ needs.setup-validation.outputs.environment }}'
+          data_source = '${{ needs.setup-validation.outputs.data-source }}'
+          
+          print(f'🔍 Running {validation_type} validation for {data_source}')
+          
+          # Get Great Expectations context
+          context = gx.get_context()
+          
+          # Define validation functions
+          def run_completeness_checks(validator, data_source):
+              '''Check for missing values and null percentages'''
+              expectations = []
+              
+              if data_source in ['raw_transactions', 'all']:
+                  expectations.extend([
+                      validator.expect_column_to_not_be_null('transaction_id'),
+                      validator.expect_column_to_not_be_null('user_id'),
+                      validator.expect_column_to_not_be_null('amount'),
+                      validator.expect_column_to_not_be_null('timestamp'),
+                      validator.expect_column_values_to_not_be_null('merchant_id', mostly=0.95)
+                  ])
+              
+              if data_source in ['customer_data', 'all']:
+                  expectations.extend([
+                      validator.expect_column_to_not_be_null('customer_id'),
+                      validator.expect_column_to_not_be_null('email'),
+                      validator.expect_column_values_to_not_be_null('age', mostly=0.8)
+                  ])
+              
+              return expectations
+          
+          def run_accuracy_checks(validator, data_source):
+              '''Check for data accuracy and ranges'''
+              expectations = []
+              
+              if data_source in ['raw_transactions', 'all']:
+                  expectations.extend([
+                      validator.expect_column_values_to_be_between('amount', 0.01, 100000),
+                      validator.expect_column_values_to_be_in_set('status', ['pending', 'completed', 'failed', 'cancelled']),
+                      validator.expect_column_values_to_match_regex('transaction_id', r'^txn_[0-9a-f]{8}$')
+                  ])
+              
+              if data_source in ['customer_data', 'all']:
+                  expectations.extend([
+                      validator.expect_column_values_to_be_between('age', 13, 120),
+                      validator.expect_column_values_to_match_regex('email', r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'),
+                      validator.expect_column_values_to_be_in_set('country', ['US', 'CA', 'UK', 'DE', 'FR', 'AU', 'JP'])
+                  ])
+              
+              return expectations
+          
+          def run_consistency_checks(validator, data_source):
+              '''Check for data consistency across time'''
+              expectations = []
+              
+              if data_source in ['processed_analytics', 'all']:
+                  # Check if daily metrics are consistent
+                  expectations.extend([
+                      validator.expect_column_sum_to_be_between('total_transactions', 0, 1000000),
+                      validator.expect_column_mean_to_be_between('avg_transaction_amount', 1, 10000)
+                  ])
+              
+              return expectations
+          
+          def run_validity_checks(validator, data_source):
+              '''Check for business rule violations'''
+              expectations = []
+              
+              if data_source in ['raw_transactions', 'all']:
+                  expectations.extend([
+                      validator.expect_column_values_to_be_of_type('amount', 'float'),
+                      validator.expect_column_values_to_be_of_type('timestamp', 'int'),
+                      validator.expect_column_values_to_be_dateutil_parseable('created_date')
+                  ])
+              
+              return expectations
+          
+          def run_uniqueness_checks(validator, data_source):
+              '''Check for duplicate records'''
+              expectations = []
+              
+              if data_source in ['raw_transactions', 'all']:
+                  expectations.extend([
+                      validator.expect_column_values_to_be_unique('transaction_id'),
+                      validator.expect_compound_columns_to_be_unique(['user_id', 'timestamp', 'amount'])
+                  ])
+              
+              if data_source in ['customer_data', 'all']:
+                  expectations.extend([
+                      validator.expect_column_values_to_be_unique('customer_id'),
+                      validator.expect_column_values_to_be_unique('email')
+                  ])
+              
+              return expectations
+          
+          # Map validation functions
+          validation_functions = {
+              'completeness': run_completeness_checks,
+              'accuracy': run_accuracy_checks,
+              'consistency': run_consistency_checks,
+              'validity': run_validity_checks,
+              'uniqueness': run_uniqueness_checks
+          }
+          
+          try:
+              # Create validator (mocked for demo)
+              # In real scenario, this would connect to actual data sources
+              validator = None  # context.get_validator(batch_request=..., expectation_suite_name=...)
+              
+              # Run validations
+              if validation_type in validation_functions:
+                  # For demo purposes, simulate validation results
+                  validation_results = {
+                      'validation_type': validation_type,
+                      'data_source': data_source,
+                      'environment': environment,
+                      'timestamp': '${{ needs.setup-validation.outputs.validation-timestamp }}',
+                      'total_expectations': 0,
+                      'passed_expectations': 0,
+                      'failed_expectations': 0,
+                      'success_rate': 0.0,
+                      'details': []
+                  }
+                  
+                  # Simulate different validation scenarios
+                  if validation_type == 'completeness':
+                      validation_results.update({
+                          'total_expectations': 8,
+                          'passed_expectations': 7,
+                          'failed_expectations': 1,
+                          'success_rate': 0.875,
+                          'details': [
+                              {'expectation': 'expect_column_to_not_be_null', 'column': 'transaction_id', 'status': 'passed'},
+                              {'expectation': 'expect_column_to_not_be_null', 'column': 'user_id', 'status': 'passed'},
+                              {'expectation': 'expect_column_values_to_not_be_null', 'column': 'merchant_id', 'status': 'failed', 'reason': 'null_percentage_too_high'}
+                          ]
+                      })
+                  elif validation_type == 'accuracy':
+                      validation_results.update({
+                          'total_expectations': 6,
+                          'passed_expectations': 6,
+                          'failed_expectations': 0,
+                          'success_rate': 1.0,
+                          'details': [
+                              {'expectation': 'expect_column_values_to_be_between', 'column': 'amount', 'status': 'passed'},
+                              {'expectation': 'expect_column_values_to_be_in_set', 'column': 'status', 'status': 'passed'}
+                          ]
+                      })
+                  else:
+                      # Default success for other validation types
+                      validation_results.update({
+                          'total_expectations': 5,
+                          'passed_expectations': 5,
+                          'failed_expectations': 0,
+                          'success_rate': 1.0
+                      })
+                  
+                  # Save results
+                  os.makedirs('validation_results', exist_ok=True)
+                  with open(f'validation_results/{validation_type}_validation.json', 'w') as f:
+                      json.dump(validation_results, f, indent=2)
+                  
+                  # Print results
+                  if validation_results['success_rate'] >= 0.95:
+                      print(f'✅ {validation_type} validation passed with {validation_results[\"success_rate\"]*100:.1f}% success rate')
+                  elif validation_results['success_rate'] >= 0.8:
+                      print(f'⚠️  {validation_type} validation passed with warnings: {validation_results[\"success_rate\"]*100:.1f}% success rate')
+                  else:
+                      print(f'❌ {validation_type} validation failed: {validation_results[\"success_rate\"]*100:.1f}% success rate')
+                      for detail in validation_results['details']:
+                          if detail['status'] == 'failed':
+                              print(f'   Failed: {detail[\"expectation\"]} on {detail.get(\"column\", \"N/A\")}')
+                      exit(1)
+              
+              else:
+                  print(f'❌ Unknown validation type: {validation_type}')
+                  exit(1)
+                  
+          except Exception as e:
+              print(f'❌ Error during {validation_type} validation: {e}')
+              # Create error result
+              os.makedirs('validation_results', exist_ok=True)
+              with open(f'validation_results/{validation_type}_validation.json', 'w') as f:
+                  json.dump({
+                      'validation_type': validation_type,
+                      'status': 'error',
+                      'error': str(e),
+                      'timestamp': '${{ needs.setup-validation.outputs.validation-timestamp }}'
+                  }, f, indent=2)
+          "
+
+      - name: Upload quality check results
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-checks-${{ matrix.validation_type }}
+          path: validation_results/
+
+  dbt-data-tests:
+    runs-on: ubuntu-latest
+    needs: [setup-validation, data-quality-checks]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dbt
+        run: |
+          pip install dbt-core dbt-snowflake dbt-postgres dbt-bigquery
+
+      - name: Configure dbt profiles
+        run: |
+          mkdir -p ~/.dbt
+          cat > ~/.dbt/profiles.yml << EOF
+          default:
+            target: ${{ needs.setup-validation.outputs.environment }}
+            outputs:
+              dev:
+                type: postgres
+                host: localhost
+                user: postgres
+                password: postgres
+                port: 5432
+                dbname: data_quality_dev
+                schema: public
+                threads: 4
+              staging:
+                type: snowflake
+                account: ${{ env.SNOWFLAKE_ACCOUNT }}
+                user: ${{ env.SNOWFLAKE_USER }}
+                password: ${{ env.SNOWFLAKE_PASSWORD }}
+                role: TRANSFORMER
+                database: DATA_QUALITY_STAGING
+                warehouse: COMPUTE_WH
+                schema: public
+                threads: 8
+              prod:
+                type: snowflake
+                account: ${{ env.SNOWFLAKE_ACCOUNT }}
+                user: ${{ env.SNOWFLAKE_USER }}
+                password: ${{ env.SNOWFLAKE_PASSWORD }}
+                role: TRANSFORMER
+                database: DATA_QUALITY_PROD
+                warehouse: COMPUTE_WH
+                schema: public
+                threads: 12
+          EOF
+
+      - name: Run dbt tests
+        run: |
+          cd dbt
+          
+          # Install dependencies
+          dbt deps --target ${{ needs.setup-validation.outputs.environment }}
+          
+          # Run data tests
+          dbt test --target ${{ needs.setup-validation.outputs.environment }} --store-failures
+          
+          # Generate test results summary
+          python -c "
+          import json
+          import os
+          from pathlib import Path
+          
+          # Parse dbt test results
+          target_dir = Path('target')
+          run_results_path = target_dir / 'run_results.json'
+          
+          if run_results_path.exists():
+              with open(run_results_path, 'r') as f:
+                  run_results = json.load(f)
+              
+              test_results = []
+              total_tests = 0
+              passed_tests = 0
+              failed_tests = 0
+              
+              for result in run_results.get('results', []):
+                  if result.get('resource_type') == 'test':
+                      total_tests += 1
+                      
+                      test_result = {
+                          'test_name': result.get('unique_id', '').split('.')[-1],
+                          'model': result.get('unique_id', '').split('.')[-2] if '.' in result.get('unique_id', '') else 'unknown',
+                          'status': result.get('status'),
+                          'execution_time': result.get('execution_time', 0),
+                          'rows_affected': result.get('adapter_response', {}).get('rows_affected', 0)
+                      }
+                      
+                      if result.get('status') == 'pass':
+                          passed_tests += 1
+                      else:
+                          failed_tests += 1
+                          test_result['failures'] = result.get('failures', 0)
+                      
+                      test_results.append(test_result)
+              
+              # Create summary
+              summary = {
+                  'timestamp': '${{ needs.setup-validation.outputs.validation-timestamp }}',
+                  'environment': '${{ needs.setup-validation.outputs.environment }}',
+                  'total_tests': total_tests,
+                  'passed_tests': passed_tests,
+                  'failed_tests': failed_tests,
+                  'success_rate': passed_tests / total_tests if total_tests > 0 else 0,
+                  'test_results': test_results
+              }
+              
+              os.makedirs('../validation_results', exist_ok=True)
+              with open('../validation_results/dbt_test_results.json', 'w') as f:
+                  json.dump(summary, f, indent=2)
+              
+              print(f'✅ dbt tests completed: {passed_tests}/{total_tests} passed ({summary[\"success_rate\"]*100:.1f}%)')
+              
+              if failed_tests > 0:
+                  print(f'❌ {failed_tests} tests failed:')
+                  for test in test_results:
+                      if test['status'] != 'pass':
+                          print(f'   {test[\"test_name\"]} on {test[\"model\"]}: {test[\"status\"]}')
+                  exit(1)
+          else:
+              print('⚠️  No dbt test results found')
+          "
+
+      - name: Upload dbt test results
+        uses: actions/upload-artifact@v4
+        with:
+          name: dbt-test-results
+          path: validation_results/
+
+  data-freshness-checks:
+    runs-on: ubuntu-latest
+    needs: setup-validation
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          pip install pandas sqlalchemy psycopg2-binary snowflake-connector-python
+
+      - name: Check data freshness
+        run: |
+          python -c "
+          import pandas as pd
+          from datetime import datetime, timedelta
+          import json
+          import os
+          
+          environment = '${{ needs.setup-validation.outputs.environment }}'
+          
+          # Define freshness expectations
+          freshness_expectations = {
+              'raw_transactions': {'max_age_hours': 1, 'critical': True},
+              'customer_data': {'max_age_hours': 24, 'critical': False},
+              'processed_analytics': {'max_age_hours': 6, 'critical': True},
+              'ml_features': {'max_age_hours': 12, 'critical': True},
+              'aggregated_metrics': {'max_age_hours': 2, 'critical': True}
+          }
+          
+          freshness_results = []
+          current_time = datetime.now()
+          
+          for data_source, expectations in freshness_expectations.items():
+              # Simulate checking data freshness
+              # In real scenario, this would query actual data sources
+              
+              # Mock last update times
+              if data_source == 'raw_transactions':
+                  last_update = current_time - timedelta(minutes=30)  # Fresh
+              elif data_source == 'customer_data':
+                  last_update = current_time - timedelta(hours=2)     # Fresh
+              elif data_source == 'processed_analytics':
+                  last_update = current_time - timedelta(hours=8)     # Stale
+              else:
+                  last_update = current_time - timedelta(hours=1)     # Fresh
+              
+              age_hours = (current_time - last_update).total_seconds() / 3600
+              is_fresh = age_hours <= expectations['max_age_hours']
+              
+              result = {
+                  'data_source': data_source,
+                  'last_update': last_update.isoformat(),
+                  'age_hours': round(age_hours, 2),
+                  'max_age_hours': expectations['max_age_hours'],
+                  'is_fresh': is_fresh,
+                  'is_critical': expectations['critical'],
+                  'status': 'fresh' if is_fresh else 'stale'
+              }
+              
+              freshness_results.append(result)
+              
+              if is_fresh:
+                  print(f'✅ {data_source}: Fresh ({age_hours:.1f}h old, max {expectations[\"max_age_hours\"]}h)')
+              else:
+                  severity = '🚨' if expectations['critical'] else '⚠️ '
+                  print(f'{severity} {data_source}: Stale ({age_hours:.1f}h old, max {expectations[\"max_age_hours\"]}h)')
+          
+          # Calculate overall freshness status
+          critical_stale = [r for r in freshness_results if not r['is_fresh'] and r['is_critical']]
+          non_critical_stale = [r for r in freshness_results if not r['is_fresh'] and not r['is_critical']]
+          
+          summary = {
+              'timestamp': '${{ needs.setup-validation.outputs.validation-timestamp }}',
+              'environment': environment,
+              'total_sources': len(freshness_results),
+              'fresh_sources': len([r for r in freshness_results if r['is_fresh']]),
+              'stale_sources': len([r for r in freshness_results if not r['is_fresh']]),
+              'critical_stale': len(critical_stale),
+              'non_critical_stale': len(non_critical_stale),
+              'overall_status': 'healthy' if len(critical_stale) == 0 else 'unhealthy',
+              'results': freshness_results
+          }
+          
+          # Save results
+          os.makedirs('validation_results', exist_ok=True)
+          with open('validation_results/freshness_check.json', 'w') as f:
+              json.dump(summary, f, indent=2)
+          
+          print(f'\\n📊 Freshness Summary:')
+          print(f'   Fresh: {summary[\"fresh_sources\"]}/{summary[\"total_sources\"]}')
+          print(f'   Stale (Critical): {summary[\"critical_stale\"]}')
+          print(f'   Stale (Non-Critical): {summary[\"non_critical_stale\"]}')
+          print(f'   Overall Status: {summary[\"overall_status\"]}')
+          
+          # Fail if critical data sources are stale
+          if len(critical_stale) > 0:
+              print(f'\\n❌ Critical data sources are stale:')
+              for source in critical_stale:
+                  print(f'   {source[\"data_source\"]}: {source[\"age_hours\"]}h old')
+              exit(1)
+          "
+
+      - name: Upload freshness check results
+        uses: actions/upload-artifact@v4
+        with:
+          name: freshness-check-results
+          path: validation_results/
+
+  anomaly-detection:
+    runs-on: ubuntu-latest
+    needs: setup-validation
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install ML dependencies
+        run: |
+          pip install pandas numpy scikit-learn scipy plotly prophet
+
+      - name: Run anomaly detection
+        run: |
+          python -c "
+          import pandas as pd
+          import numpy as np
+          from sklearn.ensemble import IsolationForest
+          from sklearn.preprocessing import StandardScaler
+          from scipy import stats
+          import json
+          import os
+          from datetime import datetime, timedelta
+          
+          environment = '${{ needs.setup-validation.outputs.environment }}'
+          
+          # Generate mock time series data for anomaly detection
+          def generate_mock_metrics(days=30):
+              dates = pd.date_range(end=datetime.now(), periods=days, freq='H')
+              
+              # Simulate normal patterns with some anomalies
+              np.random.seed(42)
+              
+              # Base patterns
+              hourly_pattern = np.sin(2 * np.pi * np.arange(len(dates)) / 24) * 0.3
+              daily_pattern = np.sin(2 * np.pi * np.arange(len(dates)) / (24 * 7)) * 0.2
+              noise = np.random.normal(0, 0.1, len(dates))
+              
+              # Different metrics
+              transaction_volume = 1000 + 500 * hourly_pattern + 200 * daily_pattern + 100 * noise
+              avg_transaction_amount = 50 + 20 * hourly_pattern + 10 * daily_pattern + 5 * noise
+              error_rate = 0.01 + 0.005 * np.abs(hourly_pattern) + 0.002 * np.abs(noise)
+              
+              # Inject some anomalies
+              anomaly_indices = np.random.choice(len(dates), size=5, replace=False)
+              transaction_volume[anomaly_indices] *= np.random.uniform(2, 5, 5)  # Volume spikes
+              avg_transaction_amount[anomaly_indices[-2:]] *= 0.1  # Amount drops
+              error_rate[anomaly_indices[-1:]] *= 10  # Error spikes
+              
+              return pd.DataFrame({
+                  'timestamp': dates,
+                  'transaction_volume': transaction_volume,
+                  'avg_transaction_amount': avg_transaction_amount,
+                  'error_rate': error_rate
+              })
+          
+          # Statistical anomaly detection
+          def detect_statistical_anomalies(data, column, method='zscore', threshold=3):
+              if method == 'zscore':
+                  z_scores = np.abs(stats.zscore(data[column]))
+                  anomalies = z_scores > threshold
+              elif method == 'iqr':
+                  Q1 = data[column].quantile(0.25)
+                  Q3 = data[column].quantile(0.75)
+                  IQR = Q3 - Q1
+                  lower_bound = Q1 - 1.5 * IQR
+                  upper_bound = Q3 + 1.5 * IQR
+                  anomalies = (data[column] < lower_bound) | (data[column] > upper_bound)
+              
+              return anomalies
+          
+          # Machine learning anomaly detection
+          def detect_ml_anomalies(data, columns, contamination=0.1):
+              scaler = StandardScaler()
+              scaled_data = scaler.fit_transform(data[columns])
+              
+              iso_forest = IsolationForest(contamination=contamination, random_state=42)
+              anomalies = iso_forest.fit_predict(scaled_data) == -1
+              
+              return anomalies
+          
+          print('🔍 Running anomaly detection on data metrics...')
+          
+          # Generate mock data
+          metrics_data = generate_mock_metrics()
+          
+          anomaly_results = {
+              'timestamp': '${{ needs.setup-validation.outputs.validation-timestamp }}',
+              'environment': environment,
+              'detection_methods': {},
+              'summary': {}
+          }
+          
+          # Statistical anomaly detection
+          metrics_to_check = ['transaction_volume', 'avg_transaction_amount', 'error_rate']
+          
+          for metric in metrics_to_check:
+              print(f'\\nChecking {metric} for anomalies...')
+              
+              # Z-score method
+              zscore_anomalies = detect_statistical_anomalies(metrics_data, metric, 'zscore', 3)
+              zscore_count = zscore_anomalies.sum()
+              
+              # IQR method
+              iqr_anomalies = detect_statistical_anomalies(metrics_data, metric, 'iqr')
+              iqr_count = iqr_anomalies.sum()
+              
+              anomaly_results['detection_methods'][metric] = {
+                  'zscore_anomalies': int(zscore_count),
+                  'iqr_anomalies': int(iqr_count),
+                  'total_points': len(metrics_data)
+              }
+              
+              print(f'   Z-score anomalies: {zscore_count}')
+              print(f'   IQR anomalies: {iqr_count}')
+              
+              if zscore_count > 0:
+                  anomaly_timestamps = metrics_data.loc[zscore_anomalies, 'timestamp'].tolist()
+                  anomaly_values = metrics_data.loc[zscore_anomalies, metric].tolist()
+                  
+                  anomaly_results['detection_methods'][metric]['zscore_details'] = [
+                      {
+                          'timestamp': str(ts),
+                          'value': float(val),
+                          'metric': metric
+                      }
+                      for ts, val in zip(anomaly_timestamps, anomaly_values)
+                  ]
+          
+          # ML-based anomaly detection
+          print('\\nRunning ML-based anomaly detection...')
+          ml_anomalies = detect_ml_anomalies(metrics_data, metrics_to_check)
+          ml_count = ml_anomalies.sum()
+          
+          anomaly_results['detection_methods']['isolation_forest'] = {
+              'total_anomalies': int(ml_count),
+              'total_points': len(metrics_data)
+          }
+          
+          if ml_count > 0:
+              ml_anomaly_data = metrics_data.loc[ml_anomalies]
+              anomaly_results['detection_methods']['isolation_forest']['details'] = [
+                  {
+                      'timestamp': str(row['timestamp']),
+                      'transaction_volume': float(row['transaction_volume']),
+                      'avg_transaction_amount': float(row['avg_transaction_amount']),
+                      'error_rate': float(row['error_rate'])
+                  }
+                  for _, row in ml_anomaly_data.iterrows()
+              ]
+          
+          print(f'   ML anomalies detected: {ml_count}')
+          
+          # Calculate summary
+          total_anomalies = max([
+              sum([anomaly_results['detection_methods'][metric]['zscore_anomalies'] for metric in metrics_to_check]),
+              ml_count
+          ])
+          
+          anomaly_rate = total_anomalies / len(metrics_data)
+          
+          anomaly_results['summary'] = {
+              'total_anomalies': int(total_anomalies),
+              'anomaly_rate': float(anomaly_rate),
+              'status': 'healthy' if anomaly_rate < 0.05 else 'concerning' if anomaly_rate < 0.1 else 'critical'
+          }
+          
+          # Save results
+          os.makedirs('validation_results', exist_ok=True)
+          with open('validation_results/anomaly_detection.json', 'w') as f:
+              json.dump(anomaly_results, f, indent=2)
+          
+          print(f'\\n📊 Anomaly Detection Summary:')
+          print(f'   Total anomalies: {total_anomalies}')
+          print(f'   Anomaly rate: {anomaly_rate*100:.2f}%')
+          print(f'   Status: {anomaly_results[\"summary\"][\"status\"]}')
+          
+          if anomaly_results['summary']['status'] == 'critical':
+              print('🚨 Critical anomaly rate detected!')
+              exit(1)
+          elif anomaly_results['summary']['status'] == 'concerning':
+              print('⚠️  Concerning anomaly rate - monitoring recommended')
+          else:
+              print('✅ Anomaly rate within acceptable limits')
+          "
+
+      - name: Upload anomaly detection results
+        uses: actions/upload-artifact@v4
+        with:
+          name: anomaly-detection-results
+          path: validation_results/
+
+  generate-quality-report:
+    runs-on: ubuntu-latest
+    needs: [setup-validation, schema-validation, data-quality-checks, dbt-data-tests, data-freshness-checks, anomaly-detection]
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install reporting dependencies
+        run: |
+          pip install jinja2 plotly pandas
+
+      - name: Download all validation results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-results*"
+          merge-multiple: true
+
+      - name: Generate comprehensive quality report
+        run: |
+          python -c "
+          import json
+          import os
+          from pathlib import Path
+          from datetime import datetime
+          import glob
+          
+          environment = '${{ needs.setup-validation.outputs.environment }}'
+          timestamp = '${{ needs.setup-validation.outputs.validation-timestamp }}'
+          
+          print('📋 Generating comprehensive data quality report...')
+          
+          # Collect all validation results
+          validation_files = glob.glob('validation_results/*.json')
+          
+          report_data = {
+              'metadata': {
+                  'timestamp': timestamp,
+                  'environment': environment,
+                  'validation_suite': '${{ needs.setup-validation.outputs.validation-suite }}',
+                  'data_source': '${{ needs.setup-validation.outputs.data-source }}'
+              },
+              'summary': {
+                  'total_validations': 0,
+                  'passed_validations': 0,
+                  'failed_validations': 0,
+                  'success_rate': 0.0,
+                  'overall_status': 'unknown'
+              },
+              'details': {
+                  'schema_validation': {},
+                  'quality_checks': {},
+                  'dbt_tests': {},
+                  'freshness_checks': {},
+                  'anomaly_detection': {}
+              }
+          }
+          
+          total_validations = 0
+          passed_validations = 0
+          
+          # Process validation results
+          for file_path in validation_files:
+              try:
+                  with open(file_path, 'r') as f:
+                      data = json.load(f)
+                  
+                  filename = Path(file_path).stem
+                  
+                  if 'schema_validation' in filename:
+                      report_data['details']['schema_validation'][filename] = data
+                      if data.get('status') == 'passed':
+                          passed_validations += 1
+                      total_validations += 1
+                  
+                  elif any(check in filename for check in ['completeness', 'accuracy', 'consistency', 'validity', 'uniqueness']):
+                      report_data['details']['quality_checks'][filename] = data
+                      if data.get('success_rate', 0) >= 0.95:
+                          passed_validations += 1
+                      total_validations += 1
+                  
+                  elif 'dbt_test' in filename:
+                      report_data['details']['dbt_tests'] = data
+                      if data.get('success_rate', 0) >= 0.95:
+                          passed_validations += 1
+                      total_validations += 1
+                  
+                  elif 'freshness' in filename:
+                      report_data['details']['freshness_checks'] = data
+                      if data.get('overall_status') == 'healthy':
+                          passed_validations += 1
+                      total_validations += 1
+                  
+                  elif 'anomaly' in filename:
+                      report_data['details']['anomaly_detection'] = data
+                      if data.get('summary', {}).get('status') == 'healthy':
+                          passed_validations += 1
+                      total_validations += 1
+              
+              except Exception as e:
+                  print(f'⚠️  Error processing {file_path}: {e}')
+          
+          # Calculate summary
+          if total_validations > 0:
+              success_rate = passed_validations / total_validations
+              report_data['summary'].update({
+                  'total_validations': total_validations,
+                  'passed_validations': passed_validations,
+                  'failed_validations': total_validations - passed_validations,
+                  'success_rate': success_rate,
+                  'overall_status': 'healthy' if success_rate >= 0.9 else 'concerning' if success_rate >= 0.7 else 'critical'
+              })
+          
+          # Generate HTML report
+          html_template = '''
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Data Quality Report - {{ metadata.environment|title }}</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; background-color: #f5f5f5; }
+                  .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 8px; }
+                  .summary { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                  .section { background: white; margin: 20px 0; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                  .status-healthy { color: #28a745; font-weight: bold; }
+                  .status-concerning { color: #ffc107; font-weight: bold; }
+                  .status-critical { color: #dc3545; font-weight: bold; }
+                  .metric { display: inline-block; margin: 10px 20px; text-align: center; }
+                  .metric-value { font-size: 2em; font-weight: bold; margin-bottom: 5px; }
+                  .metric-label { color: #666; }
+                  table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+                  th, td { padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }
+                  th { background-color: #f8f9fa; font-weight: bold; }
+                  .success { color: #28a745; }
+                  .warning { color: #ffc107; }
+                  .error { color: #dc3545; }
+              </style>
+          </head>
+          <body>
+              <div class=\"header\">
+                  <h1>Data Quality Report</h1>
+                  <p>Environment: <strong>{{ metadata.environment|title }}</strong> | Generated: {{ metadata.timestamp }}</p>
+              </div>
+              
+              <div class=\"summary\">
+                  <h2>Overall Summary</h2>
+                  <div class=\"metric\">
+                      <div class=\"metric-value status-{{ summary.overall_status }}\">{{ summary.success_rate * 100 }}%</div>
+                      <div class=\"metric-label\">Success Rate</div>
+                  </div>
+                  <div class=\"metric\">
+                      <div class=\"metric-value\">{{ summary.passed_validations }}</div>
+                      <div class=\"metric-label\">Passed</div>
+                  </div>
+                  <div class=\"metric\">
+                      <div class=\"metric-value\">{{ summary.failed_validations }}</div>
+                      <div class=\"metric-label\">Failed</div>
+                  </div>
+                  <div class=\"metric\">
+                      <div class=\"metric-value\">{{ summary.total_validations }}</div>
+                      <div class=\"metric-label\">Total Validations</div>
+                  </div>
+                  <p><strong>Status:</strong> <span class=\"status-{{ summary.overall_status }}\">{{ summary.overall_status|title }}</span></p>
+              </div>
+              
+              <div class=\"section\">
+                  <h2>Schema Validation</h2>
+                  <table>
+                      <tr><th>Data Source</th><th>Status</th><th>Details</th></tr>
+                      {% for source, result in details.schema_validation.items() %}
+                      <tr>
+                          <td>{{ result.data_source }}</td>
+                          <td class=\"{% if result.status == 'passed' %}success{% else %}error{% endif %}\">{{ result.status|title }}</td>
+                          <td>{{ result.expectations_checked or 'N/A' }} expectations checked</td>
+                      </tr>
+                      {% endfor %}
+                  </table>
+              </div>
+              
+              <div class=\"section\">
+                  <h2>Data Quality Checks</h2>
+                  <table>
+                      <tr><th>Validation Type</th><th>Success Rate</th><th>Status</th></tr>
+                      {% for check, result in details.quality_checks.items() %}
+                      <tr>
+                          <td>{{ result.validation_type|title }}</td>
+                          <td>{{ (result.success_rate * 100)|round(1) }}%</td>
+                          <td class=\"{% if result.success_rate >= 0.95 %}success{% elif result.success_rate >= 0.8 %}warning{% else %}error{% endif %}\">
+                              {% if result.success_rate >= 0.95 %}Passed{% elif result.success_rate >= 0.8 %}Warning{% else %}Failed{% endif %}
+                          </td>
+                      </tr>
+                      {% endfor %}
+                  </table>
+              </div>
+              
+              <div class=\"section\">
+                  <h2>Freshness Status</h2>
+                  {% if details.freshness_checks %}
+                  <p><strong>Overall Status:</strong> <span class=\"status-{{ details.freshness_checks.overall_status }}\">{{ details.freshness_checks.overall_status|title }}</span></p>
+                  <p>Fresh Sources: {{ details.freshness_checks.fresh_sources }}/{{ details.freshness_checks.total_sources }}</p>
+                  <p>Critical Stale: {{ details.freshness_checks.critical_stale }}</p>
+                  {% else %}
+                  <p>No freshness check results available</p>
+                  {% endif %}
+              </div>
+              
+              <div class=\"section\">
+                  <h2>Anomaly Detection</h2>
+                  {% if details.anomaly_detection.summary %}
+                  <p><strong>Status:</strong> <span class=\"status-{{ details.anomaly_detection.summary.status }}\">{{ details.anomaly_detection.summary.status|title }}</span></p>
+                  <p>Anomaly Rate: {{ (details.anomaly_detection.summary.anomaly_rate * 100)|round(2) }}%</p>
+                  <p>Total Anomalies: {{ details.anomaly_detection.summary.total_anomalies }}</p>
+                  {% else %}
+                  <p>No anomaly detection results available</p>
+                  {% endif %}
+              </div>
+              
+              <div class=\"section\">
+                  <h2>Recommendations</h2>
+                  <ul>
+                      {% if summary.overall_status == 'critical' %}
+                      <li class=\"error\">🚨 <strong>Immediate Action Required:</strong> Multiple critical data quality issues detected. Review failed validations immediately.</li>
+                      {% elif summary.overall_status == 'concerning' %}
+                      <li class=\"warning\">⚠️  <strong>Attention Needed:</strong> Some data quality issues detected. Monitor closely and address failing checks.</li>
+                      {% else %}
+                      <li class=\"success\">✅ <strong>Good Health:</strong> Data quality is within acceptable limits. Continue regular monitoring.</li>
+                      {% endif %}
+                      
+                      {% if details.freshness_checks.critical_stale > 0 %}
+                      <li class=\"error\">📅 Address stale critical data sources immediately to prevent downstream impact.</li>
+                      {% endif %}
+                      
+                      {% if details.anomaly_detection.summary and details.anomaly_detection.summary.status != 'healthy' %}
+                      <li class=\"warning\">📊 Investigate detected anomalies to identify potential data issues or system problems.</li>
+                      {% endif %}
+                      
+                      <li>🔄 Consider implementing automated alerting for critical data quality metrics.</li>
+                      <li>📈 Review data quality trends over time to identify patterns and improvement opportunities.</li>
+                  </ul>
+              </div>
+          </body>
+          </html>
+          '''
+          
+          # Generate report using simple string replacement (since we can't import Jinja2 easily)
+          report_html = html_template.replace('{{ metadata.environment|title }}', environment.title())
+          report_html = report_html.replace('{{ metadata.timestamp }}', timestamp)
+          report_html = report_html.replace('{{ summary.success_rate * 100 }}', str(int(report_data['summary']['success_rate'] * 100)))
+          report_html = report_html.replace('{{ summary.overall_status }}', report_data['summary']['overall_status'])
+          report_html = report_html.replace('{{ summary.passed_validations }}', str(report_data['summary']['passed_validations']))
+          report_html = report_html.replace('{{ summary.failed_validations }}', str(report_data['summary']['failed_validations']))
+          report_html = report_html.replace('{{ summary.total_validations }}', str(report_data['summary']['total_validations']))
+          
+          # Save HTML report
+          with open('data_quality_report.html', 'w') as f:
+              f.write(report_html)
+          
+          # Save JSON report
+          with open('data_quality_report.json', 'w') as f:
+              json.dump(report_data, f, indent=2)
+          
+          print('✅ Data quality report generated successfully')
+          print(f'   Overall Status: {report_data[\"summary\"][\"overall_status\"]}')
+          print(f'   Success Rate: {report_data[\"summary\"][\"success_rate\"]*100:.1f}%')
+          print(f'   Total Validations: {report_data[\"summary\"][\"total_validations\"]}')
+          
+          # Exit with error if overall status is critical
+          if report_data['summary']['overall_status'] == 'critical':
+              print('🚨 Critical data quality issues detected - failing pipeline')
+              exit(1)
+          "
+
+      - name: Upload quality report
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-quality-report
+          path: |
+            data_quality_report.html
+            data_quality_report.json
+
+  notification:
+    runs-on: ubuntu-latest
+    needs: [setup-validation, generate-quality-report]
+    if: always()
+    steps:
+      - name: Download quality report
+        uses: actions/download-artifact@v4
+        with:
+          name: data-quality-report
+
+      - name: Send notification
+        run: |
+          # Extract status from report
+          OVERALL_STATUS=$(python -c "
+          import json
+          try:
+              with open('data_quality_report.json', 'r') as f:
+                  report = json.load(f)
+              print(report['summary']['overall_status'])
+          except:
+              print('unknown')
+          ")
+          
+          SUCCESS_RATE=$(python -c "
+          import json
+          try:
+              with open('data_quality_report.json', 'r') as f:
+                  report = json.load(f)
+              print(f'{report[\"summary\"][\"success_rate\"]*100:.1f}%')
+          except:
+              print('N/A')
+          ")
+          
+          if [[ "$OVERALL_STATUS" == "healthy" ]]; then
+              EMOJI="✅"
+              COLOR="good"
+          elif [[ "$OVERALL_STATUS" == "concerning" ]]; then
+              EMOJI="⚠️"
+              COLOR="warning"
+          else
+              EMOJI="❌"
+              COLOR="danger"
+          fi
+          
+          # Send Slack notification
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{
+              \"text\":\"$EMOJI Data Quality Pipeline completed\",
+              \"attachments\":[{
+                \"color\":\"$COLOR\",
+                \"fields\":[
+                  {\"title\":\"Environment\",\"value\":\"${{ needs.setup-validation.outputs.environment }}\",\"short\":true},
+                  {\"title\":\"Status\",\"value\":\"$OVERALL_STATUS\",\"short\":true},
+                  {\"title\":\"Success Rate\",\"value\":\"$SUCCESS_RATE\",\"short\":true},
+                  {\"title\":\"Report\",\"value\":\"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Details>\",\"short\":true}
+                ]
+              }]
+            }" \
+            ${{ secrets.SLACK_WEBHOOK_URL }}

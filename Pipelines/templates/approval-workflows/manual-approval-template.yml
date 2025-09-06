@@ -1,0 +1,809 @@
+# Manual Approval Workflow Template
+# Platform-agnostic reusable template for manual approval gates with timeout and escalation
+# Supports multi-stage approvals, conditional routing, and comprehensive audit trails
+
+metadata:
+  name: manual-approval-template
+  version: 1.3.0
+  description: Configurable manual approval workflow with escalation and audit trails
+  compatibility:
+    - github-actions
+    - azure-devops
+    - gitlab-ci
+    - jenkins
+
+parameters:
+  # Approval Configuration
+  approval_required:
+    type: boolean
+    default: true
+    description: "Whether manual approval is required"
+  
+  approval_type:
+    type: string
+    default: "single"
+    description: "Approval type (single, multiple, unanimous, majority)"
+    allowed_values:
+      - single
+      - multiple
+      - unanimous
+      - majority
+  
+  required_approvers:
+    type: array
+    default: []
+    description: "List of required approvers (usernames or groups)"
+  
+  minimum_approvals:
+    type: integer
+    default: 1
+    description: "Minimum number of approvals required"
+  
+  # Environment and Stage Configuration
+  environment:
+    type: string
+    default: "production"
+    description: "Target environment (dev, staging, production)"
+  
+  stage:
+    type: string
+    default: "deployment"
+    description: "Deployment stage requiring approval"
+  
+  approval_scope:
+    type: string
+    default: "deployment"
+    description: "Scope of approval (deployment, release, configuration, security)"
+  
+  # Timeout and Escalation
+  approval_timeout:
+    type: string
+    default: "24h"
+    description: "Timeout for approval (e.g., 1h, 24h, 7d)"
+  
+  escalation_enabled:
+    type: boolean
+    default: true
+    description: "Enable escalation workflow"
+  
+  escalation_timeout:
+    type: string
+    default: "4h"
+    description: "Time before escalation triggers"
+  
+  escalation_approvers:
+    type: array
+    default: []
+    description: "Escalation approvers (managers, senior staff)"
+  
+  auto_approve_timeout:
+    type: string
+    default: ""
+    description: "Auto-approve after timeout (empty = disabled)"
+  
+  # Business Hours
+  business_hours_only:
+    type: boolean
+    default: false
+    description: "Only allow approvals during business hours"
+  
+  timezone:
+    type: string
+    default: "UTC"
+    description: "Timezone for business hours calculation"
+  
+  business_start_hour:
+    type: integer
+    default: 9
+    description: "Business hours start (24-hour format)"
+  
+  business_end_hour:
+    type: integer
+    default: 17
+    description: "Business hours end (24-hour format)"
+  
+  weekend_approvals:
+    type: boolean
+    default: false
+    description: "Allow approvals on weekends"
+  
+  # Notifications
+  notification_channels:
+    type: array
+    default: ["email", "teams"]
+    description: "Notification channels for approval requests"
+  
+  reminder_intervals:
+    type: array
+    default: ["1h", "4h", "12h"]
+    description: "Reminder notification intervals"
+  
+  # Conditional Approval
+  conditional_approval:
+    type: boolean
+    default: false
+    description: "Enable conditional approval based on criteria"
+  
+  approval_conditions:
+    type: object
+    default: {}
+    description: "Conditions that must be met for approval"
+  
+  # Risk Assessment
+  risk_level:
+    type: string
+    default: "medium"
+    description: "Risk level of the change (low, medium, high, critical)"
+  
+  change_type:
+    type: string
+    default: "standard"
+    description: "Type of change (standard, normal, emergency)"
+  
+  # Audit and Compliance
+  approval_reason_required:
+    type: boolean
+    default: true
+    description: "Require reason/justification for approval"
+  
+  audit_trail:
+    type: boolean
+    default: true
+    description: "Maintain detailed audit trail"
+  
+  compliance_framework:
+    type: string
+    default: ""
+    description: "Compliance framework requirements (sox, iso27001, etc.)"
+  
+  # Integration
+  external_approval_system:
+    type: string
+    default: ""
+    description: "External approval system integration (servicenow, jira)"
+  
+  webhook_notifications:
+    type: array
+    default: []
+    description: "Webhook URLs for approval status updates"
+
+# Risk-based Approval Matrix
+approval_matrix:
+  low_risk:
+    standard:
+      required_approvers: 1
+      timeout: "4h"
+      escalation_required: false
+    emergency:
+      required_approvers: 1
+      timeout: "1h"
+      escalation_required: false
+  
+  medium_risk:
+    standard:
+      required_approvers: 2
+      timeout: "24h"
+      escalation_required: true
+      escalation_timeout: "4h"
+    emergency:
+      required_approvers: 1
+      timeout: "2h"
+      escalation_required: true
+      escalation_timeout: "30m"
+  
+  high_risk:
+    standard:
+      required_approvers: 3
+      timeout: "48h"
+      escalation_required: true
+      escalation_timeout: "2h"
+      unanimous_required: true
+    emergency:
+      required_approvers: 2
+      timeout: "4h"
+      escalation_required: true
+      escalation_timeout: "1h"
+  
+  critical_risk:
+    standard:
+      required_approvers: 4
+      timeout: "72h"
+      escalation_required: true
+      escalation_timeout: "1h"
+      unanimous_required: true
+      ciso_approval_required: true
+    emergency:
+      required_approvers: 3
+      timeout: "8h"
+      escalation_required: true
+      escalation_timeout: "30m"
+      ciso_approval_required: true
+
+# GitHub Actions Implementation
+github_actions:
+  steps:
+    - name: Initialize Approval Workflow
+      run: |
+        echo "::group::Approval Workflow Initialization"
+        
+        # Create approval tracking directory
+        mkdir -p approval-workflow/logs approval-workflow/artifacts
+        
+        # Generate unique approval ID
+        APPROVAL_ID="approval-$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+        echo "APPROVAL_ID=$APPROVAL_ID" >> $GITHUB_ENV
+        
+        # Initialize approval state
+        cat > approval-workflow/approval-state.json << EOF
+        {
+          "approval_id": "$APPROVAL_ID",
+          "workflow_run": "${{ github.run_id }}",
+          "repository": "${{ github.repository }}",
+          "initiator": "${{ github.actor }}",
+          "environment": "${{ inputs.environment }}",
+          "stage": "${{ inputs.stage }}",
+          "risk_level": "${{ inputs.risk_level }}",
+          "change_type": "${{ inputs.change_type }}",
+          "created_at": "$(date -Iseconds)",
+          "status": "pending",
+          "approvals": [],
+          "escalations": []
+        }
+        EOF
+        
+        echo "Approval workflow initialized: $APPROVAL_ID"
+        echo "::endgroup::"
+    
+    - name: Evaluate Approval Requirements
+      run: |
+        echo "::group::Approval Requirements Evaluation"
+        
+        # Determine approval requirements based on risk and change type
+        RISK="${{ inputs.risk_level }}"
+        CHANGE="${{ inputs.change_type }}"
+        
+        # Load approval matrix requirements
+        python3 << EOF
+        import json
+        import os
+        
+        # Risk-based approval matrix
+        matrix = {
+          "low": {
+            "standard": {"required_approvers": 1, "timeout": "4h", "escalation": False},
+            "emergency": {"required_approvers": 1, "timeout": "1h", "escalation": False}
+          },
+          "medium": {
+            "standard": {"required_approvers": 2, "timeout": "24h", "escalation": True, "escalation_timeout": "4h"},
+            "emergency": {"required_approvers": 1, "timeout": "2h", "escalation": True, "escalation_timeout": "30m"}
+          },
+          "high": {
+            "standard": {"required_approvers": 3, "timeout": "48h", "escalation": True, "escalation_timeout": "2h", "unanimous": True},
+            "emergency": {"required_approvers": 2, "timeout": "4h", "escalation": True, "escalation_timeout": "1h"}
+          },
+          "critical": {
+            "standard": {"required_approvers": 4, "timeout": "72h", "escalation": True, "escalation_timeout": "1h", "unanimous": True, "ciso_required": True},
+            "emergency": {"required_approvers": 3, "timeout": "8h", "escalation": True, "escalation_timeout": "30m", "ciso_required": True}
+          }
+        }
+        
+        risk_level = "$RISK"
+        change_type = "$CHANGE"
+        
+        requirements = matrix.get(risk_level, {}).get(change_type, matrix["medium"]["standard"])
+        
+        # Override with user parameters if provided
+        if "${{ inputs.minimum_approvals }}" != "1":
+          requirements["required_approvers"] = int("${{ inputs.minimum_approvals }}")
+        
+        if "${{ inputs.approval_timeout }}" != "24h":
+          requirements["timeout"] = "${{ inputs.approval_timeout }}"
+        
+        # Save requirements
+        with open('approval-workflow/requirements.json', 'w') as f:
+          json.dump(requirements, f, indent=2)
+        
+        # Set environment variables
+        print(f"REQUIRED_APPROVERS={requirements['required_approvers']}")
+        print(f"APPROVAL_TIMEOUT={requirements['timeout']}")
+        print(f"ESCALATION_REQUIRED={requirements.get('escalation', False)}")
+        print(f"UNANIMOUS_REQUIRED={requirements.get('unanimous', False)}")
+        print(f"CISO_APPROVAL_REQUIRED={requirements.get('ciso_required', False)}")
+        
+        # Export to GitHub environment
+        with open(os.environ['GITHUB_ENV'], 'a') as f:
+          f.write(f"REQUIRED_APPROVERS={requirements['required_approvers']}\n")
+          f.write(f"APPROVAL_TIMEOUT={requirements['timeout']}\n")
+          f.write(f"ESCALATION_REQUIRED={requirements.get('escalation', False)}\n")
+          f.write(f"UNANIMOUS_REQUIRED={requirements.get('unanimous', False)}\n")
+          f.write(f"CISO_APPROVAL_REQUIRED={requirements.get('ciso_required', False)}\n")
+        EOF
+        
+        echo "Approval requirements determined:"
+        echo "  Required Approvers: $REQUIRED_APPROVERS"
+        echo "  Timeout: $APPROVAL_TIMEOUT"
+        echo "  Escalation Required: $ESCALATION_REQUIRED"
+        echo "  Unanimous Required: $UNANIMOUS_REQUIRED"
+        
+        echo "::endgroup::"
+    
+    - name: Check Business Hours
+      if: ${{ inputs.business_hours_only }}
+      run: |
+        echo "::group::Business Hours Check"
+        
+        python3 << EOF
+        from datetime import datetime
+        import pytz
+        import sys
+        
+        # Get current time in specified timezone
+        tz = pytz.timezone('${{ inputs.timezone }}')
+        current_time = datetime.now(tz)
+        
+        # Check if it's within business hours
+        current_hour = current_time.hour
+        current_weekday = current_time.weekday()  # 0=Monday, 6=Sunday
+        
+        business_start = ${{ inputs.business_start_hour }}
+        business_end = ${{ inputs.business_end_hour }}
+        weekend_allowed = ${{ inputs.weekend_approvals | lower }}
+        
+        is_business_hours = business_start <= current_hour < business_end
+        is_weekday = current_weekday < 5  # Monday-Friday
+        is_weekend = current_weekday >= 5
+        
+        if not is_business_hours:
+          print(f"Outside business hours: {current_hour}:00 (business: {business_start}:00-{business_end}:00)")
+          if not weekend_allowed and is_weekend:
+            print("Weekend approvals not allowed")
+            sys.exit(1)
+          elif not is_weekday and not weekend_allowed:
+            print("Approval requested outside business hours and weekends not allowed")
+            sys.exit(1)
+        
+        print(f"Business hours check passed: {current_time.strftime('%Y-%m-%d %H:%M %Z')}")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Create Approval Request
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          // Load approval state and requirements
+          const approvalState = JSON.parse(fs.readFileSync('approval-workflow/approval-state.json', 'utf8'));
+          const requirements = JSON.parse(fs.readFileSync('approval-workflow/requirements.json', 'utf8'));
+          
+          // Create approval request issue
+          const approvalBody = `
+          ## 🔐 Manual Approval Required
+          
+          **Approval ID:** ${approvalState.approval_id}  
+          **Environment:** ${{ inputs.environment }}  
+          **Stage:** ${{ inputs.stage }}  
+          **Risk Level:** ${{ inputs.risk_level }}  
+          **Change Type:** ${{ inputs.change_type }}  
+          
+          ### Approval Requirements
+          - **Required Approvers:** ${requirements.required_approvers}
+          - **Approval Type:** ${{ inputs.approval_type }}
+          - **Timeout:** ${requirements.timeout}
+          - **Escalation:** ${requirements.escalation ? 'Enabled' : 'Disabled'}
+          
+          ### Change Details
+          - **Workflow:** ${{ github.workflow }}
+          - **Run ID:** ${{ github.run_id }}
+          - **Initiated by:** ${{ github.actor }}
+          - **Branch:** ${{ github.ref_name }}
+          - **Commit:** ${{ github.sha }}
+          
+          ### Required Approvers
+          ${{ inputs.required_approvers.length > 0 ? inputs.required_approvers.map(approver => `- @${approver}`).join('\n') : '- Any authorized approver' }}
+          
+          ### Instructions
+          To approve this request, comment on this issue with:
+          - ✅ **APPROVE** - followed by your justification
+          - ❌ **REJECT** - followed by rejection reason
+          
+          **Timeout:** This approval request will automatically expire in ${requirements.timeout}
+          
+          ### Compliance
+          ${{ inputs.compliance_framework ? `This change is subject to ${inputs.compliance_framework} compliance requirements.` : '' }}
+          
+          ---
+          *Automated approval request created by GitHub Actions*
+          `;
+          
+          const issue = await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `🔐 Approval Required: ${{ inputs.environment }} deployment`,
+            body: approvalBody,
+            labels: ['approval-required', 'deployment', '${{ inputs.environment }}', 'risk-${{ inputs.risk_level }}']
+          });
+          
+          // Update approval state with issue number
+          approvalState.approval_issue = issue.data.number;
+          approvalState.approval_url = issue.data.html_url;
+          
+          fs.writeFileSync('approval-workflow/approval-state.json', JSON.stringify(approvalState, null, 2));
+          
+          // Set output for other steps
+          core.setOutput('approval_issue', issue.data.number);
+          core.setOutput('approval_url', issue.data.html_url);
+          
+          console.log(`Approval request created: ${issue.data.html_url}`);
+    
+    - name: Send Approval Notifications
+      run: |
+        echo "::group::Approval Notifications"
+        
+        # Load approval state
+        APPROVAL_URL=$(jq -r '.approval_url' approval-workflow/approval-state.json)
+        APPROVAL_ID=$(jq -r '.approval_id' approval-workflow/approval-state.json)
+        
+        # Send notifications based on configured channels
+        if [[ "${{ join(inputs.notification_channels, ' ') }}" == *"teams"* ]]; then
+          echo "Sending Microsoft Teams notification..."
+          curl -X POST "${{ secrets.TEAMS_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "@type": "MessageCard",
+              "@context": "http://schema.org/extensions",
+              "themeColor": "0076D7",
+              "summary": "Approval Required",
+              "sections": [{
+                "activityTitle": "🔐 Manual Approval Required",
+                "activitySubtitle": "${{ inputs.environment }} deployment approval",
+                "facts": [
+                  {"name": "Environment", "value": "${{ inputs.environment }}"},
+                  {"name": "Risk Level", "value": "${{ inputs.risk_level }}"},
+                  {"name": "Change Type", "value": "${{ inputs.change_type }}"},
+                  {"name": "Required Approvers", "value": "$REQUIRED_APPROVERS"},
+                  {"name": "Timeout", "value": "$APPROVAL_TIMEOUT"}
+                ]
+              }],
+              "potentialAction": [{
+                "@type": "OpenUri",
+                "name": "Review Approval Request",
+                "targets": [{"os": "default", "uri": "'"$APPROVAL_URL"'"}]
+              }]
+            }' || echo "Teams notification failed"
+        fi
+        
+        if [[ "${{ join(inputs.notification_channels, ' ') }}" == *"slack"* ]]; then
+          echo "Sending Slack notification..."
+          curl -X POST "${{ secrets.SLACK_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {"type": "plain_text", "text": "🔐 Manual Approval Required"}
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {"type": "mrkdwn", "text": "*Environment:*\n${{ inputs.environment }}"},
+                    {"type": "mrkdwn", "text": "*Risk Level:*\n${{ inputs.risk_level }}"},
+                    {"type": "mrkdwn", "text": "*Required Approvers:*\n'"$REQUIRED_APPROVERS"'"},
+                    {"type": "mrkdwn", "text": "*Timeout:*\n'"$APPROVAL_TIMEOUT"'"}
+                  ]
+                },
+                {
+                  "type": "actions",
+                  "elements": [
+                    {
+                      "type": "button",
+                      "text": {"type": "plain_text", "text": "Review Approval"},
+                      "url": "'"$APPROVAL_URL"'",
+                      "action_id": "review_approval"
+                    }
+                  ]
+                }
+              ]
+            }' || echo "Slack notification failed"
+        fi
+        
+        # Send webhook notifications
+        for webhook in ${{ join(inputs.webhook_notifications, ' ') }}; do
+          if [ -n "$webhook" ]; then
+            echo "Sending webhook notification to $webhook"
+            curl -X POST "$webhook" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "event": "approval_requested",
+                "approval_id": "'"$APPROVAL_ID"'",
+                "environment": "${{ inputs.environment }}",
+                "risk_level": "${{ inputs.risk_level }}",
+                "required_approvers": '"$REQUIRED_APPROVERS"',
+                "approval_url": "'"$APPROVAL_URL"'",
+                "timeout": "'"$APPROVAL_TIMEOUT"'"
+              }' || echo "Webhook notification failed"
+          fi
+        done
+        
+        echo "::endgroup::"
+    
+    - name: Wait for Approval
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const fs = require('fs');
+          
+          // Load approval requirements
+          const requirements = JSON.parse(fs.readFileSync('approval-workflow/requirements.json', 'utf8'));
+          const approvalState = JSON.parse(fs.readFileSync('approval-workflow/approval-state.json', 'utf8'));
+          
+          const issueNumber = approvalState.approval_issue;
+          const requiredApprovers = requirements.required_approvers;
+          const timeoutMs = parseTimeout('${{ inputs.approval_timeout }}');
+          const startTime = Date.now();
+          
+          console.log(`Waiting for ${requiredApprovers} approvals on issue #${issueNumber}`);
+          console.log(`Timeout: ${timeoutMs / 1000 / 60} minutes`);
+          
+          // Helper function to parse timeout string
+          function parseTimeout(timeout) {
+            const match = timeout.match(/^(\d+)([hmsd])$/);
+            if (!match) return 24 * 60 * 60 * 1000; // Default 24 hours
+            
+            const value = parseInt(match[1]);
+            const unit = match[2];
+            
+            switch (unit) {
+              case 'm': return value * 60 * 1000;
+              case 'h': return value * 60 * 60 * 1000;
+              case 'd': return value * 24 * 60 * 60 * 1000;
+              default: return value * 1000;
+            }
+          }
+          
+          // Poll for approvals
+          let approvals = [];
+          let rejections = [];
+          
+          while (Date.now() - startTime < timeoutMs) {
+            // Get issue comments
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber
+            });
+            
+            // Parse approval/rejection comments
+            approvals = [];
+            rejections = [];
+            
+            for (const comment of comments.data) {
+              const body = comment.body.toUpperCase();
+              const author = comment.user.login;
+              
+              if (body.includes('APPROVE') && !approvals.find(a => a.user === author)) {
+                approvals.push({
+                  user: author,
+                  timestamp: comment.created_at,
+                  reason: comment.body.replace(/.*APPROVE\s*/i, '').trim()
+                });
+              } else if (body.includes('REJECT') && !rejections.find(r => r.user === author)) {
+                rejections.push({
+                  user: author,
+                  timestamp: comment.created_at,
+                  reason: comment.body.replace(/.*REJECT\s*/i, '').trim()
+                });
+              }
+            }
+            
+            console.log(`Current status: ${approvals.length}/${requiredApprovers} approvals, ${rejections.length} rejections`);
+            
+            // Check for rejection
+            if (rejections.length > 0) {
+              console.log('❌ Deployment rejected');
+              approvalState.status = 'rejected';
+              approvalState.rejections = rejections;
+              fs.writeFileSync('approval-workflow/approval-state.json', JSON.stringify(approvalState, null, 2));
+              throw new Error(`Deployment rejected by ${rejections[0].user}: ${rejections[0].reason}`);
+            }
+            
+            // Check if enough approvals
+            if (approvals.length >= requiredApprovers) {
+              console.log('✅ Sufficient approvals received');
+              approvalState.status = 'approved';
+              approvalState.approvals = approvals;
+              approvalState.approved_at = new Date().toISOString();
+              fs.writeFileSync('approval-workflow/approval-state.json', JSON.stringify(approvalState, null, 2));
+              
+              // Close approval issue
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                state: 'closed',
+                labels: ['approved', 'deployment', '${{ inputs.environment }}']
+              });
+              
+              return;
+            }
+            
+            // Wait before next poll
+            await new Promise(resolve => setTimeout(resolve, 30000)); // 30 seconds
+          }
+          
+          // Timeout reached
+          console.log('⏰ Approval timeout reached');
+          
+          if ('${{ inputs.auto_approve_timeout }}' && '${{ inputs.auto_approve_timeout }}' !== '') {
+            console.log('Auto-approving due to timeout configuration');
+            approvalState.status = 'auto_approved';
+            approvalState.auto_approved_at = new Date().toISOString();
+            approvalState.auto_approve_reason = 'Timeout reached with auto-approve enabled';
+          } else {
+            approvalState.status = 'timeout';
+            approvalState.timeout_at = new Date().toISOString();
+            fs.writeFileSync('approval-workflow/approval-state.json', JSON.stringify(approvalState, null, 2));
+            throw new Error(`Approval timeout reached after ${timeoutMs / 1000 / 60} minutes`);
+          }
+          
+          fs.writeFileSync('approval-workflow/approval-state.json', JSON.stringify(approvalState, null, 2));
+    
+    - name: Handle Escalation
+      if: ${{ env.ESCALATION_REQUIRED == 'true' && failure() }}
+      uses: actions/github-script@v7
+      with:
+        script: |
+          console.log('🚨 Triggering escalation workflow');
+          
+          const fs = require('fs');
+          const approvalState = JSON.parse(fs.readFileSync('approval-workflow/approval-state.json', 'utf8'));
+          
+          // Create escalation issue
+          const escalationBody = `
+          ## 🚨 Escalated Approval Required
+          
+          The original approval request has timed out or requires escalation.
+          
+          **Original Approval ID:** ${approvalState.approval_id}  
+          **Environment:** ${{ inputs.environment }}  
+          **Risk Level:** ${{ inputs.risk_level }}  
+          **Escalation Reason:** Approval timeout or explicit escalation
+          
+          ### Escalation Approvers Required
+          ${{ inputs.escalation_approvers.length > 0 ? inputs.escalation_approvers.map(approver => `- @${approver}`).join('\n') : '- Senior management approval required' }}
+          
+          ### Original Request Details
+          - **Workflow:** ${{ github.workflow }}
+          - **Run ID:** ${{ github.run_id }}
+          - **Initiated by:** ${{ github.actor }}
+          
+          **This is an escalated approval request requiring senior management review.**
+          `;
+          
+          const escalationIssue = await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: `🚨 ESCALATED: ${{ inputs.environment }} deployment approval`,
+            body: escalationBody,
+            labels: ['escalated-approval', 'urgent', 'senior-review', '${{ inputs.environment }}']
+          });
+          
+          // Update approval state
+          approvalState.escalation_issue = escalationIssue.data.number;
+          approvalState.escalation_url = escalationIssue.data.html_url;
+          approvalState.escalated_at = new Date().toISOString();
+          
+          fs.writeFileSync('approval-workflow/approval-state.json', JSON.stringify(approvalState, null, 2));
+          
+          console.log(`Escalation created: ${escalationIssue.data.html_url}`);
+    
+    - name: Audit Trail
+      if: ${{ inputs.audit_trail && always() }}
+      run: |
+        echo "::group::Audit Trail Generation"
+        
+        # Generate comprehensive audit trail
+        python3 << EOF
+        import json
+        from datetime import datetime
+        
+        # Load approval state
+        with open('approval-workflow/approval-state.json', 'r') as f:
+          state = json.load(f)
+        
+        # Create audit trail entry
+        audit_entry = {
+          "audit_id": f"audit-{state['approval_id']}",
+          "timestamp": datetime.utcnow().isoformat(),
+          "event_type": "approval_workflow",
+          "workflow": {
+            "repository": "${{ github.repository }}",
+            "workflow_name": "${{ github.workflow }}",
+            "run_id": "${{ github.run_id }}",
+            "actor": "${{ github.actor }}",
+            "ref": "${{ github.ref }}",
+            "sha": "${{ github.sha }}"
+          },
+          "approval_details": {
+            "approval_id": state["approval_id"],
+            "environment": "${{ inputs.environment }}",
+            "stage": "${{ inputs.stage }}",
+            "risk_level": "${{ inputs.risk_level }}",
+            "change_type": "${{ inputs.change_type }}",
+            "status": state.get("status", "unknown"),
+            "required_approvers": "$REQUIRED_APPROVERS",
+            "timeout": "$APPROVAL_TIMEOUT"
+          },
+          "approvals": state.get("approvals", []),
+          "rejections": state.get("rejections", []),
+          "escalations": state.get("escalations", []),
+          "compliance": {
+            "framework": "${{ inputs.compliance_framework }}",
+            "audit_trail_enabled": True,
+            "reason_required": "${{ inputs.approval_reason_required }}"
+          }
+        }
+        
+        # Save audit trail
+        with open('approval-workflow/audit-trail.json', 'w') as f:
+          json.dump(audit_entry, f, indent=2)
+        
+        print("Audit trail generated successfully")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Upload Approval Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: approval-workflow-artifacts
+        path: |
+          approval-workflow/
+        retention-days: 90
+
+# Azure DevOps Implementation
+azure_devops:
+  stages:
+    - stage: ManualApproval
+      displayName: 'Manual Approval Gate'
+      jobs:
+        - deployment: ApprovalGate
+          displayName: 'Approval Required'
+          environment: '${{ parameters.environment }}'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - task: ManualValidation@0
+                    displayName: 'Manual Approval Required'
+                    inputs:
+                      notifyUsers: '${{ join(parameters.required_approvers, ";") }}'
+                      instructions: 'Please review and approve the ${{ parameters.environment }} deployment'
+                      timeout: '${{ parameters.approval_timeout }}'
+
+# GitLab CI Implementation
+gitlab_ci:
+  manual_approval:
+    stage: approval
+    script:
+      - echo "Manual approval required for $CI_ENVIRONMENT_NAME deployment"
+    when: manual
+    allow_failure: false
+    environment:
+      name: $[[ inputs.environment ]]
+      action: start
+
+# Performance Tracking
+performance:
+  metrics:
+    - approval_response_time
+    - escalation_frequency
+    - timeout_rate
+    - business_hours_compliance
+
+# Cost Optimization
+cost_tracking:
+  approval_overhead_cost: true
+  escalation_cost_impact: true
+  timeout_cost_analysis: true

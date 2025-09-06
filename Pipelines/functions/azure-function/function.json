@@ -1,0 +1,251 @@
+{
+  "bindings": [
+    {
+      "authLevel": "function",
+      "type": "httpTrigger",
+      "direction": "in",
+      "name": "req",
+      "methods": [
+        "get",
+        "post",
+        "put",
+        "delete"
+      ],
+      "route": "api/{category}/{id?}"
+    },
+    {
+      "type": "http",
+      "direction": "out",
+      "name": "res"
+    },
+    {
+      "type": "cosmosDB",
+      "direction": "in",
+      "name": "inputDocument",
+      "databaseName": "serverless-db",
+      "collectionName": "items",
+      "connectionStringSetting": "CosmosDBConnection",
+      "id": "{id}",
+      "partitionKey": "{category}",
+      "sqlQuery": "SELECT * FROM c WHERE c.category = {category}"
+    },
+    {
+      "type": "cosmosDB",
+      "direction": "out",
+      "name": "outputDocument",
+      "databaseName": "serverless-db",
+      "collectionName": "items",
+      "createIfNotExists": true,
+      "connectionStringSetting": "CosmosDBConnection",
+      "partitionKey": "/category"
+    },
+    {
+      "type": "queue",
+      "direction": "out",
+      "name": "outputQueue",
+      "queueName": "processing-queue",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "blob",
+      "direction": "in",
+      "name": "inputBlob",
+      "path": "uploads/{category}/{id}.json",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "blob",
+      "direction": "out",
+      "name": "outputBlob",
+      "path": "processed/{category}/{id}-{datetime}.json",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "eventGrid",
+      "direction": "out",
+      "name": "outputEvent",
+      "topicEndpointUri": "EventGridTopicUri",
+      "topicKeySetting": "EventGridTopicKey"
+    },
+    {
+      "type": "serviceBus",
+      "direction": "out",
+      "name": "outputServiceBus",
+      "queueName": "notifications",
+      "connection": "ServiceBusConnection"
+    },
+    {
+      "type": "table",
+      "direction": "in",
+      "name": "inputTable",
+      "tableName": "metadata",
+      "partitionKey": "{category}",
+      "rowKey": "{id}",
+      "connection": "AzureWebJobsStorage"
+    },
+    {
+      "type": "table",
+      "direction": "out",
+      "name": "outputTable",
+      "tableName": "audit",
+      "connection": "AzureWebJobsStorage"
+    }
+  ],
+  "scriptFile": "../dist/index.js",
+  "entryPoint": "main",
+  "retry": {
+    "strategy": "exponentialBackoff",
+    "maxRetryCount": 5,
+    "minimumInterval": "00:00:05",
+    "maximumInterval": "00:05:00"
+  },
+  "disabled": false,
+  "extensions": {
+    "http": {
+      "routePrefix": "api",
+      "maxConcurrentRequests": 100,
+      "maxOutstandingRequests": 200,
+      "dynamicThrottlesEnabled": true,
+      "hsts": {
+        "isEnabled": true,
+        "maxAge": "10"
+      },
+      "customHeaders": {
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+        "Cache-Control": "no-cache, no-store, must-revalidate"
+      }
+    },
+    "durableTask": {
+      "hubName": "serverless-orchestration",
+      "storageProvider": {
+        "connectionStringName": "AzureWebJobsStorage",
+        "partitionCount": 4,
+        "controlQueueBatchSize": 32,
+        "controlQueueVisibilityTimeout": "00:05:00",
+        "maxQueuePollingInterval": "00:00:30"
+      },
+      "tracing": {
+        "traceInputsAndOutputs": true,
+        "traceReplayEvents": false
+      },
+      "notifications": {
+        "eventGrid": {
+          "topicEndpoint": "EventGridTopicUri",
+          "keySettingName": "EventGridTopicKey",
+          "publishRetryCount": 3,
+          "publishRetryInterval": "00:00:05",
+          "publishEventTypes": [
+            "Started",
+            "Completed",
+            "Failed"
+          ]
+        }
+      },
+      "maxConcurrentActivityFunctions": 10,
+      "maxConcurrentOrchestratorFunctions": 5
+    },
+    "singleton": {
+      "lockPeriod": "00:00:15",
+      "listenerLockPeriod": "00:01:00",
+      "listenerLockRecoveryPollingInterval": "00:01:00",
+      "lockAcquisitionTimeout": "00:01:00",
+      "lockAcquisitionPollingInterval": "00:00:03"
+    },
+    "queues": {
+      "maxPollingInterval": "00:00:30",
+      "visibilityTimeout": "00:00:00",
+      "batchSize": 16,
+      "maxDequeueCount": 5,
+      "newBatchThreshold": 8,
+      "messageEncoding": "base64"
+    },
+    "sendGrid": {
+      "from": "noreply@example.com"
+    },
+    "eventHub": {
+      "maxBatchSize": 10,
+      "prefetchCount": 300,
+      "batchCheckpointFrequency": 1
+    }
+  },
+  "logging": {
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "maxTelemetryItemsPerSecond": 20,
+        "evaluationInterval": "01:00:00",
+        "initialSamplingPercentage": 100.0,
+        "samplingPercentageIncreaseTimeout": "00:01:00",
+        "samplingPercentageDecreaseTimeout": "00:01:00",
+        "minSamplingPercentage": 1.0,
+        "maxSamplingPercentage": 100.0,
+        "movingAverageRatio": 0.25
+      },
+      "enableLiveMetrics": true,
+      "enableDependencyTracking": true,
+      "enablePerformanceCountersCollection": true,
+      "httpAutoCollectionOptions": {
+        "enableHttpTriggerExtendedInfoCollection": true,
+        "enableW3CDistributedTracing": true,
+        "enableResponseHeaderInjection": true
+      },
+      "snapshotConfiguration": {
+        "agentEndpoint": null,
+        "captureSnapshotMemoryWeight": 0.5,
+        "failedRequestLimit": 3,
+        "handleUntrackedExceptions": true,
+        "isEnabled": true,
+        "isEnabledInDeveloperMode": false,
+        "isEnabledWhenProfiling": true,
+        "isExceptionSnappointsEnabled": false,
+        "isLowPrioritySnapshotUploader": true,
+        "maximumCollectionPlanSize": 50,
+        "maximumSnapshotsRequired": 3,
+        "problemCounterResetInterval": "24:00:00",
+        "provideAnonymousTelemetry": true,
+        "reconnectInterval": "00:15:00",
+        "shadowCopyFolder": null,
+        "shareUploaderProcess": true,
+        "snapshotInLowPriorityThread": true,
+        "snapshotsPerDayLimit": 30,
+        "snapshotsPerTenMinutesLimit": 1,
+        "tempFolder": null,
+        "thresholdForSnapshotting": 1,
+        "uploaderProxy": null
+      }
+    },
+    "logLevel": {
+      "default": "Information",
+      "Host.Results": "Information",
+      "Function": "Information",
+      "Host.Aggregator": "Trace",
+      "Microsoft": "Warning",
+      "Microsoft.Hosting.Lifetime": "Information"
+    },
+    "console": {
+      "isEnabled": true
+    },
+    "fileLoggingMode": "always"
+  },
+  "watchDirectories": [
+    "Shared"
+  ],
+  "functionTimeout": "00:10:00",
+  "healthMonitor": {
+    "enabled": true,
+    "healthCheckInterval": "00:00:10",
+    "healthCheckWindow": "00:02:00",
+    "healthCheckThreshold": 6,
+    "counterThreshold": 0.8
+  },
+  "managedDependency": {
+    "enabled": true
+  },
+  "extensionBundle": {
+    "id": "Microsoft.Azure.Functions.ExtensionBundle",
+    "version": "[3.*, 4.0.0)"
+  }
+}

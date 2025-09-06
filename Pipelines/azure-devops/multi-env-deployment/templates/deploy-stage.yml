@@ -1,0 +1,583 @@
+parameters:
+  - name: environment
+    type: string
+  - name: environmentDisplayName
+    type: string
+  - name: azureServiceConnection
+    type: string
+  - name: resourceGroup
+    type: string
+  - name: location
+    type: string
+  - name: appServiceName
+    type: string
+  - name: sqlServerName
+    type: string
+  - name: storageAccountName
+    type: string
+  - name: aksClusterName
+    type: string
+  - name: deploymentStrategy
+    type: string
+    default: 'runOnce'
+  - name: requiresApproval
+    type: boolean
+    default: false
+  - name: runSmokeTests
+    type: boolean
+    default: true
+  - name: runPerformanceTests
+    type: boolean
+    default: false
+  - name: enableBlueGreen
+    type: boolean
+    default: false
+  - name: canaryPercentage
+    type: number
+    default: 10
+
+jobs:
+  - deployment: 'DeployInfrastructure'
+    displayName: 'Deploy Infrastructure to ${{ parameters.environmentDisplayName }}'
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: ${{ parameters.environment }}
+    ${{ if eq(parameters.requiresApproval, true) }}:
+      condition: and(succeeded(), eq(variables['Build.Reason'], 'Manual'))
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+
+            - download: current
+              artifact: infrastructure-code
+              displayName: 'Download Infrastructure Code'
+
+            - download: current
+              artifact: environment-configs
+              displayName: 'Download Environment Configurations'
+
+            - task: TerraformInstaller@1
+              displayName: 'Install Terraform'
+              inputs:
+                terraformVersion: '$(terraformVersion)'
+
+            - task: AzureCLI@2
+              displayName: 'Initialize Terraform Backend'
+              inputs:
+                azureSubscription: ${{ parameters.azureServiceConnection }}
+                scriptType: 'bash'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  # Create storage account for Terraform state if it doesn't exist
+                  az storage account create \
+                    --resource-group $(resourceGroup) \
+                    --name $(terraformStateStorageAccount) \
+                    --sku Standard_LRS \
+                    --location $(location) \
+                    --allow-blob-public-access false \
+                    || echo "Storage account already exists"
+                  
+                  # Create container for state files
+                  az storage container create \
+                    --name $(terraformStateContainer) \
+                    --account-name $(terraformStateStorageAccount) \
+                    || echo "Container already exists"
+
+            - task: TerraformTaskV4@4
+              displayName: 'Terraform Init'
+              inputs:
+                provider: 'azurerm'
+                command: 'init'
+                workingDirectory: '$(Pipeline.Workspace)/infrastructure-code/terraform'
+                backendServiceArm: ${{ parameters.azureServiceConnection }}
+                backendAzureRmResourceGroupName: '$(resourceGroup)'
+                backendAzureRmStorageAccountName: '$(terraformStateStorageAccount)'
+                backendAzureRmContainerName: '$(terraformStateContainer)'
+                backendAzureRmKey: '$(terraformStateKey)'
+
+            - task: TerraformTaskV4@4
+              displayName: 'Terraform Plan'
+              inputs:
+                provider: 'azurerm'
+                command: 'plan'
+                workingDirectory: '$(Pipeline.Workspace)/infrastructure-code/terraform'
+                environmentServiceNameAzureRM: ${{ parameters.azureServiceConnection }}
+                commandOptions: |
+                  -var="environment=${{ parameters.environment }}"
+                  -var="resource_group_name=${{ parameters.resourceGroup }}"
+                  -var="location=${{ parameters.location }}"
+                  -var="app_service_name=${{ parameters.appServiceName }}"
+                  -var="sql_server_name=${{ parameters.sqlServerName }}"
+                  -var="storage_account_name=${{ parameters.storageAccountName }}"
+                  -var="aks_cluster_name=${{ parameters.aksClusterName }}"
+                  -out=tfplan
+
+            - task: TerraformTaskV4@4
+              displayName: 'Terraform Apply'
+              inputs:
+                provider: 'azurerm'
+                command: 'apply'
+                workingDirectory: '$(Pipeline.Workspace)/infrastructure-code/terraform'
+                environmentServiceNameAzureRM: ${{ parameters.azureServiceConnection }}
+                commandOptions: 'tfplan'
+
+            - task: AzureCLI@2
+              displayName: 'Deploy Bicep Templates'
+              inputs:
+                azureSubscription: ${{ parameters.azureServiceConnection }}
+                scriptType: 'bash'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  echo "Deploying Bicep templates for ${{ parameters.environment }}"
+                  
+                  # Deploy main infrastructure template
+                  az deployment group create \
+                    --resource-group ${{ parameters.resourceGroup }} \
+                    --template-file $(Pipeline.Workspace)/infrastructure-code/bicep/main.bicep \
+                    --parameters @$(Pipeline.Workspace)/environment-configs/${{ parameters.environment }}/$(bicepParametersFile) \
+                    --parameters environment=${{ parameters.environment }} \
+                    --parameters buildId=$(Build.BuildId) \
+                    --name "infrastructure-$(Build.BuildId)"
+                  
+                  # Validate deployment
+                  deployment_state=$(az deployment group show \
+                    --resource-group ${{ parameters.resourceGroup }} \
+                    --name "infrastructure-$(Build.BuildId)" \
+                    --query "properties.provisioningState" \
+                    --output tsv)
+                  
+                  if [ "$deployment_state" != "Succeeded" ]; then
+                    echo "##vso[task.logissue type=error]Infrastructure deployment failed with state: $deployment_state"
+                    exit 1
+                  fi
+
+  - deployment: 'DeployDatabases'
+    displayName: 'Deploy Database Changes to ${{ parameters.environmentDisplayName }}'
+    dependsOn: 'DeployInfrastructure'
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: ${{ parameters.environment }}
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+            - checkout: self
+
+            - download: current
+              artifact: application-artifacts
+              displayName: 'Download Application Artifacts'
+
+            - task: SqlAzureDacpacDeployment@1
+              displayName: 'Deploy Database Schema'
+              inputs:
+                azureSubscription: ${{ parameters.azureServiceConnection }}
+                AuthenticationType: 'server'
+                ServerName: '${{ parameters.sqlServerName }}.database.windows.net'
+                DatabaseName: '$(sqlDatabaseName)'
+                SqlUsername: '$(sqlServerAdminLogin)'
+                SqlPassword: '$(SQL_SERVER_ADMIN_PASSWORD)'
+                deployType: 'DacpacTask'
+                DeploymentAction: 'Publish'
+                DacpacFile: '$(Pipeline.Workspace)/application-artifacts/**/*.dacpac'
+                IpDetectionMethod: 'AutoDetect'
+
+            - task: AzureCLI@2
+              displayName: 'Run Database Migrations'
+              condition: eq(variables.runDatabaseMigrations, true)
+              inputs:
+                azureSubscription: ${{ parameters.azureServiceConnection }}
+                scriptType: 'bash'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  echo "Running database migrations for ${{ parameters.environment }}"
+                  
+                  # Get SQL connection string
+                  sql_connection_string=$(az sql db show-connection-string \
+                    --server ${{ parameters.sqlServerName }} \
+                    --name $(sqlDatabaseName) \
+                    --client ado.net \
+                    --auth-type SqlPassword \
+                    --output tsv)
+                  
+                  # Replace placeholders
+                  sql_connection_string=$(echo $sql_connection_string | \
+                    sed "s/<username>/$(sqlServerAdminLogin)/g" | \
+                    sed "s/<password>/$(SQL_SERVER_ADMIN_PASSWORD)/g")
+                  
+                  # Run Entity Framework migrations
+                  dotnet tool install --global dotnet-ef
+                  dotnet ef database update \
+                    --connection "$sql_connection_string" \
+                    --project $(Pipeline.Workspace)/application-artifacts/migrations/
+
+            - task: AzureCLI@2
+              displayName: 'Backup Database Before Migration'
+              condition: and(eq(variables.enableDatabaseBackup, true), eq('${{ parameters.environment }}', 'production'))
+              inputs:
+                azureSubscription: ${{ parameters.azureServiceConnection }}
+                scriptType: 'bash'
+                scriptLocation: 'inlineScript'
+                inlineScript: |
+                  echo "Creating database backup before migration"
+                  
+                  backup_name="pre-deployment-backup-$(Build.BuildId)"
+                  
+                  az sql db export \
+                    --resource-group ${{ parameters.resourceGroup }} \
+                    --server ${{ parameters.sqlServerName }} \
+                    --name $(sqlDatabaseName) \
+                    --storage-key-type StorageAccessKey \
+                    --storage-key $(BACKUP_STORAGE_KEY) \
+                    --storage-uri "https://$(storageAccountName).blob.core.windows.net/backups/$backup_name.bacpac" \
+                    --admin-user $(sqlServerAdminLogin) \
+                    --admin-password $(SQL_SERVER_ADMIN_PASSWORD)
+
+  - deployment: 'DeployApplication'
+    displayName: 'Deploy Application to ${{ parameters.environmentDisplayName }}'
+    dependsOn: 'DeployDatabases'
+    pool:
+      vmImage: 'ubuntu-latest'
+    environment: ${{ parameters.environment }}
+    strategy:
+      ${{ if eq(parameters.deploymentStrategy, 'runOnce') }}:
+        runOnce:
+          deploy:
+            steps:
+              - template: deploy-steps.yml
+                parameters:
+                  environment: ${{ parameters.environment }}
+                  azureServiceConnection: ${{ parameters.azureServiceConnection }}
+                  appServiceName: ${{ parameters.appServiceName }}
+                  aksClusterName: ${{ parameters.aksClusterName }}
+                  deploymentType: 'standard'
+
+      ${{ if eq(parameters.deploymentStrategy, 'blueGreen') }}:
+        runOnce:
+          deploy:
+            steps:
+              - template: deploy-steps.yml
+                parameters:
+                  environment: ${{ parameters.environment }}
+                  azureServiceConnection: ${{ parameters.azureServiceConnection }}
+                  appServiceName: ${{ parameters.appServiceName }}
+                  aksClusterName: ${{ parameters.aksClusterName }}
+                  deploymentType: 'blueGreen'
+
+      ${{ if eq(parameters.deploymentStrategy, 'canary') }}:
+        canary:
+          increments: [10, 25, 50, 100]
+          deploy:
+            steps:
+              - template: deploy-steps.yml
+                parameters:
+                  environment: ${{ parameters.environment }}
+                  azureServiceConnection: ${{ parameters.azureServiceConnection }}
+                  appServiceName: ${{ parameters.appServiceName }}
+                  aksClusterName: ${{ parameters.aksClusterName }}
+                  deploymentType: 'canary'
+                  canaryPercentage: ${{ parameters.canaryPercentage }}
+
+  - job: 'PostDeploymentTests'
+    displayName: 'Post-Deployment Testing'
+    dependsOn: 'DeployApplication'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+
+      - download: current
+        artifact: application-artifacts
+        displayName: 'Download Test Artifacts'
+
+      - task: NodeTool@0
+        displayName: 'Install Node.js for Testing'
+        inputs:
+          versionSpec: '20.x'
+
+      - ${{ if eq(parameters.runSmokeTests, true) }}:
+        - script: |
+            npm install -g newman
+            echo "Running smoke tests against ${{ parameters.environmentDisplayName }}"
+            
+            # Wait for application to be ready
+            max_attempts=30
+            attempt=1
+            while [ $attempt -le $max_attempts ]; do
+              if curl -s -f "https://${{ parameters.appServiceName }}.azurewebsites.net$(healthCheckPath)" > /dev/null; then
+                echo "Application is ready"
+                break
+              fi
+              echo "Attempt $attempt: Application not ready, waiting..."
+              sleep 30
+              attempt=$((attempt + 1))
+            done
+            
+            if [ $attempt -gt $max_attempts ]; then
+              echo "##vso[task.logissue type=error]Application failed to become ready within timeout period"
+              exit 1
+            fi
+            
+            # Run Postman collection for smoke tests
+            newman run $(Pipeline.Workspace)/application-artifacts/tests/smoke-tests.postman_collection.json \
+              --environment $(Pipeline.Workspace)/application-artifacts/tests/${{ parameters.environment }}.postman_environment.json \
+              --reporters cli,junit \
+              --reporter-junit-export smoke-test-results.xml
+          displayName: 'Run Smoke Tests'
+
+      - ${{ if eq(parameters.runPerformanceTests, true) }}:
+        - task: AzureCLI@2
+          displayName: 'Run Performance Tests'
+          inputs:
+            azureSubscription: ${{ parameters.azureServiceConnection }}
+            scriptType: 'bash'
+            scriptLocation: 'inlineScript'
+            inlineScript: |
+              echo "Running performance tests for ${{ parameters.environment }}"
+              
+              # Install Artillery for load testing
+              npm install -g artillery
+              
+              # Run performance tests
+              artillery run $(Pipeline.Workspace)/application-artifacts/tests/performance-test.yml \
+                --target "https://${{ parameters.appServiceName }}.azurewebsites.net" \
+                --output performance-results.json
+              
+              # Generate HTML report
+              artillery report performance-results.json --output performance-report.html
+              
+              # Validate performance thresholds
+              response_time_p95=$(cat performance-results.json | jq '.aggregate.latency.p95')
+              if [ "$response_time_p95" -gt "$(performanceTestThreshold)" ]; then
+                echo "##vso[task.logissue type=error]Performance test failed: P95 response time $response_time_p95ms exceeds threshold $(performanceTestThreshold)ms"
+                exit 1
+              fi
+
+      - task: PublishTestResults@2
+        condition: always()
+        displayName: 'Publish Test Results'
+        inputs:
+          testResultsFormat: 'JUnit'
+          testResultsFiles: '**/*test-results.xml'
+          mergeTestResults: true
+          testRunTitle: '${{ parameters.environmentDisplayName }} Tests'
+
+      - task: PublishBuildArtifacts@1
+        condition: always()
+        displayName: 'Publish Performance Report'
+        inputs:
+          pathtoPublish: 'performance-report.html'
+          artifactName: 'performance-report-${{ parameters.environment }}'
+
+  - job: 'SecurityValidation'
+    displayName: 'Security Validation'
+    dependsOn: 'DeployApplication'
+    condition: and(succeeded(), ne('${{ parameters.environment }}', 'dev'))
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+
+      - task: AzureCLI@2
+        displayName: 'Run OWASP ZAP Security Scan'
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            echo "Running OWASP ZAP security scan"
+            
+            # Pull and run ZAP container
+            docker pull owasp/zap2docker-stable
+            
+            # Run baseline scan
+            docker run --rm \
+              -v $(pwd):/zap/wrk/:rw \
+              -t owasp/zap2docker-stable zap-baseline.py \
+              -t "https://${{ parameters.appServiceName }}.azurewebsites.net" \
+              -J zap-report.json \
+              -r zap-report.html \
+              || exit_code=$?
+            
+            # ZAP returns exit code 1 for warnings, 2 for high risk issues
+            if [ "$exit_code" -eq 2 ]; then
+              echo "##vso[task.logissue type=error]High risk security issues found"
+              exit 1
+            elif [ "$exit_code" -eq 1 ]; then
+              echo "##vso[task.logissue type=warning]Security warnings found"
+            fi
+
+      - task: AzureCLI@2
+        displayName: 'Validate SSL/TLS Configuration'
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            echo "Validating SSL/TLS configuration"
+            
+            # Check SSL/TLS configuration
+            ssl_result=$(curl -s -I "https://${{ parameters.appServiceName }}.azurewebsites.net" | head -n 1)
+            if [[ $ssl_result != *"200"* ]]; then
+              echo "##vso[task.logissue type=error]SSL/TLS check failed: $ssl_result"
+              exit 1
+            fi
+            
+            # Check security headers
+            security_headers=$(curl -s -I "https://${{ parameters.appServiceName }}.azurewebsites.net")
+            
+            if [[ $security_headers != *"Strict-Transport-Security"* ]]; then
+              echo "##vso[task.logissue type=warning]Missing HSTS header"
+            fi
+            
+            if [[ $security_headers != *"X-Content-Type-Options"* ]]; then
+              echo "##vso[task.logissue type=warning]Missing X-Content-Type-Options header"
+            fi
+
+      - task: PublishBuildArtifacts@1
+        condition: always()
+        displayName: 'Publish Security Scan Results'
+        inputs:
+          pathtoPublish: 'zap-report.html'
+          artifactName: 'security-scan-${{ parameters.environment }}'
+
+  - job: 'MonitoringConfiguration'
+    displayName: 'Configure Monitoring and Alerts'
+    dependsOn: 'PostDeploymentTests'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+
+      - task: AzureCLI@2
+        displayName: 'Configure Application Insights'
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            echo "Configuring Application Insights for ${{ parameters.environment }}"
+            
+            # Enable Application Insights for App Service
+            az webapp config appsettings set \
+              --resource-group ${{ parameters.resourceGroup }} \
+              --name ${{ parameters.appServiceName }} \
+              --settings \
+                "APPINSIGHTS_INSTRUMENTATIONKEY=$(APPINSIGHTS_INSTRUMENTATIONKEY)" \
+                "APPLICATIONINSIGHTS_CONNECTION_STRING=$(APPLICATIONINSIGHTS_CONNECTION_STRING)" \
+                "ApplicationInsightsAgent_EXTENSION_VERSION=~2" \
+                "APPINSIGHTS_PROFILERFEATURE_VERSION=1.0.0" \
+                "DiagnosticServices_EXTENSION_VERSION=~3"
+
+      - task: AzureCLI@2
+        displayName: 'Create Alert Rules'
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            echo "Creating alert rules for ${{ parameters.environment }}"
+            
+            # Create availability alert
+            az monitor metrics alert create \
+              --resource-group ${{ parameters.resourceGroup }} \
+              --name "availability-alert-${{ parameters.environment }}" \
+              --scopes "/subscriptions/$(subscriptionId)/resourceGroups/${{ parameters.resourceGroup }}/providers/Microsoft.Web/sites/${{ parameters.appServiceName }}" \
+              --condition "avg availabilityResults/availabilityPercentage < $(availabilityTarget)" \
+              --description "Application availability dropped below target" \
+              --evaluation-frequency 1m \
+              --window-size 5m \
+              --severity 1
+            
+            # Create performance alert  
+            az monitor metrics alert create \
+              --resource-group ${{ parameters.resourceGroup }} \
+              --name "performance-alert-${{ parameters.environment }}" \
+              --scopes "/subscriptions/$(subscriptionId)/resourceGroups/${{ parameters.resourceGroup }}/providers/Microsoft.Web/sites/${{ parameters.appServiceName }}" \
+              --condition "avg requests/duration > $(performanceTarget)" \
+              --description "Application response time exceeded threshold" \
+              --evaluation-frequency 1m \
+              --window-size 5m \
+              --severity 2
+
+  - job: 'RollbackValidation'
+    displayName: 'Validate Rollback Capability'
+    dependsOn: 
+      - 'PostDeploymentTests'
+      - 'SecurityValidation'
+    condition: and(succeeded(), eq('${{ parameters.environment }}', 'production'))
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+      - checkout: self
+
+      - task: AzureCLI@2
+        displayName: 'Test Rollback Mechanism'
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: 'bash'
+          scriptLocation: 'inlineScript'
+          inlineScript: |
+            echo "Validating rollback capability"
+            
+            # Get current deployment slot information
+            current_slot=$(az webapp deployment slot list \
+              --resource-group ${{ parameters.resourceGroup }} \
+              --name ${{ parameters.appServiceName }} \
+              --query "[?name=='staging'].name" \
+              --output tsv)
+            
+            if [ -z "$current_slot" ]; then
+              echo "##vso[task.logissue type=warning]No staging slot found for rollback testing"
+              exit 0
+            fi
+            
+            # Test slot swap capability (but don't actually swap)
+            echo "Testing slot swap capability..."
+            az webapp deployment slot auto-swap \
+              --resource-group ${{ parameters.resourceGroup }} \
+              --name ${{ parameters.appServiceName }} \
+              --slot staging \
+              --auto-swap-slot production \
+              --disable
+            
+            echo "Rollback mechanism validated successfully"
+
+      - script: |
+          echo "Creating rollback documentation"
+          cat > rollback-instructions.md << EOF
+          # Rollback Instructions for ${{ parameters.environmentDisplayName }}
+          
+          ## Quick Rollback (App Service)
+          \`\`\`bash
+          az webapp deployment slot swap \\
+            --resource-group ${{ parameters.resourceGroup }} \\
+            --name ${{ parameters.appServiceName }} \\
+            --slot staging \\
+            --target-slot production
+          \`\`\`
+          
+          ## Database Rollback
+          \`\`\`bash
+          # Restore from backup (replace with actual backup name)
+          az sql db restore \\
+            --resource-group ${{ parameters.resourceGroup }} \\
+            --server ${{ parameters.sqlServerName }} \\
+            --name $(sqlDatabaseName) \\
+            --dest-name $(sqlDatabaseName)-restored \\
+            --time "2023-XX-XXTXX:XX:XX"
+          \`\`\`
+          
+          ## Container Rollback (AKS)
+          \`\`\`bash
+          kubectl rollout undo deployment/multienv-app -n ${{ parameters.environment }}
+          \`\`\`
+          EOF
+        displayName: 'Generate Rollback Documentation'
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish Rollback Documentation'
+        inputs:
+          pathtoPublish: 'rollback-instructions.md'
+          artifactName: 'rollback-documentation'

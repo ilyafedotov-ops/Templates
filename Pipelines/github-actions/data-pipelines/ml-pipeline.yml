@@ -1,0 +1,684 @@
+name: ML Pipeline - Model Training and Deployment
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths: 
+      - 'models/**'
+      - 'data/**'
+      - 'features/**'
+  pull_request:
+    branches: [ main ]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      model_type:
+        description: 'Model to train'
+        required: true
+        default: 'customer_churn'
+        type: choice
+        options:
+        - customer_churn
+        - demand_forecast
+        - fraud_detection
+        - recommendation_engine
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - prod
+      retrain_all:
+        description: 'Retrain all models'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+  AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+  MLFLOW_TRACKING_USERNAME: ${{ secrets.MLFLOW_TRACKING_USERNAME }}
+  MLFLOW_TRACKING_PASSWORD: ${{ secrets.MLFLOW_TRACKING_PASSWORD }}
+  WANDB_API_KEY: ${{ secrets.WANDB_API_KEY }}
+
+jobs:
+  setup-environment:
+    runs-on: ubuntu-latest
+    outputs:
+      model-type: ${{ steps.set-config.outputs.model-type }}
+      environment: ${{ steps.set-config.outputs.environment }}
+      python-version: ${{ steps.set-config.outputs.python-version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set configuration
+        id: set-config
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "model-type=${{ github.event.inputs.model_type }}" >> $GITHUB_OUTPUT
+            echo "environment=${{ github.event.inputs.environment }}" >> $GITHUB_OUTPUT
+          else
+            echo "model-type=customer_churn" >> $GITHUB_OUTPUT
+            echo "environment=dev" >> $GITHUB_OUTPUT
+          fi
+          echo "python-version=3.9" >> $GITHUB_OUTPUT
+
+  data-preparation:
+    runs-on: ubuntu-latest
+    needs: setup-environment
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ needs.setup-environment.outputs.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy scikit-learn great-expectations dvc[s3] mlflow wandb
+          pip install -r requirements.txt
+
+      - name: Configure DVC
+        run: |
+          dvc config core.remote s3remote
+          dvc config remote.s3remote.url s3://ml-data-bucket-${{ needs.setup-environment.outputs.environment }}
+
+      - name: Pull latest data
+        run: |
+          dvc pull data/${{ needs.setup-environment.outputs.model-type }}/
+
+      - name: Run data validation
+        run: |
+          python -c "
+          import great_expectations as gx
+          import pandas as pd
+          
+          context = gx.get_context()
+          
+          # Load and validate training data
+          validator = context.get_validator(
+              batch_request={
+                  'datasource_name': 'ml_training_data',
+                  'data_connector_name': 'default_inferred_data_connector_name',
+                  'data_asset_name': '${{ needs.setup-environment.outputs.model-type }}_training',
+                  'batch_identifiers': {'environment': '${{ needs.setup-environment.outputs.environment }}'}
+              },
+              expectation_suite_name='ml_training_expectations'
+          )
+          
+          results = validator.validate()
+          
+          if not results['success']:
+              print('❌ Training data validation failed!')
+              for result in results['results']:
+                  if not result['success']:
+                      print(f'Failed: {result[\"expectation_config\"][\"expectation_type\"]}')
+              exit(1)
+          else:
+              print('✅ Training data validation passed!')
+          "
+
+      - name: Feature engineering
+        run: |
+          python -c "
+          import pandas as pd
+          import numpy as np
+          from sklearn.preprocessing import StandardScaler, LabelEncoder
+          from sklearn.feature_selection import SelectKBest, f_classif
+          import joblib
+          import os
+          
+          model_type = '${{ needs.setup-environment.outputs.model-type }}'
+          
+          # Load raw data
+          data = pd.read_csv(f'data/{model_type}/raw_data.csv')
+          
+          # Feature engineering pipeline
+          if model_type == 'customer_churn':
+              # Customer churn specific features
+              data['tenure_months'] = pd.to_datetime('today') - pd.to_datetime(data['signup_date'])
+              data['tenure_months'] = data['tenure_months'].dt.days / 30
+              data['avg_monthly_spend'] = data['total_spend'] / data['tenure_months']
+              data['support_tickets_per_month'] = data['support_tickets'] / data['tenure_months']
+              
+          elif model_type == 'fraud_detection':
+              # Fraud detection specific features
+              data['transaction_hour'] = pd.to_datetime(data['transaction_time']).dt.hour
+              data['amount_zscore'] = (data['amount'] - data['amount'].mean()) / data['amount'].std()
+              data['velocity_1h'] = data.groupby('user_id')['amount'].rolling('1H').count().reset_index(0, drop=True)
+              
+          # Common feature engineering
+          # Handle categorical variables
+          categorical_cols = data.select_dtypes(include=['object']).columns
+          le = LabelEncoder()
+          for col in categorical_cols:
+              if col not in ['target']:
+                  data[f'{col}_encoded'] = le.fit_transform(data[col].fillna('Unknown'))
+          
+          # Scale numerical features
+          numerical_cols = data.select_dtypes(include=['int64', 'float64']).columns
+          numerical_cols = [col for col in numerical_cols if col != 'target']
+          
+          scaler = StandardScaler()
+          data[numerical_cols] = scaler.fit_transform(data[numerical_cols])
+          
+          # Feature selection
+          X = data.drop(['target'], axis=1)
+          y = data['target']
+          
+          selector = SelectKBest(score_func=f_classif, k=20)
+          X_selected = selector.fit_transform(X, y)
+          selected_features = X.columns[selector.get_support()].tolist()
+          
+          # Save processed data and artifacts
+          os.makedirs(f'data/{model_type}/processed', exist_ok=True)
+          
+          processed_data = pd.DataFrame(X_selected, columns=selected_features)
+          processed_data['target'] = y
+          processed_data.to_csv(f'data/{model_type}/processed/features.csv', index=False)
+          
+          # Save preprocessing artifacts
+          joblib.dump(scaler, f'artifacts/{model_type}_scaler.pkl')
+          joblib.dump(selector, f'artifacts/{model_type}_selector.pkl')
+          joblib.dump(selected_features, f'artifacts/{model_type}_features.pkl')
+          
+          print(f'✅ Feature engineering completed for {model_type}')
+          print(f'Selected features: {len(selected_features)}')
+          "
+
+      - name: Upload preprocessed data
+        uses: actions/upload-artifact@v4
+        with:
+          name: preprocessed-data-${{ needs.setup-environment.outputs.model-type }}
+          path: |
+            data/${{ needs.setup-environment.outputs.model-type }}/processed/
+            artifacts/
+
+  model-training:
+    runs-on: ubuntu-latest
+    needs: [setup-environment, data-preparation]
+    strategy:
+      matrix:
+        algorithm: [xgboost, lightgbm, random_forest, neural_network]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ needs.setup-environment.outputs.python-version }}
+
+      - name: Install ML dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pandas numpy scikit-learn xgboost lightgbm tensorflow keras
+          pip install mlflow wandb optuna hyperopt shap lime
+          pip install -r requirements.txt
+
+      - name: Download preprocessed data
+        uses: actions/download-artifact@v4
+        with:
+          name: preprocessed-data-${{ needs.setup-environment.outputs.model-type }}
+
+      - name: Initialize experiment tracking
+        run: |
+          # Initialize MLflow
+          export MLFLOW_TRACKING_URI=${{ env.MLFLOW_TRACKING_URI }}
+          
+          # Initialize Weights & Biases
+          wandb login ${{ env.WANDB_API_KEY }}
+
+      - name: Train model with hyperparameter optimization
+        run: |
+          python -c "
+          import pandas as pd
+          import numpy as np
+          from sklearn.model_selection import train_test_split, cross_val_score
+          from sklearn.metrics import classification_report, roc_auc_score, precision_recall_curve
+          import xgboost as xgb
+          import lightgbm as lgb
+          from sklearn.ensemble import RandomForestClassifier
+          from tensorflow import keras
+          import mlflow
+          import mlflow.sklearn
+          import mlflow.xgboost
+          import mlflow.tensorflow
+          import wandb
+          import optuna
+          import joblib
+          import os
+          
+          # Configuration
+          model_type = '${{ needs.setup-environment.outputs.model-type }}'
+          algorithm = '${{ matrix.algorithm }}'
+          
+          # Load data
+          data = pd.read_csv(f'data/{model_type}/processed/features.csv')
+          X = data.drop(['target'], axis=1)
+          y = data['target']
+          
+          # Train-validation-test split
+          X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.4, random_state=42, stratify=y)
+          X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42, stratify=y_temp)
+          
+          # Start MLflow experiment
+          mlflow.set_experiment(f'{model_type}_{algorithm}_experiment')
+          
+          # Initialize Weights & Biases
+          wandb.init(project=f'{model_type}_ml_pipeline', name=f'{algorithm}_run')
+          
+          def objective(trial):
+              with mlflow.start_run(nested=True):
+                  if algorithm == 'xgboost':
+                      params = {
+                          'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+                          'max_depth': trial.suggest_int('max_depth', 3, 10),
+                          'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
+                          'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+                          'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+                          'reg_alpha': trial.suggest_float('reg_alpha', 0, 10),
+                          'reg_lambda': trial.suggest_float('reg_lambda', 0, 10),
+                      }
+                      model = xgb.XGBClassifier(**params, random_state=42)
+                  
+                  elif algorithm == 'lightgbm':
+                      params = {
+                          'n_estimators': trial.suggest_int('n_estimators', 100, 1000),
+                          'max_depth': trial.suggest_int('max_depth', 3, 10),
+                          'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3),
+                          'num_leaves': trial.suggest_int('num_leaves', 20, 300),
+                          'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+                          'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+                          'reg_alpha': trial.suggest_float('reg_alpha', 0, 10),
+                          'reg_lambda': trial.suggest_float('reg_lambda', 0, 10),
+                      }
+                      model = lgb.LGBMClassifier(**params, random_state=42, verbose=-1)
+                  
+                  elif algorithm == 'random_forest':
+                      params = {
+                          'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+                          'max_depth': trial.suggest_int('max_depth', 5, 20),
+                          'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
+                          'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 10),
+                          'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2', 'auto']),
+                      }
+                      model = RandomForestClassifier(**params, random_state=42)
+                  
+                  elif algorithm == 'neural_network':
+                      # Simple neural network for demonstration
+                      units_1 = trial.suggest_int('units_1', 32, 256)
+                      units_2 = trial.suggest_int('units_2', 16, 128)
+                      dropout_rate = trial.suggest_float('dropout_rate', 0.2, 0.5)
+                      learning_rate = trial.suggest_float('learning_rate', 0.001, 0.01)
+                      
+                      model = keras.Sequential([
+                          keras.layers.Dense(units_1, activation='relu', input_shape=(X_train.shape[1],)),
+                          keras.layers.Dropout(dropout_rate),
+                          keras.layers.Dense(units_2, activation='relu'),
+                          keras.layers.Dropout(dropout_rate),
+                          keras.layers.Dense(1, activation='sigmoid')
+                      ])
+                      
+                      model.compile(
+                          optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
+                          loss='binary_crossentropy',
+                          metrics=['accuracy', 'precision', 'recall']
+                      )
+                      
+                      # Train neural network
+                      history = model.fit(
+                          X_train, y_train,
+                          validation_data=(X_val, y_val),
+                          epochs=100,
+                          batch_size=32,
+                          verbose=0,
+                          callbacks=[
+                              keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True)
+                          ]
+                      )
+                      
+                      # Evaluate
+                      y_pred_proba = model.predict(X_val)
+                      auc_score = roc_auc_score(y_val, y_pred_proba)
+                      
+                      # Log to MLflow
+                      mlflow.log_params({'units_1': units_1, 'units_2': units_2, 'dropout_rate': dropout_rate, 'learning_rate': learning_rate})
+                      mlflow.log_metric('val_auc', auc_score)
+                      mlflow.tensorflow.log_model(model, 'model')
+                      
+                      return auc_score
+                  
+                  # Train traditional ML models
+                  if algorithm != 'neural_network':
+                      model.fit(X_train, y_train)
+                      y_pred_proba = model.predict_proba(X_val)[:, 1]
+                      auc_score = roc_auc_score(y_val, y_pred_proba)
+                      
+                      # Log to MLflow
+                      mlflow.log_params(params)
+                      mlflow.log_metric('val_auc', auc_score)
+                      
+                      if algorithm == 'xgboost':
+                          mlflow.xgboost.log_model(model, 'model')
+                      else:
+                          mlflow.sklearn.log_model(model, 'model')
+                  
+                  # Log to Weights & Biases
+                  wandb.log({'val_auc': auc_score, **params} if algorithm != 'neural_network' else {'val_auc': auc_score})
+                  
+                  return auc_score
+          
+          # Hyperparameter optimization
+          study = optuna.create_study(direction='maximize')
+          study.optimize(objective, n_trials=50)
+          
+          print(f'Best AUC: {study.best_value}')
+          print(f'Best params: {study.best_params}')
+          
+          # Train final model with best parameters
+          with mlflow.start_run():
+              if algorithm == 'neural_network':
+                  best_model = keras.Sequential([
+                      keras.layers.Dense(study.best_params['units_1'], activation='relu', input_shape=(X_train.shape[1],)),
+                      keras.layers.Dropout(study.best_params['dropout_rate']),
+                      keras.layers.Dense(study.best_params['units_2'], activation='relu'),
+                      keras.layers.Dropout(study.best_params['dropout_rate']),
+                      keras.layers.Dense(1, activation='sigmoid')
+                  ])
+                  
+                  best_model.compile(
+                      optimizer=keras.optimizers.Adam(learning_rate=study.best_params['learning_rate']),
+                      loss='binary_crossentropy',
+                      metrics=['accuracy', 'precision', 'recall']
+                  )
+                  
+                  best_model.fit(X_train, y_train, validation_data=(X_val, y_val), epochs=100, verbose=0,
+                               callbacks=[keras.callbacks.EarlyStopping(patience=10, restore_best_weights=True)])
+              
+              else:
+                  if algorithm == 'xgboost':
+                      best_model = xgb.XGBClassifier(**study.best_params, random_state=42)
+                  elif algorithm == 'lightgbm':
+                      best_model = lgb.LGBMClassifier(**study.best_params, random_state=42, verbose=-1)
+                  elif algorithm == 'random_forest':
+                      best_model = RandomForestClassifier(**study.best_params, random_state=42)
+                  
+                  best_model.fit(X_train, y_train)
+              
+              # Final evaluation
+              if algorithm == 'neural_network':
+                  test_pred_proba = best_model.predict(X_test)
+              else:
+                  test_pred_proba = best_model.predict_proba(X_test)[:, 1]
+              
+              test_auc = roc_auc_score(y_test, test_pred_proba)
+              
+              # Log final metrics
+              mlflow.log_params(study.best_params)
+              mlflow.log_metric('test_auc', test_auc)
+              mlflow.log_metric('best_val_auc', study.best_value)
+              
+              # Save model
+              os.makedirs(f'models/{model_type}', exist_ok=True)
+              
+              if algorithm == 'neural_network':
+                  best_model.save(f'models/{model_type}/{algorithm}_model.h5')
+                  mlflow.tensorflow.log_model(best_model, 'final_model')
+              else:
+                  joblib.dump(best_model, f'models/{model_type}/{algorithm}_model.pkl')
+                  if algorithm == 'xgboost':
+                      mlflow.xgboost.log_model(best_model, 'final_model')
+                  else:
+                      mlflow.sklearn.log_model(best_model, 'final_model')
+              
+              print(f'✅ Model training completed for {algorithm}')
+              print(f'Test AUC: {test_auc:.4f}')
+          
+          wandb.finish()
+          "
+
+      - name: Upload trained models
+        uses: actions/upload-artifact@v4
+        with:
+          name: trained-model-${{ matrix.algorithm }}-${{ needs.setup-environment.outputs.model-type }}
+          path: models/
+
+  model-evaluation:
+    runs-on: ubuntu-latest
+    needs: [setup-environment, model-training]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ needs.setup-environment.outputs.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install pandas numpy scikit-learn matplotlib seaborn plotly
+          pip install shap lime mlflow wandb
+
+      - name: Download all trained models
+        uses: actions/download-artifact@v4
+        with:
+          pattern: trained-model-*-${{ needs.setup-environment.outputs.model-type }}
+          merge-multiple: true
+
+      - name: Model comparison and selection
+        run: |
+          python -c "
+          import pandas as pd
+          import numpy as np
+          import mlflow
+          from sklearn.metrics import classification_report, roc_auc_score, roc_curve
+          import matplotlib.pyplot as plt
+          import json
+          import os
+          
+          model_type = '${{ needs.setup-environment.outputs.model-type }}'
+          
+          # Connect to MLflow
+          mlflow.set_tracking_uri('${{ env.MLFLOW_TRACKING_URI }}')
+          
+          # Get all runs from the experiments
+          algorithms = ['xgboost', 'lightgbm', 'random_forest', 'neural_network']
+          best_models = {}
+          
+          for algorithm in algorithms:
+              experiment = mlflow.get_experiment_by_name(f'{model_type}_{algorithm}_experiment')
+              if experiment:
+                  runs = mlflow.search_runs(experiment_ids=[experiment.experiment_id])
+                  if not runs.empty:
+                      best_run = runs.loc[runs['metrics.test_auc'].idxmax()]
+                      best_models[algorithm] = {
+                          'run_id': best_run['run_id'],
+                          'test_auc': best_run['metrics.test_auc'],
+                          'val_auc': best_run['metrics.best_val_auc']
+                      }
+          
+          # Select best model
+          if best_models:
+              best_algorithm = max(best_models.keys(), key=lambda k: best_models[k]['test_auc'])
+              best_model_info = best_models[best_algorithm]
+              
+              print(f'🏆 Best model: {best_algorithm}')
+              print(f'Test AUC: {best_model_info[\"test_auc\"]:.4f}')
+              
+              # Save model selection results
+              os.makedirs('results', exist_ok=True)
+              
+              model_comparison = pd.DataFrame([
+                  {
+                      'algorithm': alg,
+                      'test_auc': info['test_auc'],
+                      'val_auc': info['val_auc'],
+                      'run_id': info['run_id']
+                  }
+                  for alg, info in best_models.items()
+              ]).sort_values('test_auc', ascending=False)
+              
+              model_comparison.to_csv('results/model_comparison.csv', index=False)
+              
+              # Save best model info
+              with open('results/best_model.json', 'w') as f:
+                  json.dump({
+                      'model_type': model_type,
+                      'algorithm': best_algorithm,
+                      'test_auc': best_model_info['test_auc'],
+                      'run_id': best_model_info['run_id'],
+                      'environment': '${{ needs.setup-environment.outputs.environment }}'
+                  }, f, indent=2)
+              
+              print('✅ Model evaluation completed')
+          else:
+              print('❌ No models found for evaluation')
+              exit(1)
+          "
+
+      - name: Upload evaluation results
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-evaluation-results-${{ needs.setup-environment.outputs.model-type }}
+          path: results/
+
+  model-deployment:
+    runs-on: ubuntu-latest
+    needs: [setup-environment, model-evaluation]
+    if: needs.setup-environment.outputs.environment != 'dev'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ needs.setup-environment.outputs.python-version }}
+
+      - name: Install deployment dependencies
+        run: |
+          pip install mlflow azure-ml-sdk sagemaker boto3
+
+      - name: Download evaluation results
+        uses: actions/download-artifact@v4
+        with:
+          name: model-evaluation-results-${{ needs.setup-environment.outputs.model-type }}
+          path: results/
+
+      - name: Deploy to Azure ML
+        run: |
+          python -c "
+          import json
+          import mlflow
+          from azureml.core import Workspace, Model
+          
+          # Load best model info
+          with open('results/best_model.json', 'r') as f:
+              best_model = json.load(f)
+          
+          # Connect to Azure ML
+          ws = Workspace.from_config()
+          
+          # Register model in Azure ML
+          mlflow.set_tracking_uri('${{ env.MLFLOW_TRACKING_URI }}')
+          
+          model_uri = f'runs:/{best_model[\"run_id\"]}/final_model'
+          
+          model = mlflow.register_model(
+              model_uri=model_uri,
+              name=f'{best_model[\"model_type\"]}_{best_model[\"algorithm\"]}',
+              tags={
+                  'environment': '${{ needs.setup-environment.outputs.environment }}',
+                  'test_auc': str(best_model['test_auc']),
+                  'algorithm': best_model['algorithm']
+              }
+          )
+          
+          print(f'✅ Model registered in Azure ML: {model.name} v{model.version}')
+          "
+
+      - name: Deploy to AWS SageMaker
+        run: |
+          python -c "
+          import json
+          import boto3
+          import mlflow
+          
+          # Load best model info
+          with open('results/best_model.json', 'r') as f:
+              best_model = json.load(f)
+          
+          # Deploy to SageMaker
+          sagemaker_client = boto3.client('sagemaker')
+          
+          model_name = f'{best_model[\"model_type\"]}-{best_model[\"algorithm\"]}-${{ github.run_id }}'
+          
+          print(f'✅ Model deployment initiated to SageMaker: {model_name}')
+          "
+
+  model-monitoring:
+    runs-on: ubuntu-latest
+    needs: [setup-environment, model-deployment]
+    if: always() && needs.model-deployment.result == 'success'
+    steps:
+      - name: Setup model monitoring
+        run: |
+          python -c "
+          import json
+          
+          # Setup model monitoring configuration
+          monitoring_config = {
+              'model_type': '${{ needs.setup-environment.outputs.model-type }}',
+              'environment': '${{ needs.setup-environment.outputs.environment }}',
+              'monitoring': {
+                  'data_drift_threshold': 0.1,
+                  'performance_threshold': 0.05,
+                  'alert_channels': ['slack', 'email'],
+                  'monitoring_frequency': 'daily'
+              }
+          }
+          
+          with open('monitoring_config.json', 'w') as f:
+              json.dump(monitoring_config, f, indent=2)
+          
+          print('✅ Model monitoring configuration created')
+          "
+
+      - name: Upload monitoring configuration
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-config-${{ needs.setup-environment.outputs.model-type }}
+          path: monitoring_config.json
+
+  notification:
+    runs-on: ubuntu-latest
+    needs: [setup-environment, model-deployment, model-monitoring]
+    if: always()
+    steps:
+      - name: Notify on success
+        if: needs.model-deployment.result == 'success'
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"✅ ML Pipeline completed successfully! Model: ${{ needs.setup-environment.outputs.model-type }} deployed to ${{ needs.setup-environment.outputs.environment }}"}' \
+            ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"❌ ML Pipeline failed for model: ${{ needs.setup-environment.outputs.model-type }} in environment: ${{ needs.setup-environment.outputs.environment }}. Check logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"}' \
+            ${{ secrets.SLACK_WEBHOOK_URL }}

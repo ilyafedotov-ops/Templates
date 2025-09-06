@@ -1,0 +1,450 @@
+trigger:
+  branches:
+    include:
+      - main
+      - develop
+      - release/*
+  paths:
+    exclude:
+      - docs/*
+      - README.md
+
+pr:
+  branches:
+    include:
+      - main
+      - develop
+  paths:
+    exclude:
+      - docs/*
+      - README.md
+
+variables:
+  - group: 'Multi-Env-Global-Variables'
+  - name: buildConfiguration
+    value: 'Release'
+  - name: vmImageName
+    value: 'ubuntu-latest'
+  - name: isMainBranch
+    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/main')]
+  - name: isDevelopBranch
+    value: $[eq(variables['Build.SourceBranch'], 'refs/heads/develop')]
+  - name: isReleaseBranch
+    value: $[startsWith(variables['Build.SourceBranch'], 'refs/heads/release/')]
+  - name: terraformVersion
+    value: '1.6.6'
+  - name: kubernetesVersion
+    value: '1.28.3'
+
+pool:
+  vmImage: $(vmImageName)
+
+stages:
+  - stage: 'Build'
+    displayName: 'Build & Package'
+    jobs:
+      - job: 'BuildApplication'
+        displayName: 'Build Application Artifacts'
+        steps:
+          - checkout: self
+            fetchDepth: 0
+            persistCredentials: true
+
+          - task: UseDotNet@2
+            displayName: 'Install .NET SDK'
+            inputs:
+              packageType: 'sdk'
+              version: '8.0.x'
+              installationPath: $(Agent.ToolsDirectory)/dotnet
+
+          - task: NodeTool@0
+            displayName: 'Install Node.js'
+            inputs:
+              versionSpec: '20.x'
+
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: AzureCLI@2
+            displayName: 'Install Azure Bicep'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az bicep install
+                bicep --version
+
+          - script: |
+              dotnet restore
+              dotnet build --configuration $(buildConfiguration) --no-restore
+              dotnet test --configuration $(buildConfiguration) --no-build --verbosity normal --collect:"XPlat Code Coverage" --results-directory ./coverage
+            displayName: 'Build and Test .NET Application'
+
+          - script: |
+              npm ci
+              npm run build
+              npm run test:unit
+            displayName: 'Build and Test Frontend'
+            workingDirectory: 'src/frontend'
+
+          - task: PublishCodeCoverageResults@1
+            displayName: 'Publish Code Coverage'
+            inputs:
+              codeCoverageTool: 'Cobertura'
+              summaryFileLocation: './coverage/**/coverage.cobertura.xml'
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Test Results'
+            inputs:
+              testResultsFormat: 'VSTest'
+              testResultsFiles: '**/*.trx'
+              mergeTestResults: true
+
+      - job: 'SecurityScanning'
+        displayName: 'Security & Quality Scanning'
+        dependsOn: 'BuildApplication'
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'Container Security Scan with Trivy'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                docker run --rm \
+                  -v $(Build.SourcesDirectory):/workspace \
+                  aquasec/trivy:latest fs /workspace \
+                  --format sarif \
+                  --output /workspace/trivy-results.sarif \
+                  --severity HIGH,CRITICAL \
+                  --exit-code 1
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Security Scan Results'
+            condition: always()
+            inputs:
+              pathtoPublish: 'trivy-results.sarif'
+              artifactName: 'security-scan-results'
+
+          - task: SonarCloudPrepare@1
+            displayName: 'Prepare SonarCloud Analysis'
+            inputs:
+              SonarCloud: 'SonarCloud-Service-Connection'
+              organization: 'your-org'
+              scannerMode: 'MSBuild'
+              projectKey: 'multi-env-app'
+              projectName: 'Multi-Environment Application'
+
+          - task: SonarCloudAnalyze@1
+            displayName: 'Run SonarCloud Analysis'
+
+          - task: SonarCloudPublish@1
+            displayName: 'Publish SonarCloud Results'
+            inputs:
+              pollingTimeoutSec: '300'
+
+          - task: sonar-buildbreaker@8
+            displayName: 'Quality Gate Check'
+            inputs:
+              SonarCloud: 'SonarCloud-Service-Connection'
+              organization: 'your-org'
+
+      - job: 'PackageArtifacts'
+        displayName: 'Package Application Artifacts'
+        dependsOn: 
+          - 'BuildApplication'
+          - 'SecurityScanning'
+        steps:
+          - checkout: self
+
+          - task: Docker@2
+            displayName: 'Build and Push Container Images'
+            inputs:
+              containerRegistry: 'ACR-Service-Connection'
+              repository: 'multi-env-app'
+              command: 'buildAndPush'
+              Dockerfile: '**/Dockerfile'
+              tags: |
+                $(Build.BuildId)
+                latest
+
+          - task: HelmInstaller@0
+            displayName: 'Install Helm'
+            inputs:
+              helmVersion: '3.13.0'
+              installKubectl: true
+              kubectlVersion: $(kubernetesVersion)
+
+          - script: |
+              helm package ./helm-charts/multi-env-app \
+                --version $(Build.BuildId) \
+                --app-version $(Build.BuildId) \
+                --destination $(Build.ArtifactStagingDirectory)
+            displayName: 'Package Helm Chart'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Application Artifacts'
+            inputs:
+              pathtoPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'application-artifacts'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Infrastructure Code'
+            inputs:
+              pathtoPublish: 'infrastructure/'
+              artifactName: 'infrastructure-code'
+
+          - task: PublishBuildArtifacts@1
+            displayName: 'Publish Pipeline Templates'
+            inputs:
+              pathtoPublish: 'environments/'
+              artifactName: 'environment-configs'
+
+  - stage: 'DeployDev'
+    displayName: 'Deploy to Development'
+    dependsOn: 'Build'
+    condition: and(succeeded(), or(eq(variables.isDevelopBranch, true), eq(variables.isReleaseBranch, true), eq(variables.isMainBranch, true)))
+    variables:
+      - template: environments/dev.yml
+    jobs:
+      - template: templates/deploy-stage.yml
+        parameters:
+          environment: 'development'
+          environmentDisplayName: 'Development'
+          azureServiceConnection: $(azureServiceConnection)
+          resourceGroup: $(resourceGroup)
+          location: $(location)
+          appServiceName: $(appServiceName)
+          sqlServerName: $(sqlServerName)
+          storageAccountName: $(storageAccountName)
+          aksClusterName: $(aksClusterName)
+          deploymentStrategy: 'runOnce'
+          requiresApproval: false
+          runSmokeTests: true
+          runPerformanceTests: false
+          enableBlueGreen: false
+          canaryPercentage: 0
+
+  - stage: 'DeployStaging'
+    displayName: 'Deploy to Staging'
+    dependsOn: 'DeployDev'
+    condition: and(succeeded(), or(eq(variables.isReleaseBranch, true), eq(variables.isMainBranch, true)))
+    variables:
+      - template: environments/staging.yml
+    jobs:
+      - template: templates/deploy-stage.yml
+        parameters:
+          environment: 'staging'
+          environmentDisplayName: 'Staging'
+          azureServiceConnection: $(azureServiceConnection)
+          resourceGroup: $(resourceGroup)
+          location: $(location)
+          appServiceName: $(appServiceName)
+          sqlServerName: $(sqlServerName)
+          storageAccountName: $(storageAccountName)
+          aksClusterName: $(aksClusterName)
+          deploymentStrategy: 'blueGreen'
+          requiresApproval: true
+          runSmokeTests: true
+          runPerformanceTests: true
+          enableBlueGreen: true
+          canaryPercentage: 25
+
+  - stage: 'DeployProduction'
+    displayName: 'Deploy to Production'
+    dependsOn: 'DeployStaging'
+    condition: and(succeeded(), eq(variables.isMainBranch, true))
+    variables:
+      - template: environments/production.yml
+    jobs:
+      - template: templates/deploy-stage.yml
+        parameters:
+          environment: 'production'
+          environmentDisplayName: 'Production'
+          azureServiceConnection: $(azureServiceConnection)
+          resourceGroup: $(resourceGroup)
+          location: $(location)
+          appServiceName: $(appServiceName)
+          sqlServerName: $(sqlServerName)
+          storageAccountName: $(storageAccountName)
+          aksClusterName: $(aksClusterName)
+          deploymentStrategy: 'canary'
+          requiresApproval: true
+          runSmokeTests: true
+          runPerformanceTests: true
+          enableBlueGreen: false
+          canaryPercentage: 10
+
+  - stage: 'PostDeploymentValidation'
+    displayName: 'Post-Deployment Validation'
+    dependsOn: 'DeployProduction'
+    condition: and(succeeded(), eq(variables.isMainBranch, true))
+    jobs:
+      - job: 'ComplianceValidation'
+        displayName: 'Compliance & Governance Validation'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - checkout: none
+
+          - task: AzureCLI@2
+            displayName: 'Run Compliance Checks'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Running Azure Policy compliance checks..."
+                az policy state list --resource-group $(resourceGroup) \
+                  --filter "ComplianceState eq 'NonCompliant'" \
+                  --query "[].{Resource: resourceId, Policy: policyDefinitionName, State: complianceState}" \
+                  --output table
+                
+                compliance_violations=$(az policy state list --resource-group $(resourceGroup) \
+                  --filter "ComplianceState eq 'NonCompliant'" \
+                  --query "length([])")
+                
+                if [ $compliance_violations -gt 0 ]; then
+                  echo "##vso[task.logissue type=warning]Found $compliance_violations compliance violations"
+                fi
+
+          - task: AzureCLI@2
+            displayName: 'Validate Security Controls'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Validating security controls..."
+                
+                # Check diagnostic settings
+                az monitor diagnostic-settings list \
+                  --resource /subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.Web/sites/$(appServiceName) \
+                  --query "[].{Name: name, Enabled: logs[0].enabled}" \
+                  --output table
+                
+                # Check network security
+                az webapp show --resource-group $(resourceGroup) --name $(appServiceName) \
+                  --query "{HttpsOnly: httpsOnly, MinTlsVersion: siteConfig.minTlsVersion}" \
+                  --output table
+
+      - job: 'CostOptimizationCheck'
+        displayName: 'Cost Optimization Analysis'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - checkout: none
+
+          - task: AzureCLI@2
+            displayName: 'Analyze Resource Costs'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Analyzing resource costs and optimization opportunities..."
+                
+                # Get current month consumption
+                end_date=$(date +%Y-%m-%d)
+                start_date=$(date -d "1 month ago" +%Y-%m-%d)
+                
+                az consumption usage list \
+                  --start-date $start_date \
+                  --end-date $end_date \
+                  --query "[?contains(instanceName, '$(resourceGroup)')].{Resource: instanceName, Cost: pretaxCost, Currency: currency}" \
+                  --output table
+                
+                # Check for unused resources
+                echo "Checking for optimization opportunities..."
+                az vm list --resource-group $(resourceGroup) \
+                  --show-details \
+                  --query "[?powerState=='VM stopped'].{Name: name, Size: hardwareProfile.vmSize, Status: powerState}" \
+                  --output table
+
+  - stage: 'MonitoringSetup'
+    displayName: 'Configure Monitoring & Alerting'
+    dependsOn: 'DeployProduction'
+    condition: and(succeeded(), eq(variables.isMainBranch, true))
+    jobs:
+      - job: 'SetupApplicationInsights'
+        displayName: 'Configure Application Insights'
+        pool:
+          vmImage: $(vmImageName)
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'Configure Application Insights Alerts'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                # Create availability test
+                az monitor app-insights web-test create \
+                  --resource-group $(resourceGroup) \
+                  --app-insights $(appInsightsName) \
+                  --name "$(appServiceName)-availability-test" \
+                  --location $(location) \
+                  --url "https://$(appServiceName).azurewebsites.net/health" \
+                  --frequency 300 \
+                  --timeout 30
+                
+                # Create performance alert rules
+                az monitor metrics alert create \
+                  --resource-group $(resourceGroup) \
+                  --name "High-Response-Time-Alert" \
+                  --scopes "/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.Web/sites/$(appServiceName)" \
+                  --condition "avg requests/duration > 2000" \
+                  --description "Alert when average response time exceeds 2 seconds" \
+                  --evaluation-frequency 1m \
+                  --window-size 5m \
+                  --severity 2
+
+          - task: AzureCLI@2
+            displayName: 'Setup Custom Dashboards'
+            inputs:
+              azureSubscription: 'Azure-Service-Connection'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                echo "Creating custom monitoring dashboard..."
+                
+                cat > dashboard.json << EOF
+                {
+                  "properties": {
+                    "lenses": {
+                      "0": {
+                        "order": 0,
+                        "parts": {
+                          "0": {
+                            "position": {"x": 0, "y": 0, "colSpan": 6, "rowSpan": 4},
+                            "metadata": {
+                              "inputs": [{
+                                "name": "resourceTypeMode",
+                                "value": "microsoft.web/sites"
+                              }],
+                              "type": "Extension/HubsExtension/PartType/MonitorChartPart"
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "metadata": {
+                      "model": {
+                        "timeRange": {"type": "MsPortalFx.Composition.Configuration.ValueTypes.TimeRange"}
+                      }
+                    }
+                  }
+                }
+                EOF
+                
+                az portal dashboard create \
+                  --resource-group $(resourceGroup) \
+                  --name "$(appServiceName)-dashboard" \
+                  --input-path dashboard.json

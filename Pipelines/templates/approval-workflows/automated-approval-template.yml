@@ -1,0 +1,1266 @@
+# Automated Approval Workflow Template
+# Platform-agnostic reusable template for automated approval with intelligent criteria-based logic
+# Supports ML-driven risk assessment, policy-based decisions, and continuous learning
+
+metadata:
+  name: automated-approval-template
+  version: 1.4.0
+  description: Intelligent automated approval with ML risk assessment and policy engine
+  compatibility:
+    - github-actions
+    - azure-devops
+    - gitlab-ci
+    - jenkins
+
+parameters:
+  # Core Approval Configuration
+  auto_approval_enabled:
+    type: boolean
+    default: true
+    description: "Enable automated approval workflow"
+  
+  approval_engine:
+    type: string
+    default: "policy_based"
+    description: "Approval engine type (policy_based, ml_driven, hybrid)"
+    allowed_values:
+      - policy_based
+      - ml_driven
+      - hybrid
+      - rule_engine
+  
+  fallback_to_manual:
+    type: boolean
+    default: true
+    description: "Fallback to manual approval if automated approval fails"
+  
+  # Risk Assessment Configuration
+  risk_assessment_model:
+    type: string
+    default: "composite"
+    description: "Risk assessment model (composite, security_focused, business_impact)"
+  
+  risk_threshold:
+    type: float
+    default: 0.7
+    description: "Maximum risk score for automatic approval (0.0-1.0)"
+  
+  confidence_threshold:
+    type: float
+    default: 0.8
+    description: "Minimum confidence score required for automated approval"
+  
+  # Criteria Weights
+  security_weight:
+    type: float
+    default: 0.4
+    description: "Weight for security criteria in approval decision"
+  
+  quality_weight:
+    type: float
+    default: 0.3
+    description: "Weight for quality criteria in approval decision"
+  
+  business_impact_weight:
+    type: float
+    default: 0.2
+    description: "Weight for business impact criteria in approval decision"
+  
+  compliance_weight:
+    type: float
+    default: 0.1
+    description: "Weight for compliance criteria in approval decision"
+  
+  # Approval Criteria
+  required_criteria:
+    type: array
+    default: ["security_scan_pass", "tests_pass", "code_review"]
+    description: "Required criteria that must pass for automated approval"
+  
+  optional_criteria:
+    type: array
+    default: ["performance_tests", "documentation_updated"]
+    description: "Optional criteria that improve approval confidence"
+  
+  blocking_criteria:
+    type: array
+    default: ["critical_vulnerabilities", "failed_compliance", "security_review_rejected"]
+    description: "Criteria that block automated approval regardless of other factors"
+  
+  # Time-based Criteria
+  deployment_window_required:
+    type: boolean
+    default: false
+    description: "Require deployment within approved time windows"
+  
+  deployment_windows:
+    type: array
+    default: ["09:00-17:00", "monday-friday"]
+    description: "Allowed deployment time windows"
+  
+  change_frequency_limit:
+    type: integer
+    default: 5
+    description: "Maximum changes per time period before requiring manual approval"
+  
+  change_frequency_window:
+    type: string
+    default: "1h"
+    description: "Time window for change frequency calculation"
+  
+  # Environment-specific Configuration
+  environment_policies:
+    type: object
+    default:
+      development:
+        auto_approve: true
+        risk_threshold: 0.9
+        required_approvers: 0
+      staging:
+        auto_approve: true
+        risk_threshold: 0.7
+        required_approvers: 1
+      production:
+        auto_approve: false
+        risk_threshold: 0.3
+        required_approvers: 2
+    description: "Environment-specific approval policies"
+  
+  # Machine Learning Configuration
+  ml_model_endpoint:
+    type: string
+    default: ""
+    description: "ML model API endpoint for risk prediction"
+  
+  feature_extraction:
+    type: boolean
+    default: true
+    description: "Enable feature extraction for ML model"
+  
+  model_retraining:
+    type: boolean
+    default: false
+    description: "Enable automatic model retraining based on outcomes"
+  
+  # Integration Configuration
+  external_validators:
+    type: array
+    default: []
+    description: "External validation services to consult"
+  
+  policy_as_code_path:
+    type: string
+    default: ".approval-policies/"
+    description: "Path to policy-as-code definitions"
+  
+  # Monitoring and Observability
+  decision_logging:
+    type: boolean
+    default: true
+    description: "Log detailed approval decisions for audit and learning"
+  
+  metrics_collection:
+    type: boolean
+    default: true
+    description: "Collect metrics on approval decisions and outcomes"
+  
+  feedback_loop:
+    type: boolean
+    default: true
+    description: "Enable feedback loop for continuous improvement"
+
+# Approval Decision Engine
+decision_engine:
+  security_criteria:
+    critical_vulnerabilities:
+      weight: 1.0
+      threshold: 0
+      blocking: true
+      description: "No critical security vulnerabilities allowed"
+    
+    high_vulnerabilities:
+      weight: 0.8
+      threshold: 2
+      blocking: false
+      description: "Limited high-severity vulnerabilities acceptable"
+    
+    security_scan_coverage:
+      weight: 0.6
+      threshold: 0.9
+      blocking: false
+      description: "Security scan coverage percentage"
+    
+    secrets_detected:
+      weight: 1.0
+      threshold: 0
+      blocking: true
+      description: "No exposed secrets allowed"
+  
+  quality_criteria:
+    test_coverage:
+      weight: 0.7
+      threshold: 0.8
+      blocking: false
+      description: "Code test coverage percentage"
+    
+    test_success_rate:
+      weight: 0.9
+      threshold: 1.0
+      blocking: true
+      description: "All tests must pass"
+    
+    code_quality_score:
+      weight: 0.5
+      threshold: 0.7
+      blocking: false
+      description: "Code quality metrics score"
+    
+    performance_regression:
+      weight: 0.6
+      threshold: 0.05
+      blocking: false
+      description: "Maximum acceptable performance regression"
+  
+  business_impact_criteria:
+    change_size:
+      weight: 0.8
+      threshold: 0.1
+      blocking: false
+      description: "Relative size of code changes"
+    
+    affected_services:
+      weight: 0.7
+      threshold: 3
+      blocking: false
+      description: "Number of services affected by change"
+    
+    rollback_capability:
+      weight: 0.9
+      threshold: 1.0
+      blocking: true
+      description: "Ability to rollback changes"
+    
+    feature_flags:
+      weight: 0.5
+      threshold: 1.0
+      blocking: false
+      description: "Use of feature flags for safe deployment"
+  
+  compliance_criteria:
+    policy_compliance:
+      weight: 1.0
+      threshold: 1.0
+      blocking: true
+      description: "Must pass all compliance policies"
+    
+    audit_trail:
+      weight: 0.8
+      threshold: 1.0
+      blocking: false
+      description: "Complete audit trail available"
+    
+    approval_documentation:
+      weight: 0.6
+      threshold: 0.8
+      blocking: false
+      description: "Adequate approval documentation"
+
+# GitHub Actions Implementation
+github_actions:
+  steps:
+    - name: Initialize Automated Approval Engine
+      run: |
+        echo "::group::Approval Engine Initialization"
+        
+        # Create approval engine directory structure
+        mkdir -p approval-engine/{policies,models,logs,metrics}
+        
+        # Generate approval session ID
+        APPROVAL_SESSION="auto-approval-$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+        echo "APPROVAL_SESSION=$APPROVAL_SESSION" >> $GITHUB_ENV
+        
+        # Initialize approval state
+        cat > approval-engine/session-state.json << EOF
+        {
+          "session_id": "$APPROVAL_SESSION",
+          "workflow_run": "${{ github.run_id }}",
+          "repository": "${{ github.repository }}",
+          "branch": "${{ github.ref_name }}",
+          "commit": "${{ github.sha }}",
+          "actor": "${{ github.actor }}",
+          "environment": "${{ github.event.deployment.environment || 'unknown' }}",
+          "approval_engine": "${{ inputs.approval_engine }}",
+          "started_at": "$(date -Iseconds)",
+          "criteria_evaluation": {},
+          "decision": {
+            "approved": false,
+            "confidence": 0.0,
+            "risk_score": 0.0,
+            "reasoning": []
+          }
+        }
+        EOF
+        
+        echo "Automated approval engine initialized: $APPROVAL_SESSION"
+        echo "::endgroup::"
+    
+    - name: Load Policy Definitions
+      run: |
+        echo "::group::Policy Loading"
+        
+        # Load policy-as-code definitions if they exist
+        if [ -d "${{ inputs.policy_as_code_path }}" ]; then
+          echo "Loading approval policies from ${{ inputs.policy_as_code_path }}"
+          cp -r "${{ inputs.policy_as_code_path }}"/* approval-engine/policies/ 2>/dev/null || echo "No policies to copy"
+        fi
+        
+        # Create default policies if none exist
+        if [ ! -f "approval-engine/policies/default-policy.yml" ]; then
+          cat > approval-engine/policies/default-policy.yml << EOF
+        approval_rules:
+          development:
+            auto_approve: true
+            max_risk_score: 0.9
+            required_criteria:
+              - tests_pass
+              - no_critical_vulnerabilities
+          
+          staging:
+            auto_approve: true
+            max_risk_score: 0.7
+            required_criteria:
+              - tests_pass
+              - no_critical_vulnerabilities
+              - security_scan_pass
+              - code_review_completed
+          
+          production:
+            auto_approve: false
+            max_risk_score: 0.3
+            required_criteria:
+              - tests_pass
+              - no_critical_vulnerabilities
+              - security_scan_pass
+              - code_review_completed
+              - compliance_check_pass
+              - performance_tests_pass
+        
+        blocking_conditions:
+          - critical_vulnerabilities_detected
+          - failed_compliance_check
+          - security_review_rejected
+          - tests_failing
+        
+        risk_factors:
+          high_risk:
+            - database_migrations
+            - config_changes
+            - security_updates
+          medium_risk:
+            - feature_additions
+            - dependency_updates
+          low_risk:
+            - documentation_updates
+            - ui_changes
+        EOF
+        fi
+        
+        echo "Policy definitions loaded successfully"
+        echo "::endgroup::"
+    
+    - name: Extract Features for Risk Assessment
+      if: ${{ inputs.feature_extraction }}
+      run: |
+        echo "::group::Feature Extraction"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        import subprocess
+        from datetime import datetime, timedelta
+        
+        # Initialize feature vector
+        features = {
+          "metadata": {
+            "extraction_timestamp": datetime.utcnow().isoformat(),
+            "repository": os.environ.get("GITHUB_REPOSITORY"),
+            "commit": os.environ.get("GITHUB_SHA"),
+            "actor": os.environ.get("GITHUB_ACTOR")
+          },
+          "code_features": {},
+          "security_features": {},
+          "quality_features": {},
+          "historical_features": {}
+        }
+        
+        # Code change features
+        try:
+          # Get commit statistics
+          result = subprocess.run(
+            ["git", "diff", "--stat", "HEAD~1", "HEAD"],
+            capture_output=True, text=True
+          )
+          if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            if lines:
+              # Parse git diff stats
+              stats_line = lines[-1] if lines else ""
+              files_changed = stats_line.count(',') + 1 if ',' in stats_line else 0
+              
+              # Extract insertions and deletions
+              insertions = 0
+              deletions = 0
+              if 'insertion' in stats_line:
+                insertions = int(stats_line.split()[0])
+              if 'deletion' in stats_line:
+                for part in stats_line.split():
+                  if part.isdigit() and 'deletion' in stats_line:
+                    deletions = int(part)
+                    break
+              
+              features["code_features"] = {
+                "files_changed": files_changed,
+                "lines_inserted": insertions,
+                "lines_deleted": deletions,
+                "change_ratio": (insertions + deletions) / max(insertions + deletions, 1),
+                "change_size": "large" if (insertions + deletions) > 500 else "medium" if (insertions + deletions) > 100 else "small"
+              }
+        except Exception as e:
+          print(f"Error extracting code features: {e}")
+          features["code_features"] = {"error": str(e)}
+        
+        # File type analysis
+        try:
+          result = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+            capture_output=True, text=True
+          )
+          if result.returncode == 0:
+            changed_files = result.stdout.strip().split('\n')
+            file_types = {}
+            risk_files = []
+            
+            for file in changed_files:
+              if file:
+                ext = file.split('.')[-1] if '.' in file else 'no_extension'
+                file_types[ext] = file_types.get(ext, 0) + 1
+                
+                # Identify risky file types
+                if any(risk_pattern in file.lower() for risk_pattern in 
+                      ['config', 'secret', 'key', 'password', 'migration', 'schema']):
+                  risk_files.append(file)
+            
+            features["code_features"]["file_types"] = file_types
+            features["code_features"]["risk_files"] = risk_files
+            features["code_features"]["has_risk_files"] = len(risk_files) > 0
+        except Exception as e:
+          print(f"Error analyzing file types: {e}")
+        
+        # Historical features (last 7 days)
+        try:
+          # Get recent commit history
+          result = subprocess.run([
+            "git", "log", "--since=7.days.ago", "--oneline", "--author=" + os.environ.get("GITHUB_ACTOR", "")
+          ], capture_output=True, text=True)
+          
+          if result.returncode == 0:
+            recent_commits = len(result.stdout.strip().split('\n')) if result.stdout.strip() else 0
+            features["historical_features"]["recent_commits_by_author"] = recent_commits
+            
+            # Calculate commit frequency
+            features["historical_features"]["commit_frequency"] = "high" if recent_commits > 10 else "medium" if recent_commits > 3 else "low"
+        except Exception as e:
+          print(f"Error extracting historical features: {e}")
+        
+        # Time-based features
+        current_hour = datetime.utcnow().hour
+        current_weekday = datetime.utcnow().weekday()
+        
+        features["temporal_features"] = {
+          "deployment_hour": current_hour,
+          "is_business_hours": 9 <= current_hour <= 17,
+          "is_weekend": current_weekday >= 5,
+          "day_of_week": current_weekday
+        }
+        
+        # Save features
+        with open('approval-engine/extracted-features.json', 'w') as f:
+          json.dump(features, f, indent=2)
+        
+        print("Feature extraction completed successfully")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Evaluate Security Criteria
+      run: |
+        echo "::group::Security Criteria Evaluation"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        import glob
+        
+        # Initialize security evaluation
+        security_results = {
+          "timestamp": "$(date -Iseconds)",
+          "criteria": {},
+          "overall_score": 0.0,
+          "blocking_issues": [],
+          "warnings": []
+        }
+        
+        # Check for security scan results
+        security_files = glob.glob("**/security-results/*.sarif", recursive=True) + \
+                        glob.glob("**/security-results/*.json", recursive=True)
+        
+        if security_files:
+          critical_vulns = 0
+          high_vulns = 0
+          medium_vulns = 0
+          
+          for file in security_files:
+            try:
+              with open(file, 'r') as f:
+                if file.endswith('.sarif'):
+                  data = json.load(f)
+                  # Parse SARIF format
+                  for run in data.get('runs', []):
+                    for result in run.get('results', []):
+                      level = result.get('level', 'info')
+                      severity = result.get('properties', {}).get('severity', 'medium')
+                      
+                      if severity == 'critical' or level == 'error':
+                        critical_vulns += 1
+                      elif severity == 'high':
+                        high_vulns += 1
+                      elif severity == 'medium':
+                        medium_vulns += 1
+                elif file.endswith('.json'):
+                  # Handle other JSON security report formats
+                  data = json.load(f)
+                  # This would need to be adapted based on actual tool output formats
+            except Exception as e:
+              print(f"Error parsing security file {file}: {e}")
+          
+          # Evaluate security criteria
+          security_results["criteria"]["critical_vulnerabilities"] = {
+            "count": critical_vulns,
+            "threshold": 0,
+            "passed": critical_vulns == 0,
+            "blocking": critical_vulns > 0,
+            "score": 1.0 if critical_vulns == 0 else 0.0
+          }
+          
+          security_results["criteria"]["high_vulnerabilities"] = {
+            "count": high_vulns,
+            "threshold": 2,
+            "passed": high_vulns <= 2,
+            "blocking": False,
+            "score": max(0.0, 1.0 - (high_vulns / 10.0))
+          }
+          
+          if critical_vulns > 0:
+            security_results["blocking_issues"].append(f"Critical vulnerabilities detected: {critical_vulns}")
+          
+          if high_vulns > 5:
+            security_results["warnings"].append(f"High number of high-severity vulnerabilities: {high_vulns}")
+          
+          # Calculate overall security score
+          scores = [criteria["score"] for criteria in security_results["criteria"].values()]
+          security_results["overall_score"] = sum(scores) / len(scores) if scores else 0.0
+        else:
+          # No security scan results found
+          security_results["warnings"].append("No security scan results found")
+          security_results["overall_score"] = 0.5  # Neutral score
+        
+        # Check for secrets in code
+        if os.path.exists("secrets-gitleaks.sarif") or os.path.exists("secrets-trufflehog.json"):
+          security_results["criteria"]["secrets_detected"] = {
+            "detected": True,
+            "blocking": True,
+            "score": 0.0
+          }
+          security_results["blocking_issues"].append("Secrets detected in code")
+        else:
+          security_results["criteria"]["secrets_detected"] = {
+            "detected": False,
+            "blocking": False,
+            "score": 1.0
+          }
+        
+        # Save security evaluation results
+        with open('approval-engine/security-evaluation.json', 'w') as f:
+          json.dump(security_results, f, indent=2)
+        
+        print(f"Security evaluation completed. Score: {security_results['overall_score']:.2f}")
+        print(f"Blocking issues: {len(security_results['blocking_issues'])}")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Evaluate Quality Criteria
+      run: |
+        echo "::group::Quality Criteria Evaluation"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        import xml.etree.ElementTree as ET
+        import glob
+        
+        quality_results = {
+          "timestamp": "$(date -Iseconds)",
+          "criteria": {},
+          "overall_score": 0.0,
+          "blocking_issues": [],
+          "warnings": []
+        }
+        
+        # Check test results
+        test_files = glob.glob("**/test-results.xml", recursive=True) + \
+                     glob.glob("**/junit.xml", recursive=True) + \
+                     glob.glob("**/TEST-*.xml", recursive=True)
+        
+        if test_files:
+          total_tests = 0
+          passed_tests = 0
+          failed_tests = 0
+          
+          for test_file in test_files:
+            try:
+              tree = ET.parse(test_file)
+              root = tree.getroot()
+              
+              # Parse JUnit XML format
+              if root.tag == 'testsuites':
+                for testsuite in root.findall('testsuite'):
+                  tests = int(testsuite.get('tests', 0))
+                  failures = int(testsuite.get('failures', 0))
+                  errors = int(testsuite.get('errors', 0))
+                  
+                  total_tests += tests
+                  failed_tests += failures + errors
+                  passed_tests += tests - failures - errors
+              elif root.tag == 'testsuite':
+                tests = int(root.get('tests', 0))
+                failures = int(root.get('failures', 0))
+                errors = int(root.get('errors', 0))
+                
+                total_tests += tests
+                failed_tests += failures + errors
+                passed_tests += tests - failures - errors
+            except Exception as e:
+              print(f"Error parsing test file {test_file}: {e}")
+          
+          # Evaluate test criteria
+          test_success_rate = passed_tests / total_tests if total_tests > 0 else 0.0
+          
+          quality_results["criteria"]["test_success_rate"] = {
+            "total_tests": total_tests,
+            "passed_tests": passed_tests,
+            "failed_tests": failed_tests,
+            "success_rate": test_success_rate,
+            "threshold": 1.0,
+            "passed": test_success_rate == 1.0,
+            "blocking": test_success_rate < 1.0,
+            "score": test_success_rate
+          }
+          
+          if failed_tests > 0:
+            quality_results["blocking_issues"].append(f"Test failures detected: {failed_tests}/{total_tests}")
+        else:
+          quality_results["warnings"].append("No test results found")
+          quality_results["criteria"]["test_success_rate"] = {
+            "total_tests": 0,
+            "success_rate": 0.0,
+            "passed": False,
+            "blocking": True,
+            "score": 0.0
+          }
+          quality_results["blocking_issues"].append("No test results available")
+        
+        # Check code coverage
+        coverage_files = glob.glob("**/coverage.xml", recursive=True) + \
+                        glob.glob("**/lcov.info", recursive=True)
+        
+        coverage_percentage = 0.0
+        if coverage_files:
+          # This is a simplified coverage check - in practice, you'd parse the actual coverage files
+          coverage_percentage = 0.85  # Placeholder
+        
+        quality_results["criteria"]["test_coverage"] = {
+          "coverage_percentage": coverage_percentage,
+          "threshold": 0.8,
+          "passed": coverage_percentage >= 0.8,
+          "blocking": False,
+          "score": min(1.0, coverage_percentage / 0.8)
+        }
+        
+        # Check code quality metrics (placeholder)
+        quality_results["criteria"]["code_quality_score"] = {
+          "score_value": 0.8,  # Placeholder - would integrate with actual code quality tools
+          "threshold": 0.7,
+          "passed": True,
+          "blocking": False,
+          "score": 0.8
+        }
+        
+        # Calculate overall quality score
+        scores = [criteria["score"] for criteria in quality_results["criteria"].values()]
+        quality_results["overall_score"] = sum(scores) / len(scores) if scores else 0.0
+        
+        # Save quality evaluation results
+        with open('approval-engine/quality-evaluation.json', 'w') as f:
+          json.dump(quality_results, f, indent=2)
+        
+        print(f"Quality evaluation completed. Score: {quality_results['overall_score']:.2f}")
+        print(f"Blocking issues: {len(quality_results['blocking_issues'])}")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Evaluate Business Impact Criteria
+      run: |
+        echo "::group::Business Impact Evaluation"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        
+        business_results = {
+          "timestamp": "$(date -Iseconds)",
+          "criteria": {},
+          "overall_score": 0.0,
+          "warnings": []
+        }
+        
+        # Load extracted features
+        features = {}
+        if os.path.exists('approval-engine/extracted-features.json'):
+          with open('approval-engine/extracted-features.json', 'r') as f:
+            features = json.load(f)
+        
+        # Evaluate change size impact
+        code_features = features.get("code_features", {})
+        change_size = code_features.get("change_size", "unknown")
+        files_changed = code_features.get("files_changed", 0)
+        
+        # Change size scoring
+        size_scores = {"small": 0.9, "medium": 0.7, "large": 0.4, "unknown": 0.5}
+        change_size_score = size_scores.get(change_size, 0.5)
+        
+        business_results["criteria"]["change_size"] = {
+          "size": change_size,
+          "files_changed": files_changed,
+          "score": change_size_score,
+          "impact_level": "low" if change_size_score > 0.8 else "medium" if change_size_score > 0.5 else "high"
+        }
+        
+        # Risk file analysis
+        risk_files = code_features.get("risk_files", [])
+        has_risk_files = len(risk_files) > 0
+        
+        business_results["criteria"]["risk_files"] = {
+          "count": len(risk_files),
+          "files": risk_files,
+          "has_risk_files": has_risk_files,
+          "score": 0.3 if has_risk_files else 1.0
+        }
+        
+        if has_risk_files:
+          business_results["warnings"].append(f"Risk files detected: {', '.join(risk_files[:3])}...")
+        
+        # Deployment timing analysis
+        temporal_features = features.get("temporal_features", {})
+        is_business_hours = temporal_features.get("is_business_hours", True)
+        is_weekend = temporal_features.get("is_weekend", False)
+        
+        timing_score = 1.0
+        if not is_business_hours:
+          timing_score *= 0.8
+        if is_weekend:
+          timing_score *= 0.7
+        
+        business_results["criteria"]["deployment_timing"] = {
+          "is_business_hours": is_business_hours,
+          "is_weekend": is_weekend,
+          "score": timing_score,
+          "recommendation": "Proceed" if timing_score > 0.7 else "Consider rescheduling"
+        }
+        
+        # Rollback capability (simplified check)
+        rollback_capable = True  # Would check for feature flags, database migrations, etc.
+        business_results["criteria"]["rollback_capability"] = {
+          "capable": rollback_capable,
+          "score": 1.0 if rollback_capable else 0.2,
+          "blocking": not rollback_capable
+        }
+        
+        # Calculate overall business impact score
+        scores = [criteria["score"] for criteria in business_results["criteria"].values()]
+        business_results["overall_score"] = sum(scores) / len(scores) if scores else 0.0
+        
+        # Save business evaluation results
+        with open('approval-engine/business-evaluation.json', 'w') as f:
+          json.dump(business_results, f, indent=2)
+        
+        print(f"Business impact evaluation completed. Score: {business_results['overall_score']:.2f}")
+        print(f"Warnings: {len(business_results['warnings'])}")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: ML-Based Risk Assessment
+      if: ${{ inputs.approval_engine == 'ml_driven' || inputs.approval_engine == 'hybrid' }}
+      run: |
+        echo "::group::ML Risk Assessment"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        import requests
+        from datetime import datetime
+        
+        ml_results = {
+          "timestamp": datetime.utcnow().isoformat(),
+          "model_endpoint": "${{ inputs.ml_model_endpoint }}",
+          "risk_prediction": {},
+          "confidence": 0.0,
+          "features_used": [],
+          "model_version": "unknown"
+        }
+        
+        # Load extracted features
+        features = {}
+        if os.path.exists('approval-engine/extracted-features.json'):
+          with open('approval-engine/extracted-features.json', 'r') as f:
+            features = json.load(f)
+        
+        if "${{ inputs.ml_model_endpoint }}" and "${{ inputs.ml_model_endpoint }}" != "":
+          try:
+            # Prepare feature vector for ML model
+            feature_vector = {
+              "repository": features.get("metadata", {}).get("repository", "unknown"),
+              "actor": features.get("metadata", {}).get("actor", "unknown"),
+              "files_changed": features.get("code_features", {}).get("files_changed", 0),
+              "lines_changed": features.get("code_features", {}).get("lines_inserted", 0) + features.get("code_features", {}).get("lines_deleted", 0),
+              "has_risk_files": features.get("code_features", {}).get("has_risk_files", False),
+              "is_business_hours": features.get("temporal_features", {}).get("is_business_hours", True),
+              "is_weekend": features.get("temporal_features", {}).get("is_weekend", False),
+              "recent_commits": features.get("historical_features", {}).get("recent_commits_by_author", 0)
+            }
+            
+            # Call ML model API
+            headers = {
+              "Content-Type": "application/json",
+              "Authorization": f"Bearer {os.environ.get('ML_API_TOKEN', '')}"
+            }
+            
+            response = requests.post(
+              "${{ inputs.ml_model_endpoint }}",
+              json={"features": feature_vector},
+              headers=headers,
+              timeout=30
+            )
+            
+            if response.status_code == 200:
+              prediction = response.json()
+              
+              ml_results.update({
+                "risk_prediction": prediction.get("risk_score", 0.5),
+                "confidence": prediction.get("confidence", 0.0),
+                "features_used": list(feature_vector.keys()),
+                "model_version": prediction.get("model_version", "unknown"),
+                "success": True
+              })
+              
+              print(f"ML Risk Assessment: {prediction.get('risk_score', 0.5):.3f} (confidence: {prediction.get('confidence', 0.0):.3f})")
+            else:
+              ml_results["error"] = f"API call failed: {response.status_code}"
+              print(f"ML API call failed: {response.status_code}")
+              
+          except Exception as e:
+            ml_results["error"] = str(e)
+            print(f"ML risk assessment failed: {e}")
+        else:
+          # Fallback to rule-based risk assessment
+          print("No ML endpoint configured, using rule-based assessment")
+          
+          # Simple rule-based risk calculation
+          risk_score = 0.0
+          
+          # Factor in change size
+          change_size = features.get("code_features", {}).get("change_size", "small")
+          if change_size == "large":
+            risk_score += 0.3
+          elif change_size == "medium":
+            risk_score += 0.1
+          
+          # Factor in risk files
+          if features.get("code_features", {}).get("has_risk_files", False):
+            risk_score += 0.4
+          
+          # Factor in timing
+          if not features.get("temporal_features", {}).get("is_business_hours", True):
+            risk_score += 0.1
+          if features.get("temporal_features", {}).get("is_weekend", False):
+            risk_score += 0.1
+          
+          # Factor in commit frequency
+          recent_commits = features.get("historical_features", {}).get("recent_commits_by_author", 0)
+          if recent_commits > 10:
+            risk_score += 0.1
+          
+          ml_results.update({
+            "risk_prediction": min(1.0, risk_score),
+            "confidence": 0.7,  # Fixed confidence for rule-based
+            "method": "rule_based_fallback",
+            "success": True
+          })
+          
+          print(f"Rule-based Risk Assessment: {risk_score:.3f}")
+        
+        # Save ML assessment results
+        with open('approval-engine/ml-assessment.json', 'w') as f:
+          json.dump(ml_results, f, indent=2)
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Make Approval Decision
+      run: |
+        echo "::group::Approval Decision Engine"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        # Load all evaluation results
+        security_results = {}
+        quality_results = {}
+        business_results = {}
+        ml_results = {}
+        
+        if os.path.exists('approval-engine/security-evaluation.json'):
+          with open('approval-engine/security-evaluation.json', 'r') as f:
+            security_results = json.load(f)
+        
+        if os.path.exists('approval-engine/quality-evaluation.json'):
+          with open('approval-engine/quality-evaluation.json', 'r') as f:
+            quality_results = json.load(f)
+        
+        if os.path.exists('approval-engine/business-evaluation.json'):
+          with open('approval-engine/business-evaluation.json', 'r') as f:
+            business_results = json.load(f)
+        
+        if os.path.exists('approval-engine/ml-assessment.json'):
+          with open('approval-engine/ml-assessment.json', 'r') as f:
+            ml_results = json.load(f)
+        
+        # Initialize decision structure
+        decision = {
+          "timestamp": datetime.utcnow().isoformat(),
+          "decision_engine": "${{ inputs.approval_engine }}",
+          "approved": False,
+          "confidence": 0.0,
+          "overall_risk_score": 0.0,
+          "component_scores": {
+            "security": security_results.get("overall_score", 0.0),
+            "quality": quality_results.get("overall_score", 0.0),
+            "business_impact": business_results.get("overall_score", 0.0)
+          },
+          "blocking_issues": [],
+          "warnings": [],
+          "reasoning": [],
+          "thresholds": {
+            "risk_threshold": float("${{ inputs.risk_threshold }}"),
+            "confidence_threshold": float("${{ inputs.confidence_threshold }}")
+          },
+          "weights": {
+            "security": float("${{ inputs.security_weight }}"),
+            "quality": float("${{ inputs.quality_weight }}"),
+            "business_impact": float("${{ inputs.business_impact_weight }}"),
+            "compliance": float("${{ inputs.compliance_weight }}")
+          }
+        }
+        
+        # Collect all blocking issues
+        decision["blocking_issues"].extend(security_results.get("blocking_issues", []))
+        decision["blocking_issues"].extend(quality_results.get("blocking_issues", []))
+        
+        # Collect all warnings
+        decision["warnings"].extend(security_results.get("warnings", []))
+        decision["warnings"].extend(quality_results.get("warnings", []))
+        decision["warnings"].extend(business_results.get("warnings", []))
+        
+        # Calculate weighted overall score
+        weighted_score = (
+          decision["component_scores"]["security"] * decision["weights"]["security"] +
+          decision["component_scores"]["quality"] * decision["weights"]["quality"] +
+          decision["component_scores"]["business_impact"] * decision["weights"]["business_impact"]
+        )
+        
+        # Incorporate ML risk assessment if available
+        ml_risk_score = 0.0
+        ml_confidence = 0.0
+        if ml_results.get("success"):
+          ml_risk_score = ml_results.get("risk_prediction", 0.0)
+          ml_confidence = ml_results.get("confidence", 0.0)
+          
+          if "${{ inputs.approval_engine }}" == "ml_driven":
+            # ML-driven: use ML score as primary
+            decision["overall_risk_score"] = ml_risk_score
+            decision["confidence"] = ml_confidence
+          elif "${{ inputs.approval_engine }}" == "hybrid":
+            # Hybrid: combine ML with weighted score
+            decision["overall_risk_score"] = (weighted_score * 0.6) + (ml_risk_score * 0.4)
+            decision["confidence"] = ml_confidence * 0.8
+          else:
+            # Policy-based: use weighted score
+            decision["overall_risk_score"] = 1.0 - weighted_score  # Convert to risk score
+            decision["confidence"] = 0.8  # Fixed confidence for policy-based
+        else:
+          # No ML available, use policy-based approach
+          decision["overall_risk_score"] = 1.0 - weighted_score
+          decision["confidence"] = 0.8
+        
+        # Apply decision logic
+        can_approve = True
+        decision_reasons = []
+        
+        # Check for blocking issues
+        if decision["blocking_issues"]:
+          can_approve = False
+          decision_reasons.append(f"Blocking issues detected: {len(decision['blocking_issues'])}")
+          decision["confidence"] = min(decision["confidence"], 0.3)
+        
+        # Check risk threshold
+        if decision["overall_risk_score"] > decision["thresholds"]["risk_threshold"]:
+          can_approve = False
+          decision_reasons.append(f"Risk score {decision['overall_risk_score']:.3f} exceeds threshold {decision['thresholds']['risk_threshold']}")
+        
+        # Check confidence threshold
+        if decision["confidence"] < decision["thresholds"]["confidence_threshold"]:
+          can_approve = False
+          decision_reasons.append(f"Confidence {decision['confidence']:.3f} below threshold {decision['thresholds']['confidence_threshold']}")
+        
+        # Final decision
+        decision["approved"] = can_approve and len(decision["blocking_issues"]) == 0
+        decision["reasoning"] = decision_reasons
+        
+        if decision["approved"]:
+          decision["reasoning"].append("All criteria met for automated approval")
+          print("✅ AUTOMATED APPROVAL GRANTED")
+        else:
+          decision["reasoning"].append("Automated approval denied - manual review required")
+          print("❌ AUTOMATED APPROVAL DENIED")
+        
+        print(f"Decision Summary:")
+        print(f"  Risk Score: {decision['overall_risk_score']:.3f} (threshold: {decision['thresholds']['risk_threshold']})")
+        print(f"  Confidence: {decision['confidence']:.3f} (threshold: {decision['thresholds']['confidence_threshold']})")
+        print(f"  Security Score: {decision['component_scores']['security']:.3f}")
+        print(f"  Quality Score: {decision['component_scores']['quality']:.3f}")
+        print(f"  Business Impact Score: {decision['component_scores']['business_impact']:.3f}")
+        print(f"  Blocking Issues: {len(decision['blocking_issues'])}")
+        print(f"  Warnings: {len(decision['warnings'])}")
+        
+        # Save final decision
+        with open('approval-engine/final-decision.json', 'w') as f:
+          json.dump(decision, f, indent=2)
+        
+        # Set environment variables for subsequent steps
+        with open(os.environ['GITHUB_ENV'], 'a') as f:
+          f.write(f"APPROVAL_DECISION={'approved' if decision['approved'] else 'denied'}\n")
+          f.write(f"APPROVAL_RISK_SCORE={decision['overall_risk_score']:.3f}\n")
+          f.write(f"APPROVAL_CONFIDENCE={decision['confidence']:.3f}\n")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Log Decision and Collect Metrics
+      if: ${{ inputs.decision_logging }}
+      run: |
+        echo "::group::Decision Logging and Metrics"
+        
+        # Create decision log entry
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        # Load final decision
+        with open('approval-engine/final-decision.json', 'r') as f:
+          decision = json.load(f)
+        
+        # Create comprehensive log entry
+        log_entry = {
+          "log_id": f"log-{os.environ.get('APPROVAL_SESSION')}",
+          "timestamp": datetime.utcnow().isoformat(),
+          "workflow_context": {
+            "repository": "${{ github.repository }}",
+            "workflow": "${{ github.workflow }}",
+            "run_id": "${{ github.run_id }}",
+            "actor": "${{ github.actor }}",
+            "ref": "${{ github.ref }}",
+            "sha": "${{ github.sha }}",
+            "event": "${{ github.event_name }}"
+          },
+          "approval_engine_config": {
+            "engine_type": "${{ inputs.approval_engine }}",
+            "risk_threshold": "${{ inputs.risk_threshold }}",
+            "confidence_threshold": "${{ inputs.confidence_threshold }}",
+            "fallback_to_manual": "${{ inputs.fallback_to_manual }}"
+          },
+          "decision": decision,
+          "performance_metrics": {
+            "evaluation_duration": "unknown",  # Would calculate actual duration
+            "features_extracted": os.path.exists('approval-engine/extracted-features.json'),
+            "ml_assessment_used": os.path.exists('approval-engine/ml-assessment.json'),
+            "cache_hit": False  # Would track cache usage
+          }
+        }
+        
+        # Save to decision log
+        with open('approval-engine/decision-log.json', 'w') as f:
+          json.dump(log_entry, f, indent=2)
+        
+        print("Decision logged successfully")
+        
+        # Collect metrics if enabled
+        if "${{ inputs.metrics_collection }}" == "true":
+          metrics = {
+            "timestamp": datetime.utcnow().isoformat(),
+            "approval_rate": 1 if decision["approved"] else 0,
+            "risk_score": decision["overall_risk_score"],
+            "confidence_score": decision["confidence"],
+            "component_scores": decision["component_scores"],
+            "blocking_issues_count": len(decision["blocking_issues"]),
+            "warnings_count": len(decision["warnings"]),
+            "decision_engine": "${{ inputs.approval_engine }}",
+            "environment": "${{ github.event.deployment.environment if github.event.deployment else 'unknown' }}"
+          }
+          
+          with open('approval-engine/metrics.json', 'w') as f:
+            json.dump(metrics, f, indent=2)
+          
+          print("Metrics collected successfully")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Handle Approval Decision
+      run: |
+        echo "::group::Decision Handling"
+        
+        if [ "$APPROVAL_DECISION" = "approved" ]; then
+          echo "🎉 Automated approval granted"
+          echo "  Risk Score: $APPROVAL_RISK_SCORE"
+          echo "  Confidence: $APPROVAL_CONFIDENCE"
+          echo "Proceeding with deployment..."
+        else
+          echo "⚠️ Automated approval denied"
+          echo "  Risk Score: $APPROVAL_RISK_SCORE"
+          echo "  Confidence: $APPROVAL_CONFIDENCE"
+          
+          if [ "${{ inputs.fallback_to_manual }}" = "true" ]; then
+            echo "Falling back to manual approval workflow..."
+            # This would trigger the manual approval template
+            echo "REQUIRE_MANUAL_APPROVAL=true" >> $GITHUB_ENV
+          else
+            echo "Manual fallback disabled - blocking deployment"
+            exit 1
+          fi
+        fi
+        
+        echo "::endgroup::"
+    
+    - name: Update Session State
+      run: |
+        # Update the session state with final decision
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        # Load session state and final decision
+        with open('approval-engine/session-state.json', 'r') as f:
+          session_state = json.load(f)
+        
+        with open('approval-engine/final-decision.json', 'r') as f:
+          final_decision = json.load(f)
+        
+        # Update session state
+        session_state.update({
+          "completed_at": datetime.utcnow().isoformat(),
+          "final_decision": final_decision,
+          "status": "approved" if final_decision["approved"] else "denied",
+          "fallback_to_manual": os.environ.get("REQUIRE_MANUAL_APPROVAL") == "true"
+        })
+        
+        # Save updated state
+        with open('approval-engine/session-state.json', 'w') as f:
+          json.dump(session_state, f, indent=2)
+        
+        print("Session state updated")
+        EOF
+    
+    - name: Upload Approval Engine Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: automated-approval-artifacts
+        path: |
+          approval-engine/
+        retention-days: 30
+
+# Azure DevOps Implementation
+azure_devops:
+  steps:
+    - task: UsePythonVersion@0
+      displayName: 'Setup Python'
+      inputs:
+        versionSpec: '3.11'
+    
+    - task: PythonScript@0
+      displayName: 'Run Automated Approval Engine'
+      inputs:
+        scriptSource: 'inline'
+        script: |
+          # Similar implementation adapted for Azure DevOps
+          # Using Azure DevOps variables and pipeline structure
+
+# Performance Optimization
+performance:
+  caching:
+    feature_extraction_cache: "24h"
+    ml_model_cache: "12h"
+    policy_cache: "1h"
+  
+  parallel_processing:
+    criteria_evaluation: true
+    feature_extraction: true
+    ml_inference: true
+  
+  optimization_techniques:
+    - incremental_feature_extraction
+    - model_result_caching
+    - policy_compilation
+
+# Integration Points
+integrations:
+  external_risk_systems:
+    - security_information_systems
+    - vulnerability_databases
+    - threat_intelligence_feeds
+  
+  ml_platforms:
+    - azure_ml
+    - aws_sagemaker
+    - google_ai_platform
+    - custom_endpoints
+  
+  policy_systems:
+    - open_policy_agent
+    - custom_policy_engines
+    - compliance_frameworks

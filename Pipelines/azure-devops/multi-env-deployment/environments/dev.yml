@@ -1,0 +1,173 @@
+variables:
+  # Environment Configuration
+  environment: 'dev'
+  environmentDisplayName: 'Development'
+  
+  # Azure Service Connection and Subscription
+  azureServiceConnection: 'Azure-Dev-Service-Connection'
+  subscriptionId: '$(AZURE_DEV_SUBSCRIPTION_ID)'
+  tenantId: '$(AZURE_TENANT_ID)'
+  
+  # Resource Group and Location
+  resourceGroup: 'rg-multienv-dev'
+  location: 'eastus2'
+  
+  # Naming Convention Variables
+  resourceNamePrefix: 'multienv-dev'
+  environmentSuffix: 'dev'
+  
+  # App Service Configuration
+  appServiceName: 'app-multienv-dev-$(Build.BuildId)'
+  appServicePlan: 'asp-multienv-dev'
+  appServicePlanSku: 'S1'
+  
+  # Database Configuration  
+  sqlServerName: 'sql-multienv-dev-$(environmentSuffix)'
+  sqlDatabaseName: 'sqldb-multienv-dev'
+  sqlServerAdminLogin: 'sqladmin'
+  sqlDatabaseSku: 'S0'
+  sqlDatabaseMaxSize: '2GB'
+  
+  # Storage Configuration
+  storageAccountName: 'stmultienvdev$(Build.BuildId)'
+  storageAccountSku: 'Standard_LRS'
+  storageAccountKind: 'StorageV2'
+  
+  # Azure Kubernetes Service Configuration
+  aksClusterName: 'aks-multienv-dev'
+  aksNodeCount: 1
+  aksNodeVmSize: 'Standard_B2s'
+  aksKubernetesVersion: '1.28.3'
+  
+  # Application Insights and Monitoring
+  appInsightsName: 'ai-multienv-dev'
+  logAnalyticsWorkspace: 'law-multienv-dev'
+  
+  # Container Registry
+  containerRegistry: 'acrmultienvdev'
+  containerRegistrySku: 'Basic'
+  
+  # Key Vault Configuration
+  keyVaultName: 'kv-multienv-dev-$(Build.BuildId)'
+  keyVaultSku: 'Standard'
+  
+  # Virtual Network Configuration
+  virtualNetworkName: 'vnet-multienv-dev'
+  virtualNetworkAddressSpace: '10.1.0.0/16'
+  subnetName: 'subnet-multienv-dev'
+  subnetAddressPrefix: '10.1.1.0/24'
+  
+  # Feature Flags and Configuration
+  featureFlagConnectionString: '$(DEV_FEATURE_FLAG_CONNECTION_STRING)'
+  appConfigurationName: 'appconfig-multienv-dev'
+  
+  # Deployment Configuration
+  deploymentSlots: true
+  deploymentSlotName: 'staging'
+  deploymentStrategy: 'blueGreen'
+  healthCheckPath: '/health'
+  healthCheckInterval: 30
+  
+  # Security Configuration
+  enableTLS: true
+  minTlsVersion: '1.2'
+  httpsOnly: true
+  enableManagedIdentity: true
+  
+  # Backup Configuration
+  enableBackup: false
+  backupRetentionDays: 7
+  
+  # Auto-scaling Configuration
+  enableAutoScale: false
+  minReplicas: 1
+  maxReplicas: 3
+  
+  # Performance Configuration
+  enableApplicationInsights: true
+  enableSqlInsights: true
+  enableLogging: true
+  logRetentionDays: 30
+  
+  # Cost Management
+  budgetName: 'budget-multienv-dev'
+  budgetAmount: 100
+  budgetAlertThreshold: 80
+  
+  # Testing Configuration
+  runLoadTests: false
+  loadTestDuration: 60
+  loadTestUsers: 10
+  
+  # Database Migration Configuration
+  runDatabaseMigrations: true
+  databaseMigrationTimeout: 300
+  
+  # Environment-Specific Tags
+  tags: |
+    Environment=Development
+    Application=MultiEnvApp
+    CostCenter=Engineering
+    Owner=DevOps-Team
+    Project=MultiEnvironment-Pipeline
+    Backup=NotRequired
+    Monitoring=Basic
+    Compliance=Development
+    DataClassification=Internal
+    AutoShutdown=Enabled
+  
+  # Development-Specific Environment Variables
+  environmentVariables: |
+    ASPNETCORE_ENVIRONMENT=Development
+    AZURE_ENVIRONMENT=Development
+    LOG_LEVEL=Debug
+    ENABLE_SWAGGER=true
+    DATABASE_CONNECTION_TIMEOUT=30
+    CACHE_ENABLED=false
+    EXTERNAL_API_TIMEOUT=10000
+    FEATURE_FLAG_REFRESH_INTERVAL=5
+    HEALTH_CHECK_INTERVAL=30
+    METRICS_ENABLED=true
+    DEBUG_MODE=true
+    
+  # Development Tools Configuration
+  enableRemoteDebugging: true
+  enableProfiler: true
+  enableNetworkTrace: false
+  
+  # Security Scanning Configuration
+  skipSecurityScans: false
+  securityScanTimeout: 300
+  allowHighVulnerabilities: true
+  allowCriticalVulnerabilities: false
+  
+  # Notification Configuration
+  slackChannel: '#dev-deployments'
+  teamsWebhook: '$(DEV_TEAMS_WEBHOOK)'
+  emailNotification: 'dev-team@company.com'
+  
+  # Infrastructure as Code Configuration
+  terraformStateStorageAccount: 'stterraformdev'
+  terraformStateContainer: 'tfstate'
+  terraformStateKey: 'multienv-dev.tfstate'
+  bicepParametersFile: 'parameters.dev.json'
+  
+  # Development Database Configuration
+  enableSqlAudit: false
+  sqlFirewallRules: |
+    - name: "AllowAllAzureServices"
+      startIpAddress: "0.0.0.0"
+      endIpAddress: "0.0.0.0"
+    - name: "AllowDeveloperAccess"
+      startIpAddress: "0.0.0.0"
+      endIpAddress: "255.255.255.255"
+  
+  # Development-Specific Resource Limits
+  cpuLimit: '0.5'
+  memoryLimit: '1Gi'
+  storageLimit: '10Gi'
+  
+  # Cleanup Configuration
+  enableResourceCleanup: true
+  resourceRetentionDays: 7
+  cleanupSchedule: '0 2 * * *'

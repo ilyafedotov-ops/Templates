@@ -1,0 +1,853 @@
+# Microsoft Teams Notification Template
+# Platform-agnostic reusable template for Microsoft Teams integration
+# Supports rich cards, adaptive cards, actionable messages, and workflow automation
+
+metadata:
+  name: teams-notification-template
+  version: 1.2.0
+  description: Comprehensive Microsoft Teams notification system with rich formatting and actions
+  compatibility:
+    - github-actions
+    - azure-devops
+    - gitlab-ci
+    - jenkins
+
+parameters:
+  # Basic Configuration
+  webhook_url:
+    type: string
+    default: ""
+    description: "Microsoft Teams webhook URL (required)"
+  
+  notification_enabled:
+    type: boolean
+    default: true
+    description: "Enable Teams notifications"
+  
+  # Message Configuration
+  message_type:
+    type: string
+    default: "messagecard"
+    description: "Message format (messagecard, adaptivecard, simple)"
+    allowed_values:
+      - messagecard
+      - adaptivecard
+      - simple
+  
+  title:
+    type: string
+    default: "Pipeline Notification"
+    description: "Notification title"
+  
+  summary:
+    type: string
+    default: "Pipeline Status Update"
+    description: "Message summary for notifications"
+  
+  message:
+    type: string
+    default: ""
+    description: "Main message content"
+  
+  # Styling and Branding
+  theme_color:
+    type: string
+    default: "0078D7"
+    description: "Message theme color (hex code without #)"
+  
+  status_color_mapping:
+    type: object
+    default:
+      success: "00FF00"
+      failure: "FF0000"
+      warning: "FFA500"
+      info: "0078D7"
+      cancelled: "808080"
+    description: "Color mapping for different statuses"
+  
+  # Event Context
+  event_type:
+    type: string
+    default: "general"
+    description: "Type of event triggering notification"
+    allowed_values:
+      - deployment
+      - build
+      - security_scan
+      - approval_request
+      - compliance_check
+      - general
+  
+  status:
+    type: string
+    default: "info"
+    description: "Status level"
+    allowed_values:
+      - success
+      - failure
+      - warning
+      - info
+      - cancelled
+  
+  environment:
+    type: string
+    default: ""
+    description: "Target environment (dev, staging, production)"
+  
+  # Rich Content
+  include_details:
+    type: boolean
+    default: true
+    description: "Include detailed information in notification"
+  
+  include_actions:
+    type: boolean
+    default: true
+    description: "Include actionable buttons in notification"
+  
+  include_facts:
+    type: boolean
+    default: true
+    description: "Include fact sections with key-value pairs"
+  
+  # Custom Facts
+  custom_facts:
+    type: object
+    default: {}
+    description: "Custom key-value pairs to display as facts"
+  
+  # Action Buttons
+  action_buttons:
+    type: array
+    default: []
+    description: "Custom action buttons with URLs"
+  
+  # Mentions and Targeting
+  mention_users:
+    type: array
+    default: []
+    description: "Users to mention in the notification"
+  
+  mention_channels:
+    type: array
+    default: []
+    description: "Channels to mention in the notification"
+  
+  # Conditional Notifications
+  notify_on_success:
+    type: boolean
+    default: true
+    description: "Send notification on successful operations"
+  
+  notify_on_failure:
+    type: boolean
+    default: true
+    description: "Send notification on failed operations"
+  
+  notify_on_start:
+    type: boolean
+    default: false
+    description: "Send notification when operation starts"
+  
+  # Rate Limiting and Throttling
+  rate_limit_enabled:
+    type: boolean
+    default: true
+    description: "Enable rate limiting to avoid spam"
+  
+  max_notifications_per_hour:
+    type: integer
+    default: 10
+    description: "Maximum notifications per hour per workflow"
+  
+  # Threading and Conversation
+  thread_notifications:
+    type: boolean
+    default: false
+    description: "Group related notifications in threads"
+  
+  conversation_id:
+    type: string
+    default: ""
+    description: "Conversation ID for threading notifications"
+  
+  # Templates
+  use_template:
+    type: boolean
+    default: true
+    description: "Use predefined templates based on event type"
+  
+  custom_template_path:
+    type: string
+    default: ""
+    description: "Path to custom message template file"
+
+# Predefined Templates
+templates:
+  deployment:
+    success:
+      title: "✅ Deployment Successful"
+      theme_color: "00FF00"
+      summary: "Deployment completed successfully"
+      message: "The deployment to {environment} has completed successfully."
+      facts:
+        - name: "Environment"
+          value: "{environment}"
+        - name: "Duration"
+          value: "{duration}"
+        - name: "Deployed By"
+          value: "{actor}"
+      actions:
+        - name: "View Application"
+          url: "{app_url}"
+        - name: "View Logs"
+          url: "{logs_url}"
+    
+    failure:
+      title: "❌ Deployment Failed"
+      theme_color: "FF0000"
+      summary: "Deployment failed and requires attention"
+      message: "The deployment to {environment} has failed. Please review the logs and take appropriate action."
+      facts:
+        - name: "Environment"
+          value: "{environment}"
+        - name: "Error"
+          value: "{error_message}"
+        - name: "Failed By"
+          value: "{actor}"
+      actions:
+        - name: "View Logs"
+          url: "{logs_url}"
+        - name: "Retry Deployment"
+          url: "{retry_url}"
+  
+  security_scan:
+    warning:
+      title: "⚠️ Security Vulnerabilities Found"
+      theme_color: "FFA500"
+      summary: "Security scan completed with findings"
+      message: "Security scanning has identified vulnerabilities that require attention."
+      facts:
+        - name: "Critical"
+          value: "{critical_count}"
+        - name: "High"
+          value: "{high_count}"
+        - name: "Medium"
+          value: "{medium_count}"
+      actions:
+        - name: "View Report"
+          url: "{report_url}"
+        - name: "Security Dashboard"
+          url: "{dashboard_url}"
+  
+  approval_request:
+    pending:
+      title: "🔐 Approval Required"
+      theme_color: "0078D7"
+      summary: "Manual approval needed for deployment"
+      message: "A deployment to {environment} is waiting for approval."
+      facts:
+        - name: "Environment"
+          value: "{environment}"
+        - name: "Requested By"
+          value: "{actor}"
+        - name: "Risk Level"
+          value: "{risk_level}"
+      actions:
+        - name: "Review & Approve"
+          url: "{approval_url}"
+        - name: "View Changes"
+          url: "{changes_url}"
+
+# GitHub Actions Implementation
+github_actions:
+  steps:
+    - name: Initialize Teams Notification
+      run: |
+        echo "::group::Teams Notification Setup"
+        
+        # Check if webhook URL is provided
+        if [ -z "${{ inputs.webhook_url }}" ] || [ "${{ inputs.webhook_url }}" = "" ]; then
+          echo "No Teams webhook URL provided, skipping notification"
+          echo "SKIP_TEAMS_NOTIFICATION=true" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        # Check if notifications are enabled
+        if [ "${{ inputs.notification_enabled }}" = "false" ]; then
+          echo "Teams notifications disabled"
+          echo "SKIP_TEAMS_NOTIFICATION=true" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        # Create notification directory
+        mkdir -p teams-notification
+        
+        # Set status-based theme color
+        STATUS="${{ inputs.status }}"
+        case $STATUS in
+          success)
+            THEME_COLOR="${{ inputs.status_color_mapping.success }}"
+            ;;
+          failure)
+            THEME_COLOR="${{ inputs.status_color_mapping.failure }}"
+            ;;
+          warning)
+            THEME_COLOR="${{ inputs.status_color_mapping.warning }}"
+            ;;
+          cancelled)
+            THEME_COLOR="${{ inputs.status_color_mapping.cancelled }}"
+            ;;
+          *)
+            THEME_COLOR="${{ inputs.status_color_mapping.info }}"
+            ;;
+        esac
+        
+        echo "NOTIFICATION_THEME_COLOR=$THEME_COLOR" >> $GITHUB_ENV
+        echo "Teams notification initialized for status: $STATUS"
+        
+        echo "::endgroup::"
+    
+    - name: Check Rate Limiting
+      if: env.SKIP_TEAMS_NOTIFICATION != 'true' && inputs.rate_limit_enabled
+      run: |
+        echo "::group::Rate Limiting Check"
+        
+        # Create rate limiting key based on repository and workflow
+        RATE_LIMIT_KEY="${{ github.repository }}-${{ github.workflow }}"
+        RATE_LIMIT_FILE="teams-notification/rate-limit-${RATE_LIMIT_KEY//\//-}.json"
+        
+        # Check existing rate limit data
+        CURRENT_HOUR=$(date +%Y-%m-%d-%H)
+        MAX_NOTIFICATIONS=${{ inputs.max_notifications_per_hour }}
+        
+        if [ -f "$RATE_LIMIT_FILE" ]; then
+          # Load existing rate limit data
+          STORED_HOUR=$(jq -r '.hour // empty' "$RATE_LIMIT_FILE" 2>/dev/null || echo "")
+          STORED_COUNT=$(jq -r '.count // 0' "$RATE_LIMIT_FILE" 2>/dev/null || echo "0")
+          
+          if [ "$STORED_HOUR" = "$CURRENT_HOUR" ]; then
+            if [ "$STORED_COUNT" -ge "$MAX_NOTIFICATIONS" ]; then
+              echo "Rate limit exceeded: $STORED_COUNT/$MAX_NOTIFICATIONS notifications this hour"
+              echo "SKIP_TEAMS_NOTIFICATION=true" >> $GITHUB_ENV
+              echo "::warning::Teams notification rate limit exceeded"
+              exit 0
+            fi
+            NEW_COUNT=$((STORED_COUNT + 1))
+          else
+            NEW_COUNT=1
+          fi
+        else
+          NEW_COUNT=1
+        fi
+        
+        # Update rate limit data
+        cat > "$RATE_LIMIT_FILE" << EOF
+        {
+          "hour": "$CURRENT_HOUR",
+          "count": $NEW_COUNT,
+          "max_notifications": $MAX_NOTIFICATIONS,
+          "updated_at": "$(date -Iseconds)"
+        }
+        EOF
+        
+        echo "Rate limit check passed: $NEW_COUNT/$MAX_NOTIFICATIONS notifications this hour"
+        echo "::endgroup::"
+    
+    - name: Prepare Message Content
+      if: env.SKIP_TEAMS_NOTIFICATION != 'true'
+      run: |
+        echo "::group::Message Content Preparation"
+        
+        # Load template if specified
+        if [ "${{ inputs.use_template }}" = "true" ] && [ "${{ inputs.event_type }}" != "general" ]; then
+          echo "Using predefined template for event type: ${{ inputs.event_type }}"
+          # Template loading logic would be implemented here
+          # For now, using dynamic content generation
+        fi
+        
+        # Prepare context variables
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        # Build context for template substitution
+        context = {
+          "repository": "${{ github.repository }}",
+          "workflow": "${{ github.workflow }}",
+          "run_id": "${{ github.run_id }}",
+          "actor": "${{ github.actor }}",
+          "ref": "${{ github.ref_name }}",
+          "sha": "${{ github.sha }}",
+          "environment": "${{ inputs.environment }}",
+          "status": "${{ inputs.status }}",
+          "event_type": "${{ inputs.event_type }}",
+          "timestamp": datetime.utcnow().isoformat(),
+          "run_url": f"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+          "commit_url": f"${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}",
+          "compare_url": f"${{ github.server_url }}/${{ github.repository }}/compare/${{ github.event.before }}...${{ github.sha }}" if "${{ github.event.before }}" else ""
+        }
+        
+        # Add custom facts
+        custom_facts = {}
+        if "${{ inputs.custom_facts }}" and "${{ inputs.custom_facts }}" != "{}":
+          try:
+            custom_facts = json.loads('${{ inputs.custom_facts }}')
+          except:
+            custom_facts = {}
+        
+        context.update(custom_facts)
+        
+        # Save context for message generation
+        with open('teams-notification/context.json', 'w') as f:
+          json.dump(context, f, indent=2)
+        
+        print("Message context prepared")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Generate Message Card
+      if: env.SKIP_TEAMS_NOTIFICATION != 'true'
+      run: |
+        echo "::group::Message Generation"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        # Load context
+        with open('teams-notification/context.json', 'r') as f:
+          context = json.load(f)
+        
+        # Message type selection
+        message_type = "${{ inputs.message_type }}"
+        
+        if message_type == "adaptivecard":
+          # Generate Adaptive Card format
+          card = {
+            "type": "message",
+            "attachments": [{
+              "contentType": "application/vnd.microsoft.card.adaptive",
+              "content": {
+                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+                "type": "AdaptiveCard",
+                "version": "1.2",
+                "body": [
+                  {
+                    "type": "TextBlock",
+                    "text": "${{ inputs.title }}",
+                    "weight": "Bolder",
+                    "size": "Medium"
+                  },
+                  {
+                    "type": "TextBlock",
+                    "text": "${{ inputs.message }}" if "${{ inputs.message }}" else f"Workflow {context['workflow']} has {context['status']}",
+                    "wrap": True,
+                    "spacing": "Medium"
+                  }
+                ]
+              }
+            }]
+          }
+          
+          # Add facts section for Adaptive Card
+          if "${{ inputs.include_facts }}" == "true":
+            facts_container = {
+              "type": "Container",
+              "items": []
+            }
+            
+            # Standard facts
+            standard_facts = [
+              ("Repository", context["repository"]),
+              ("Workflow", context["workflow"]),
+              ("Triggered by", context["actor"]),
+              ("Branch", context["ref"]),
+              ("Status", context["status"].title())
+            ]
+            
+            if context.get("environment"):
+              standard_facts.insert(-1, ("Environment", context["environment"]))
+            
+            for name, value in standard_facts:
+              facts_container["items"].extend([
+                {"type": "TextBlock", "text": f"**{name}:**", "weight": "Bolder", "spacing": "Small"},
+                {"type": "TextBlock", "text": str(value), "spacing": "None"}
+              ])
+            
+            card["attachments"][0]["content"]["body"].append(facts_container)
+          
+          # Add action buttons for Adaptive Card
+          if "${{ inputs.include_actions }}" == "true":
+            actions = []
+            
+            # Standard actions
+            actions.append({
+              "type": "Action.OpenUrl",
+              "title": "View Workflow Run",
+              "url": context["run_url"]
+            })
+            
+            if context.get("commit_url"):
+              actions.append({
+                "type": "Action.OpenUrl",
+                "title": "View Commit",
+                "url": context["commit_url"]
+              })
+            
+            # Custom action buttons
+            if "${{ inputs.action_buttons }}" and "${{ inputs.action_buttons }}" != "[]":
+              try:
+                custom_actions = json.loads('${{ inputs.action_buttons }}')
+                for action in custom_actions:
+                  actions.append({
+                    "type": "Action.OpenUrl",
+                    "title": action.get("name", "Custom Action"),
+                    "url": action.get("url", "#")
+                  })
+              except:
+                pass
+            
+            if actions:
+              card["attachments"][0]["content"]["actions"] = actions
+        
+        elif message_type == "messagecard":
+          # Generate MessageCard format (legacy but widely supported)
+          card = {
+            "@type": "MessageCard",
+            "@context": "http://schema.org/extensions",
+            "themeColor": os.environ.get("NOTIFICATION_THEME_COLOR", "${{ inputs.theme_color }}"),
+            "summary": "${{ inputs.summary }}",
+            "sections": [{
+              "activityTitle": "${{ inputs.title }}",
+              "activitySubtitle": "${{ inputs.message }}" if "${{ inputs.message }}" else f"Workflow **{context['workflow']}** has **{context['status']}**",
+              "activityImage": self.get_status_icon(context["status"]),
+              "markdown": True
+            }]
+          }
+          
+          # Add facts section for MessageCard
+          if "${{ inputs.include_facts }}" == "true":
+            facts = []
+            
+            # Standard facts
+            facts.extend([
+              {"name": "Repository", "value": context["repository"]},
+              {"name": "Workflow", "value": context["workflow"]},
+              {"name": "Triggered by", "value": context["actor"]},
+              {"name": "Branch", "value": context["ref"]},
+              {"name": "Commit", "value": context["sha"][:8]},
+              {"name": "Status", "value": context["status"].title()}
+            ])
+            
+            if context.get("environment"):
+              facts.insert(-1, {"name": "Environment", "value": context["environment"]})
+            
+            # Add custom facts
+            if "${{ inputs.custom_facts }}" and "${{ inputs.custom_facts }}" != "{}":
+              try:
+                custom_facts = json.loads('${{ inputs.custom_facts }}')
+                for key, value in custom_facts.items():
+                  facts.append({"name": str(key), "value": str(value)})
+              except:
+                pass
+            
+            card["sections"][0]["facts"] = facts
+          
+          # Add action buttons for MessageCard
+          if "${{ inputs.include_actions }}" == "true":
+            actions = []
+            
+            # Standard actions
+            actions.append({
+              "@type": "OpenUri",
+              "name": "View Workflow Run",
+              "targets": [{"os": "default", "uri": context["run_url"]}]
+            })
+            
+            if context.get("commit_url"):
+              actions.append({
+                "@type": "OpenUri",
+                "name": "View Commit",
+                "targets": [{"os": "default", "uri": context["commit_url"]}]
+              })
+            
+            # Custom action buttons
+            if "${{ inputs.action_buttons }}" and "${{ inputs.action_buttons }}" != "[]":
+              try:
+                custom_actions = json.loads('${{ inputs.action_buttons }}')
+                for action in custom_actions:
+                  actions.append({
+                    "@type": "OpenUri",
+                    "name": action.get("name", "Custom Action"),
+                    "targets": [{"os": "default", "uri": action.get("url", "#")}]
+                  })
+              except:
+                pass
+            
+            if actions:
+              card["potentialAction"] = actions
+        
+        else:
+          # Simple text message format
+          card = {
+            "text": f"**{{{ inputs.title }}}**\n\n" +
+                   (f"{{{ inputs.message }}}\n\n" if "${{ inputs.message }}" else "") +
+                   f"Repository: {context['repository']}\n" +
+                   f"Workflow: {context['workflow']}\n" +
+                   f"Status: {context['status'].title()}\n" +
+                   f"Triggered by: {context['actor']}\n" +
+                   f"Branch: {context['ref']}\n" +
+                   f"[View Workflow Run]({context['run_url']})"
+          }
+        
+        # Save generated message
+        with open('teams-notification/message-card.json', 'w') as f:
+          json.dump(card, f, indent=2)
+        
+        print("Message card generated successfully")
+        
+        def get_status_icon(status):
+          icons = {
+            "success": "https://github.com/actions/toolkit/raw/main/docs/assets/success.png",
+            "failure": "https://github.com/actions/toolkit/raw/main/docs/assets/failure.png", 
+            "warning": "https://github.com/actions/toolkit/raw/main/docs/assets/warning.png",
+            "cancelled": "https://github.com/actions/toolkit/raw/main/docs/assets/cancelled.png"
+          }
+          return icons.get(status, icons["info"])
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Send Teams Notification
+      if: env.SKIP_TEAMS_NOTIFICATION != 'true'
+      run: |
+        echo "::group::Sending Teams Notification"
+        
+        # Load generated message card
+        MESSAGE_CARD=$(cat teams-notification/message-card.json)
+        
+        # Send notification to Teams
+        RESPONSE=$(curl -X POST "${{ inputs.webhook_url }}" \
+          -H "Content-Type: application/json" \
+          -d "$MESSAGE_CARD" \
+          -w "%{http_code}" \
+          -s -o teams-notification/response.json)
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "✅ Teams notification sent successfully"
+          
+          # Log successful notification
+          cat > teams-notification/notification-log.json << EOF
+        {
+          "timestamp": "$(date -Iseconds)",
+          "status": "success",
+          "http_code": $HTTP_CODE,
+          "webhook_url": "${{{ inputs.webhook_url }}***",
+          "message_type": "${{ inputs.message_type }}",
+          "event_type": "${{ inputs.event_type }}",
+          "notification_status": "${{ inputs.status }}"
+        }
+        EOF
+        else
+          echo "❌ Teams notification failed with HTTP code: $HTTP_CODE"
+          echo "Response: $(cat teams-notification/response.json 2>/dev/null || echo 'No response body')"
+          
+          # Log failed notification
+          cat > teams-notification/notification-log.json << EOF
+        {
+          "timestamp": "$(date -Iseconds)",
+          "status": "failed",
+          "http_code": $HTTP_CODE,
+          "webhook_url": "${{{ inputs.webhook_url }}***",
+          "error_response": "$(cat teams-notification/response.json 2>/dev/null || echo 'No response body')",
+          "message_type": "${{ inputs.message_type }}",
+          "event_type": "${{ inputs.event_type }}"
+        }
+        EOF
+          
+          # Non-blocking failure - don't fail the entire workflow
+          echo "::warning::Teams notification failed but continuing workflow"
+        fi
+        
+        echo "::endgroup::"
+    
+    - name: Handle Threading and Conversation
+      if: env.SKIP_TEAMS_NOTIFICATION != 'true' && inputs.thread_notifications && inputs.conversation_id != ''
+      run: |
+        echo "::group::Threading Support"
+        
+        # This would implement conversation threading
+        # Microsoft Teams API supports threading but requires additional setup
+        echo "Threading support would be implemented here"
+        echo "Conversation ID: ${{ inputs.conversation_id }}"
+        
+        # Store conversation context for future notifications
+        cat > teams-notification/conversation-context.json << EOF
+        {
+          "conversation_id": "${{ inputs.conversation_id }}",
+          "thread_notifications": true,
+          "last_notification_time": "$(date -Iseconds)"
+        }
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Upload Notification Artifacts
+      if: env.SKIP_TEAMS_NOTIFICATION != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: teams-notification-artifacts
+        path: |
+          teams-notification/
+        retention-days: 7
+
+# Azure DevOps Implementation
+azure_devops:
+  steps:
+    - task: PowerShell@2
+      displayName: 'Send Teams Notification'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Azure DevOps PowerShell implementation
+          $webhookUrl = "${{ parameters.webhook_url }}"
+          $title = "${{ parameters.title }}"
+          $message = "${{ parameters.message }}"
+          $status = "${{ parameters.status }}"
+          $themeColor = "${{ parameters.theme_color }}"
+          
+          if (-not [string]::IsNullOrEmpty($webhookUrl)) {
+            # Create message card
+            $messageCard = @{
+              "@type" = "MessageCard"
+              "@context" = "http://schema.org/extensions"
+              "themeColor" = $themeColor
+              "summary" = "$title"
+              "sections" = @(
+                @{
+                  "activityTitle" = $title
+                  "activitySubtitle" = $message
+                  "facts" = @(
+                    @{ "name" = "Project"; "value" = "$(System.TeamProject)" }
+                    @{ "name" = "Pipeline"; "value" = "$(Build.DefinitionName)" }
+                    @{ "name" = "Build"; "value" = "$(Build.BuildNumber)" }
+                    @{ "name" = "Status"; "value" = $status }
+                  )
+                  "potentialAction" = @(
+                    @{
+                      "@type" = "OpenUri"
+                      "name" = "View Build"
+                      "targets" = @(
+                        @{ "os" = "default"; "uri" = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)" }
+                      )
+                    }
+                  )
+                }
+              )
+            }
+            
+            # Send notification
+            $body = $messageCard | ConvertTo-Json -Depth 10
+            $response = Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $body -ContentType "application/json"
+            
+            Write-Host "Teams notification sent successfully"
+          } else {
+            Write-Host "No Teams webhook URL provided, skipping notification"
+          }
+
+# GitLab CI Implementation
+gitlab_ci:
+  teams_notification:
+    stage: notify
+    image: alpine:latest
+    before_script:
+      - apk add --no-cache curl jq
+    script:
+      - |
+        if [ -n "$TEAMS_WEBHOOK_URL" ]; then
+          # Generate message card for GitLab CI
+          MESSAGE_CARD=$(cat <<EOF
+        {
+          "@type": "MessageCard",
+          "@context": "http://schema.org/extensions",
+          "themeColor": "$[[ inputs.theme_color ]]",
+          "summary": "$[[ inputs.title ]]",
+          "sections": [{
+            "activityTitle": "$[[ inputs.title ]]",
+            "activitySubtitle": "$[[ inputs.message ]]",
+            "facts": [
+              {"name": "Project", "value": "$CI_PROJECT_NAME"},
+              {"name": "Pipeline", "value": "$CI_PIPELINE_ID"},
+              {"name": "Branch", "value": "$CI_COMMIT_REF_NAME"},
+              {"name": "Status", "value": "$[[ inputs.status ]]"}
+            ],
+            "potentialAction": [{
+              "@type": "OpenUri",
+              "name": "View Pipeline",
+              "targets": [{"os": "default", "uri": "$CI_PIPELINE_URL"}]
+            }]
+          }]
+        }
+        EOF
+          )
+          
+          # Send notification
+          curl -X POST "$TEAMS_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -d "$MESSAGE_CARD"
+          
+          echo "Teams notification sent"
+        else
+          echo "No Teams webhook URL provided"
+        fi
+    only:
+      variables:
+        - $TEAMS_WEBHOOK_URL
+
+# Error Handling and Resilience
+error_handling:
+  retry_policy:
+    max_retries: 3
+    retry_delay: 5
+    backoff_multiplier: 2
+  
+  fallback_notifications:
+    - email
+    - slack
+    - webhook
+  
+  webhook_validation:
+    verify_ssl: true
+    timeout_seconds: 30
+    validate_response: true
+
+# Performance Optimization
+performance:
+  caching:
+    template_cache: true
+    rate_limit_cache: true
+  
+  async_sending:
+    enabled: true
+    batch_size: 10
+    timeout: 30
+
+# Security Features
+security:
+  webhook_url_validation: true
+  content_sanitization: true
+  pii_detection: true
+  rate_limiting: true
+
+# Monitoring and Analytics
+monitoring:
+  delivery_tracking: true
+  error_rate_monitoring: true
+  performance_metrics: true
+  usage_analytics: true

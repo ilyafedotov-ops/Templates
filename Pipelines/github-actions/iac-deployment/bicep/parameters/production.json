@@ -1,0 +1,227 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "environment": {
+      "value": "production"
+    },
+    "projectName": {
+      "value": "myproject"
+    },
+    "location": {
+      "value": "East US 2"
+    },
+    "owner": {
+      "value": "DevOps Team"
+    },
+    "costCenter": {
+      "value": "Engineering"
+    },
+    "vnetAddressSpace": {
+      "value": "10.0.0.0/16"
+    },
+    "subnetConfigurations": {
+      "value": [
+        {
+          "name": "default",
+          "addressPrefix": "10.0.1.0/24",
+          "serviceEndpoints": [
+            "Microsoft.Storage",
+            "Microsoft.KeyVault",
+            "Microsoft.Sql"
+          ]
+        },
+        {
+          "name": "aks",
+          "addressPrefix": "10.0.2.0/22",
+          "serviceEndpoints": [
+            "Microsoft.Storage",
+            "Microsoft.KeyVault"
+          ]
+        },
+        {
+          "name": "private-endpoints",
+          "addressPrefix": "10.0.8.0/24",
+          "serviceEndpoints": []
+        },
+        {
+          "name": "database",
+          "addressPrefix": "10.0.9.0/24",
+          "serviceEndpoints": [
+            "Microsoft.Sql"
+          ]
+        }
+      ]
+    },
+    "enableDdosProtection": {
+      "value": true
+    },
+    "enableNetworkFlowLogs": {
+      "value": true
+    },
+    "storageAccounts": {
+      "value": [
+        {
+          "name": "primary",
+          "sku": "Standard_GRS",
+          "kind": "StorageV2",
+          "accessTier": "Hot",
+          "enableVersioning": true,
+          "enableSoftDelete": true,
+          "softDeleteRetentionDays": 90,
+          "containers": [
+            {
+              "name": "application-data",
+              "publicAccess": "None"
+            },
+            {
+              "name": "backups",
+              "publicAccess": "None"
+            },
+            {
+              "name": "logs",
+              "publicAccess": "None"
+            }
+          ]
+        },
+        {
+          "name": "archive",
+          "sku": "Standard_GRS",
+          "kind": "StorageV2",
+          "accessTier": "Archive",
+          "enableVersioning": true,
+          "enableSoftDelete": true,
+          "softDeleteRetentionDays": 365,
+          "containers": [
+            {
+              "name": "long-term-archive",
+              "publicAccess": "None"
+            }
+          ]
+        }
+      ]
+    },
+    "enableStoragePrivateEndpoints": {
+      "value": true
+    },
+    "enableStorageThreatProtection": {
+      "value": true
+    },
+    "allowedIpRanges": {
+      "value": [
+        "203.0.113.0/24",
+        "198.51.100.0/24"
+      ]
+    },
+    "keyVaultAdminObjectIds": {
+      "value": []
+    },
+    "keyVaultEnableRbac": {
+      "value": true
+    },
+    "logAnalytics": {
+      "value": {
+        "sku": "PerGB2018",
+        "retentionInDays": 90
+      }
+    },
+    "enableApplicationInsights": {
+      "value": true
+    },
+    "applicationInsightsType": {
+      "value": "web"
+    },
+    "enableSecurityCenter": {
+      "value": true
+    },
+    "securityCenterTier": {
+      "value": "Standard"
+    },
+    "enableAks": {
+      "value": true
+    },
+    "aksConfiguration": {
+      "value": {
+        "kubernetesVersion": "1.28.3",
+        "nodePool": {
+          "name": "system",
+          "count": 3,
+          "vmSize": "Standard_D4s_v3",
+          "osDiskSizeGB": 128,
+          "osDiskType": "Premium_LRS",
+          "maxPods": 110,
+          "enableAutoScaling": true,
+          "minCount": 3,
+          "maxCount": 10
+        },
+        "networkProfile": {
+          "dnsServiceIP": "10.0.0.10",
+          "serviceCidr": "10.0.0.0/16",
+          "podCidr": "10.244.0.0/16"
+        },
+        "enableRbac": true,
+        "enableAzurePolicy": true,
+        "enableOmsAgent": true
+      }
+    },
+    "budgets": {
+      "value": [
+        {
+          "name": "monthly",
+          "amount": 3000,
+          "timeGrain": "Monthly",
+          "timePeriod": {
+            "startDate": "2024-01-01T00:00:00Z",
+            "endDate": "2024-12-31T23:59:59Z"
+          },
+          "notifications": {
+            "notification1": {
+              "enabled": true,
+              "operator": "GreaterThan",
+              "threshold": 50,
+              "contactEmails": [
+                "finance@company.com",
+                "devops@company.com"
+              ],
+              "contactRoles": [
+                "Owner",
+                "Contributor"
+              ],
+              "thresholdType": "Forecasted"
+            },
+            "notification2": {
+              "enabled": true,
+              "operator": "GreaterThan",
+              "threshold": 80,
+              "contactEmails": [
+                "finance@company.com",
+                "devops@company.com",
+                "management@company.com"
+              ],
+              "contactRoles": [
+                "Owner",
+                "Contributor"
+              ],
+              "thresholdType": "Actual"
+            },
+            "notification3": {
+              "enabled": true,
+              "operator": "GreaterThan",
+              "threshold": 100,
+              "contactEmails": [
+                "finance@company.com",
+                "devops@company.com",
+                "management@company.com"
+              ],
+              "contactRoles": [
+                "Owner",
+                "Contributor"
+              ],
+              "thresholdType": "Actual"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

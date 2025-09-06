@@ -1,0 +1,23 @@
+# Trivy Vulnerability Scanner Ignore Configuration
+# Use this file to suppress specific vulnerabilities that have been assessed and accepted
+
+# Example: Suppress a specific CVE that has been assessed as non-applicable
+# CVE-2021-44228
+
+# Example: Suppress vulnerabilities in test dependencies (use with caution)
+# CVE-2019-*
+
+# Suppress low severity vulnerabilities in base images (if risk is accepted)
+# alpine:*
+
+# Format: 
+# - CVE-ID (e.g., CVE-2021-44228)
+# - Package name (e.g., package-name)
+# - Image name (e.g., alpine:latest)
+
+# NOTE: Document all suppressions with business justification
+# Each suppression should be:
+# 1. Time-limited (reviewed quarterly)
+# 2. Risk-assessed
+# 3. Approved by security team
+# 4. Documented with compensating controls

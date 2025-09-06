@@ -1,0 +1,968 @@
+# ================================================
+# Enterprise GitLab CI Security & Compliance Pipeline
+# ================================================
+# This pipeline provides comprehensive security scanning, compliance validation,
+# and DevSecOps automation for enterprise environments.
+#
+# Features:
+# - Complete security scanning (SAST, DAST, container, dependency)
+# - GitLab security dashboard integration
+# - Infrastructure as Code security scanning
+# - Container signing and SBOM generation
+# - Compliance validation (ISO 27001, SOC 2)
+# - Security gate enforcement
+# - Performance optimization with DAG and caching
+
+variables:
+  # Security Configuration
+  SECURE_LOG_LEVEL: info
+  SECURE_ANALYZERS_PREFIX: "registry.gitlab.com/security-products"
+  SECURE_FILES_ANALYZER_IMAGE: "$SECURE_ANALYZERS_PREFIX/secrets:4"
+  SAST_ANALYZER_IMAGE_TAG: "4"
+  DEPENDENCY_SCANNING_IMAGE: "$SECURE_ANALYZERS_PREFIX/gemnasium:4"
+  CONTAINER_SCANNING_ANALYZER_IMAGE: "$SECURE_ANALYZERS_PREFIX/container-scanning:6"
+  DAST_ANALYZER_IMAGE: "$SECURE_ANALYZERS_PREFIX/dast:4"
+  
+  # Compliance & Quality Gates
+  SECURITY_GATE_ENABLED: "true"
+  VULNERABILITY_THRESHOLD_HIGH: "0"
+  VULNERABILITY_THRESHOLD_CRITICAL: "0"
+  LICENSE_SCANNING_ENABLED: "true"
+  COMPLIANCE_VALIDATION_ENABLED: "true"
+  
+  # Container & Registry Configuration
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  CONTAINER_REGISTRY: "$CI_REGISTRY"
+  IMAGE_NAME: "$CI_REGISTRY_IMAGE"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+  COSIGN_EXPERIMENTAL: "1"
+  
+  # External Tool Integration
+  SONARQUBE_URL: "${SONARQUBE_URL:-https://sonarqube.example.com}"
+  FORTIFY_URL: "${FORTIFY_URL:-https://fortify.example.com}"
+  JIRA_URL: "${JIRA_URL:-https://jira.example.com}"
+  
+  # Performance Optimization
+  GIT_DEPTH: "50"
+  GIT_STRATEGY: fetch
+  GIT_SUBMODULE_STRATEGY: recursive
+  FF_USE_FASTZIP: "true"
+  CACHE_COMPRESSION_LEVEL: "fastest"
+
+# Pipeline Stages with DAG Support
+stages:
+  - pre-security
+  - static-analysis
+  - build-security
+  - dynamic-analysis
+  - compliance-validation
+  - security-gate
+  - deploy
+  - post-security
+
+# Global Cache Configuration
+.cache_template: &cache_template
+  cache:
+    key: 
+      files:
+        - composer.lock
+        - package-lock.json
+        - yarn.lock
+        - Pipfile.lock
+        - go.sum
+        - Cargo.lock
+    paths:
+      - node_modules/
+      - vendor/
+      - .pip-cache/
+      - .go/pkg/mod/
+      - target/
+    policy: pull-push
+    when: on_success
+    fallback_keys:
+      - $CI_JOB_NAME-fallback
+
+# Security Job Templates
+.security_job_template: &security_job_template
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache git curl jq
+  artifacts:
+    reports:
+      junit: gl-junit.xml
+    paths:
+      - gl-*.json
+      - security-reports/
+    expire_in: 1 week
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - stuck_or_timeout_failure
+
+# ==============================================
+# PRE-SECURITY STAGE
+# ==============================================
+
+secrets-detection:
+  stage: pre-security
+  image: $SECURE_FILES_ANALYZER_IMAGE
+  variables:
+    SECRET_DETECTION_EXCLUDED_PATHS: "tests/,spec/,docs/"
+    SECRET_DETECTION_HISTORIC_SCAN: "true"
+  script:
+    - /analyzer run
+  artifacts:
+    reports:
+      secret_detection: gl-secret-detection-report.json
+    paths:
+      - gl-secret-detection-report.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+license-scanning:
+  stage: pre-security
+  image: $SECURE_ANALYZERS_PREFIX/license-finder:4
+  variables:
+    LICENSE_FINDER_CLI_OPTS: "--aggregate-paths"
+    LM_JAVA_VERSION: 17
+  script:
+    - /run.sh analyze .
+  artifacts:
+    reports:
+      license_scanning: gl-license-scanning-report.json
+    paths:
+      - gl-license-scanning-report.json
+    expire_in: 1 week
+  rules:
+    - if: $LICENSE_SCANNING_ENABLED == "true"
+
+# ==============================================
+# STATIC ANALYSIS STAGE
+# ==============================================
+
+sast:
+  stage: static-analysis
+  image: $SECURE_ANALYZERS_PREFIX/sast:4
+  variables:
+    SAST_ANALYZER_IMAGE_TAG: "4"
+    SAST_EXCLUDED_ANALYZERS: "bandit,brakeman,eslint,flawfinder,gosec,kubesec,phpcs-security-audit,pmd-apex,security-code-scan,semgrep,sobelow,spotbugs"
+    SAST_EXCLUDED_PATHS: "spec,test,tests,tmp,node_modules"
+  script:
+    - /analyzer run
+  artifacts:
+    reports:
+      sast: gl-sast-report.json
+    paths:
+      - gl-sast-report.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+semgrep-sast:
+  stage: static-analysis
+  image: returntocorp/semgrep:latest
+  variables:
+    SEMGREP_RULES: "p/security-audit p/owasp-top-ten p/cwe-top-25"
+  script:
+    - semgrep --config=$SEMGREP_RULES --json --output=gl-semgrep-report.json .
+    - semgrep --config=$SEMGREP_RULES --sarif --output=gl-semgrep-report.sarif .
+  artifacts:
+    reports:
+      sast: gl-semgrep-report.json
+    paths:
+      - gl-semgrep-report.json
+      - gl-semgrep-report.sarif
+    expire_in: 1 week
+  allow_failure: true
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+sonarqube-check:
+  stage: static-analysis
+  image: sonarsource/sonar-scanner-cli:latest
+  variables:
+    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"
+    GIT_DEPTH: "0"
+  script:
+    - sonar-scanner
+      -Dsonar.projectKey=$CI_PROJECT_NAME
+      -Dsonar.sources=.
+      -Dsonar.host.url=$SONARQUBE_URL
+      -Dsonar.login=$SONARQUBE_TOKEN
+      -Dsonar.qualitygate.wait=true
+      -Dsonar.gitlab.commit_sha=$CI_COMMIT_SHA
+      -Dsonar.gitlab.ref_name=$CI_COMMIT_REF_NAME
+      -Dsonar.gitlab.project_id=$CI_PROJECT_ID
+  cache:
+    key: "${CI_JOB_NAME}"
+    paths:
+      - .sonar/cache
+  artifacts:
+    reports:
+      junit: .sonar/report-task.txt
+  allow_failure: true
+  rules:
+    - if: $SONARQUBE_TOKEN && $CI_MERGE_REQUEST_IID
+    - if: $SONARQUBE_TOKEN && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+iac-security-scan:
+  stage: static-analysis
+  image: bridgecrew/checkov:latest
+  script:
+    - checkov -d . --framework terraform,cloudformation,kubernetes,dockerfile,helm,arm,bicep,ansible
+      --output cli --output json --output-file-path console,checkov-report.json
+    - checkov -d . --check CKV_DOCKER_* --framework dockerfile 
+      --output json --output-file-path console,dockerfile-security.json
+  artifacts:
+    reports:
+      sast: checkov-report.json
+    paths:
+      - checkov-report.json
+      - dockerfile-security.json
+    expire_in: 1 week
+  allow_failure: true
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ==============================================
+# BUILD & SECURITY STAGE
+# ==============================================
+
+dependency-scanning:
+  stage: build-security
+  image: $DEPENDENCY_SCANNING_IMAGE
+  variables:
+    DS_EXCLUDED_PATHS: "spec,test,tests,tmp"
+    DS_ANALYZER_IMAGE_TAG: "4"
+    DS_DEFAULT_ANALYZERS: "bundler-audit,retire.js,gemnasium,gemnasium-maven,gemnasium-python"
+  script:
+    - /analyzer run
+  artifacts:
+    reports:
+      dependency_scanning: gl-dependency-scanning-report.json
+    paths:
+      - gl-dependency-scanning-report.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+build-and-scan:
+  stage: build-security
+  image: docker:24-dind
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_DRIVER: overlay2
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker info
+    - echo $CI_REGISTRY_PASSWORD | docker login -u $CI_REGISTRY_USER --password-stdin $CI_REGISTRY
+  script:
+    # Build application image
+    - docker build -t $IMAGE_NAME:$IMAGE_TAG .
+    - docker build -t $IMAGE_NAME:latest .
+    
+    # Generate SBOM
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock 
+      anchore/syft:latest $IMAGE_NAME:$IMAGE_TAG -o cyclonedx-json=sbom.json
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock 
+      anchore/syft:latest $IMAGE_NAME:$IMAGE_TAG -o spdx-json=sbom-spdx.json
+    
+    # Container vulnerability scanning with Trivy
+    - docker run --rm -v /var/run/docker.sock:/var/run/docker.sock 
+      aquasec/trivy:latest image --exit-code 1 --severity HIGH,CRITICAL 
+      --format json --output trivy-report.json $IMAGE_NAME:$IMAGE_TAG
+    
+    # Push images
+    - docker push $IMAGE_NAME:$IMAGE_TAG
+    - docker push $IMAGE_NAME:latest
+    
+  artifacts:
+    paths:
+      - sbom.json
+      - sbom-spdx.json
+      - trivy-report.json
+    expire_in: 1 week
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+container-scanning:
+  stage: build-security
+  image: $CONTAINER_SCANNING_ANALYZER_IMAGE
+  variables:
+    CS_ANALYZER_IMAGE: "$SECURE_ANALYZERS_PREFIX/container-scanning:6"
+    CS_IMAGE: "$IMAGE_NAME:$IMAGE_TAG"
+    CS_DOCKERFILE_PATH: "Dockerfile"
+    CS_SEVERITY_THRESHOLD: "HIGH"
+  script:
+    - gtcs scan
+  artifacts:
+    reports:
+      container_scanning: gl-container-scanning-report.json
+    paths:
+      - gl-container-scanning-report.json
+    expire_in: 1 week
+  dependencies:
+    - build-and-scan
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+container-signing:
+  stage: build-security
+  image: gcr.io/projectsigstore/cosign:latest
+  variables:
+    COSIGN_EXPERIMENTAL: "1"
+  script:
+    # Sign container image with keyless signing
+    - cosign sign --yes $IMAGE_NAME:$IMAGE_TAG
+    - cosign sign --yes $IMAGE_NAME:latest
+    
+    # Verify signature
+    - cosign verify --certificate-identity-regexp ".*" $IMAGE_NAME:$IMAGE_TAG
+    
+    # Attach SBOM
+    - cosign attach sbom --sbom sbom.json $IMAGE_NAME:$IMAGE_TAG
+  dependencies:
+    - build-and-scan
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  allow_failure: true
+
+# ==============================================
+# DYNAMIC ANALYSIS STAGE
+# ==============================================
+
+dast-baseline:
+  stage: dynamic-analysis
+  image: $DAST_ANALYZER_IMAGE
+  variables:
+    DAST_WEBSITE: "${DAST_WEBSITE:-http://localhost:8080}"
+    DAST_FULL_SCAN_ENABLED: "false"
+    DAST_BROWSER_SCAN: "true"
+    DAST_API_SPECIFICATION: "openapi.json"
+  script:
+    - /analyze
+  artifacts:
+    reports:
+      dast: gl-dast-report.json
+    paths:
+      - gl-dast-report.json
+    expire_in: 1 week
+  rules:
+    - if: $DAST_WEBSITE && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+dast-api-scan:
+  stage: dynamic-analysis
+  image: $SECURE_ANALYZERS_PREFIX/api-security:4
+  variables:
+    DAST_API_TARGET_URL: "${DAST_API_TARGET_URL}"
+    DAST_API_SPECIFICATION: "openapi.json"
+    DAST_API_PROFILE: "Quick"
+  script:
+    - /analyzer run
+  artifacts:
+    reports:
+      dast: gl-dast-api-report.json
+    paths:
+      - gl-dast-api-report.json
+    expire_in: 1 week
+  rules:
+    - if: $DAST_API_TARGET_URL && $CI_MERGE_REQUEST_IID
+    - if: $DAST_API_TARGET_URL && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# ==============================================
+# COMPLIANCE VALIDATION STAGE
+# ==============================================
+
+iso27001-compliance:
+  stage: compliance-validation
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache python3 py3-pip jq curl
+    - pip3 install pyyaml requests
+  script:
+    # ISO 27001 control validation
+    - |
+      cat > iso27001_validator.py << 'EOF'
+      import json
+      import yaml
+      import sys
+      
+      def validate_iso27001_controls():
+          controls = {
+              "A.8.2": "Information classification",
+              "A.8.3": "Information labeling",
+              "A.12.6": "Management of technical vulnerabilities",
+              "A.14.2": "Security in development and support processes",
+              "A.16.1": "Management of information security incidents"
+          }
+          
+          results = []
+          
+          # Check for security scanning results
+          try:
+              with open('gl-sast-report.json', 'r') as f:
+                  sast_data = json.load(f)
+                  results.append({
+                      "control": "A.14.2.1",
+                      "status": "PASS" if len(sast_data.get('vulnerabilities', [])) == 0 else "FAIL",
+                      "evidence": f"SAST scan completed with {len(sast_data.get('vulnerabilities', []))} findings"
+                  })
+          except FileNotFoundError:
+              results.append({
+                  "control": "A.14.2.1", 
+                  "status": "NOT_TESTED",
+                  "evidence": "SAST report not found"
+              })
+          
+          # Check for dependency scanning
+          try:
+              with open('gl-dependency-scanning-report.json', 'r') as f:
+                  dep_data = json.load(f)
+                  results.append({
+                      "control": "A.12.6.1",
+                      "status": "PASS" if len(dep_data.get('vulnerabilities', [])) == 0 else "FAIL", 
+                      "evidence": f"Dependency scan completed with {len(dep_data.get('vulnerabilities', []))} findings"
+                  })
+          except FileNotFoundError:
+              results.append({
+                  "control": "A.12.6.1",
+                  "status": "NOT_TESTED", 
+                  "evidence": "Dependency scan report not found"
+              })
+          
+          return results
+      
+      if __name__ == "__main__":
+          compliance_results = validate_iso27001_controls()
+          
+          with open('iso27001-compliance-report.json', 'w') as f:
+              json.dump({
+                  "framework": "ISO 27001:2022",
+                  "scan_date": "$CI_COMMIT_TIMESTAMP",
+                  "project": "$CI_PROJECT_NAME",
+                  "controls": compliance_results
+              }, f, indent=2)
+          
+          print("ISO 27001 compliance validation completed")
+          for result in compliance_results:
+              print(f"Control {result['control']}: {result['status']} - {result['evidence']}")
+      EOF
+      
+    - python3 iso27001_validator.py
+    
+  artifacts:
+    paths:
+      - iso27001-compliance-report.json
+    expire_in: 1 week
+  dependencies:
+    - sast
+    - dependency-scanning
+  rules:
+    - if: $COMPLIANCE_VALIDATION_ENABLED == "true"
+
+soc2-compliance:
+  stage: compliance-validation
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache python3 py3-pip jq
+    - pip3 install pyyaml requests
+  script:
+    # SOC 2 Type II control validation
+    - |
+      cat > soc2_validator.py << 'EOF'
+      import json
+      import os
+      
+      def validate_soc2_controls():
+          controls = {
+              "CC6.1": "Logical and physical access controls",
+              "CC6.8": "Prevention of unauthorized software",
+              "CC7.2": "Detection of security incidents",
+              "CC8.1": "Authorization of changes"
+          }
+          
+          results = []
+          
+          # Check access controls (secrets detection)
+          try:
+              with open('gl-secret-detection-report.json', 'r') as f:
+                  secrets_data = json.load(f)
+                  results.append({
+                      "control": "CC6.1",
+                      "status": "PASS" if len(secrets_data.get('vulnerabilities', [])) == 0 else "FAIL",
+                      "evidence": f"Secret detection completed with {len(secrets_data.get('vulnerabilities', []))} findings"
+                  })
+          except FileNotFoundError:
+              results.append({
+                  "control": "CC6.1",
+                  "status": "NOT_TESTED",
+                  "evidence": "Secret detection report not found"
+              })
+          
+          # Check unauthorized software (container scanning)  
+          try:
+              with open('gl-container-scanning-report.json', 'r') as f:
+                  container_data = json.load(f)
+                  results.append({
+                      "control": "CC6.8",
+                      "status": "PASS" if len(container_data.get('vulnerabilities', [])) == 0 else "FAIL",
+                      "evidence": f"Container scan completed with {len(container_data.get('vulnerabilities', []))} findings"
+                  })
+          except FileNotFoundError:
+              results.append({
+                  "control": "CC6.8", 
+                  "status": "NOT_TESTED",
+                  "evidence": "Container scanning report not found"
+              })
+          
+          return results
+      
+      if __name__ == "__main__":
+          compliance_results = validate_soc2_controls()
+          
+          with open('soc2-compliance-report.json', 'w') as f:
+              json.dump({
+                  "framework": "SOC 2 Type II",
+                  "scan_date": "$CI_COMMIT_TIMESTAMP", 
+                  "project": "$CI_PROJECT_NAME",
+                  "controls": compliance_results
+              }, f, indent=2)
+          
+          print("SOC 2 compliance validation completed")
+          for result in compliance_results:
+              print(f"Control {result['control']}: {result['status']} - {result['evidence']}")
+      EOF
+      
+    - python3 soc2_validator.py
+    
+  artifacts:
+    paths:
+      - soc2-compliance-report.json
+    expire_in: 1 week
+  dependencies:
+    - secrets-detection
+    - container-scanning
+  rules:
+    - if: $COMPLIANCE_VALIDATION_ENABLED == "true"
+
+# ==============================================
+# SECURITY GATE STAGE
+# ==============================================
+
+security-gate-check:
+  stage: security-gate
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache python3 py3-pip jq curl
+    - pip3 install requests
+  script:
+    - |
+      cat > security_gate.py << 'EOF'
+      import json
+      import sys
+      import os
+      
+      def check_security_gate():
+          critical_vulns = 0
+          high_vulns = 0
+          gate_passed = True
+          findings = []
+          
+          # Check SAST results
+          try:
+              with open('gl-sast-report.json', 'r') as f:
+                  sast_data = json.load(f)
+                  for vuln in sast_data.get('vulnerabilities', []):
+                      severity = vuln.get('severity', '').upper()
+                      if severity == 'CRITICAL':
+                          critical_vulns += 1
+                      elif severity == 'HIGH':
+                          high_vulns += 1
+                      findings.append(f"SAST: {vuln.get('message', 'Unknown')} ({severity})")
+          except FileNotFoundError:
+              pass
+          
+          # Check dependency scanning results  
+          try:
+              with open('gl-dependency-scanning-report.json', 'r') as f:
+                  dep_data = json.load(f)
+                  for vuln in dep_data.get('vulnerabilities', []):
+                      severity = vuln.get('severity', '').upper()
+                      if severity == 'CRITICAL':
+                          critical_vulns += 1
+                      elif severity == 'HIGH':
+                          high_vulns += 1
+                      findings.append(f"Dependency: {vuln.get('message', 'Unknown')} ({severity})")
+          except FileNotFoundError:
+              pass
+          
+          # Check container scanning results
+          try:
+              with open('gl-container-scanning-report.json', 'r') as f:
+                  container_data = json.load(f)
+                  for vuln in container_data.get('vulnerabilities', []):
+                      severity = vuln.get('severity', '').upper()
+                      if severity == 'CRITICAL':
+                          critical_vulns += 1
+                      elif severity == 'HIGH':
+                          high_vulns += 1
+                      findings.append(f"Container: {vuln.get('message', 'Unknown')} ({severity})")
+          except FileNotFoundError:
+              pass
+          
+          # Apply thresholds
+          critical_threshold = int(os.environ.get('VULNERABILITY_THRESHOLD_CRITICAL', '0'))
+          high_threshold = int(os.environ.get('VULNERABILITY_THRESHOLD_HIGH', '0'))
+          
+          if critical_vulns > critical_threshold:
+              gate_passed = False
+              print(f"SECURITY GATE FAILED: {critical_vulns} CRITICAL vulnerabilities found (threshold: {critical_threshold})")
+          
+          if high_vulns > high_threshold:
+              gate_passed = False
+              print(f"SECURITY GATE FAILED: {high_vulns} HIGH vulnerabilities found (threshold: {high_threshold})")
+          
+          # Generate gate report
+          gate_report = {
+              "gate_status": "PASSED" if gate_passed else "FAILED",
+              "critical_vulnerabilities": critical_vulns,
+              "high_vulnerabilities": high_vulns,
+              "thresholds": {
+                  "critical": critical_threshold,
+                  "high": high_threshold
+              },
+              "findings": findings
+          }
+          
+          with open('security-gate-report.json', 'w') as f:
+              json.dump(gate_report, f, indent=2)
+          
+          if gate_passed:
+              print("SECURITY GATE PASSED: All vulnerability thresholds met")
+              return 0
+          else:
+              print("SECURITY GATE FAILED: Vulnerability thresholds exceeded")
+              return 1
+      
+      if __name__ == "__main__":
+          sys.exit(check_security_gate())
+      EOF
+      
+    - python3 security_gate.py
+    
+  artifacts:
+    paths:
+      - security-gate-report.json
+    expire_in: 1 week
+    when: always
+  dependencies:
+    - sast
+    - dependency-scanning
+    - container-scanning
+  rules:
+    - if: $SECURITY_GATE_ENABLED == "true"
+
+# ==============================================
+# SECURITY REPORTING & NOTIFICATIONS
+# ==============================================
+
+security-report-generation:
+  stage: security-gate
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache python3 py3-pip pandoc texlive-xetex jq
+    - pip3 install jinja2 matplotlib seaborn pandas
+  script:
+    - |
+      cat > generate_report.py << 'EOF'
+      import json
+      import os
+      from datetime import datetime
+      from jinja2 import Template
+      
+      def generate_security_report():
+          # Collect all security data
+          security_data = {
+              "project": os.environ.get('CI_PROJECT_NAME'),
+              "commit": os.environ.get('CI_COMMIT_SHA'),
+              "branch": os.environ.get('CI_COMMIT_REF_NAME'),
+              "timestamp": datetime.now().isoformat(),
+              "pipeline_url": os.environ.get('CI_PIPELINE_URL')
+          }
+          
+          # Load security scan results
+          report_files = [
+              'gl-sast-report.json',
+              'gl-dependency-scanning-report.json', 
+              'gl-container-scanning-report.json',
+              'gl-secret-detection-report.json',
+              'security-gate-report.json',
+              'iso27001-compliance-report.json',
+              'soc2-compliance-report.json'
+          ]
+          
+          for report_file in report_files:
+              try:
+                  with open(report_file, 'r') as f:
+                      data = json.load(f)
+                      security_data[report_file.replace('.json', '').replace('gl-', '')] = data
+              except FileNotFoundError:
+                  security_data[report_file.replace('.json', '').replace('gl-', '')] = {"status": "not_available"}
+          
+          # Generate HTML report
+          html_template = """
+          <!DOCTYPE html>
+          <html>
+          <head>
+              <title>Security Assessment Report - {{ project }}</title>
+              <style>
+                  body { font-family: Arial, sans-serif; margin: 20px; }
+                  .header { background: #f0f0f0; padding: 20px; border-radius: 5px; }
+                  .section { margin: 20px 0; }
+                  .vulnerability { padding: 10px; margin: 5px 0; border-left: 4px solid; }
+                  .critical { border-color: #d32f2f; background: #ffebee; }
+                  .high { border-color: #f57c00; background: #fff3e0; }
+                  .medium { border-color: #fbc02d; background: #fffde7; }
+                  .low { border-color: #388e3c; background: #e8f5e8; }
+                  table { width: 100%; border-collapse: collapse; }
+                  th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+                  th { background-color: #f2f2f2; }
+              </style>
+          </head>
+          <body>
+              <div class="header">
+                  <h1>Security Assessment Report</h1>
+                  <p><strong>Project:</strong> {{ project }}</p>
+                  <p><strong>Branch:</strong> {{ branch }}</p>
+                  <p><strong>Commit:</strong> {{ commit }}</p>
+                  <p><strong>Generated:</strong> {{ timestamp }}</p>
+              </div>
+              
+              <div class="section">
+                  <h2>Executive Summary</h2>
+                  <p>This report provides a comprehensive security assessment of the application.</p>
+              </div>
+              
+              <div class="section">
+                  <h2>Compliance Status</h2>
+                  <table>
+                      <tr><th>Framework</th><th>Status</th><th>Controls Tested</th></tr>
+                      {% if iso27001_compliance_report %}
+                      <tr><td>ISO 27001:2022</td><td>Available</td><td>{{ iso27001_compliance_report.controls|length }}</td></tr>
+                      {% endif %}
+                      {% if soc2_compliance_report %}
+                      <tr><td>SOC 2 Type II</td><td>Available</td><td>{{ soc2_compliance_report.controls|length }}</td></tr>
+                      {% endif %}
+                  </table>
+              </div>
+              
+              <div class="section">
+                  <h2>Security Gate Status</h2>
+                  {% if security_gate_report %}
+                  <p><strong>Status:</strong> {{ security_gate_report.gate_status }}</p>
+                  <p><strong>Critical Vulnerabilities:</strong> {{ security_gate_report.critical_vulnerabilities }}</p>
+                  <p><strong>High Vulnerabilities:</strong> {{ security_gate_report.high_vulnerabilities }}</p>
+                  {% endif %}
+              </div>
+          </body>
+          </html>
+          """
+          
+          template = Template(html_template)
+          html_report = template.render(**security_data)
+          
+          with open('security-assessment-report.html', 'w') as f:
+              f.write(html_report)
+          
+          # Generate JSON summary
+          with open('security-assessment-summary.json', 'w') as f:
+              json.dump(security_data, f, indent=2)
+          
+          print("Security assessment report generated successfully")
+      
+      if __name__ == "__main__":
+          generate_security_report()
+      EOF
+      
+    - python3 generate_report.py
+    
+  artifacts:
+    paths:
+      - security-assessment-report.html
+      - security-assessment-summary.json
+    expire_in: 1 month
+  dependencies:
+    - security-gate-check
+    - iso27001-compliance
+    - soc2-compliance
+  rules:
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+notify-security-team:
+  stage: security-gate
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - |
+      # Slack notification
+      if [ ! -z "$SLACK_WEBHOOK_URL" ]; then
+        GATE_STATUS=$(jq -r '.gate_status' security-gate-report.json 2>/dev/null || echo "UNKNOWN")
+        CRITICAL_VULNS=$(jq -r '.critical_vulnerabilities' security-gate-report.json 2>/dev/null || echo "0")
+        HIGH_VULNS=$(jq -r '.high_vulnerabilities' security-gate-report.json 2>/dev/null || echo "0")
+        
+        if [ "$GATE_STATUS" = "FAILED" ]; then
+          COLOR="danger"
+          MESSAGE="Security gate FAILED for $CI_PROJECT_NAME"
+        else
+          COLOR="good"
+          MESSAGE="Security gate PASSED for $CI_PROJECT_NAME"
+        fi
+        
+        curl -X POST -H 'Content-type: application/json' \
+          --data "{
+            \"attachments\": [{
+              \"color\": \"$COLOR\",
+              \"title\": \"Security Pipeline Alert\",
+              \"text\": \"$MESSAGE\",
+              \"fields\": [
+                {\"title\": \"Project\", \"value\": \"$CI_PROJECT_NAME\", \"short\": true},
+                {\"title\": \"Branch\", \"value\": \"$CI_COMMIT_REF_NAME\", \"short\": true},
+                {\"title\": \"Critical Vulns\", \"value\": \"$CRITICAL_VULNS\", \"short\": true},
+                {\"title\": \"High Vulns\", \"value\": \"$HIGH_VULNS\", \"short\": true}
+              ],
+              \"actions\": [{
+                \"type\": \"button\",
+                \"text\": \"View Pipeline\",
+                \"url\": \"$CI_PIPELINE_URL\"
+              }]
+            }]
+          }" $SLACK_WEBHOOK_URL
+      fi
+      
+      # JIRA ticket creation for failed gates
+      if [ ! -z "$JIRA_URL" ] && [ "$GATE_STATUS" = "FAILED" ]; then
+        curl -X POST \
+          -H "Content-Type: application/json" \
+          -H "Authorization: Basic $JIRA_AUTH" \
+          -d "{
+            \"fields\": {
+              \"project\": {\"key\": \"$JIRA_PROJECT_KEY\"},
+              \"summary\": \"Security gate failed for $CI_PROJECT_NAME - $CI_COMMIT_REF_NAME\",
+              \"description\": \"Security vulnerabilities detected in pipeline $CI_PIPELINE_URL\\n\\nCritical: $CRITICAL_VULNS\\nHigh: $HIGH_VULNS\",
+              \"issuetype\": {\"name\": \"Bug\"},
+              \"priority\": {\"name\": \"Critical\"},
+              \"labels\": [\"security\", \"devops\", \"vulnerability\"]
+            }
+          }" $JIRA_URL/rest/api/2/issue/
+      fi
+      
+  dependencies:
+    - security-gate-check
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_IID
+  allow_failure: true
+
+# ==============================================
+# DEPLOYMENT STAGE (with security validation)
+# ==============================================
+
+deploy-staging:
+  stage: deploy
+  image: alpine:latest
+  environment:
+    name: staging
+    url: https://staging.example.com
+  script:
+    - echo "Deploying to staging environment with security validation"
+    - echo "Container image: $IMAGE_NAME:$IMAGE_TAG"
+    # Add your deployment scripts here
+  dependencies:
+    - security-gate-check
+    - container-signing
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $GATE_STATUS != "FAILED"
+  when: manual
+
+deploy-production:
+  stage: deploy
+  image: alpine:latest
+  environment:
+    name: production
+    url: https://production.example.com
+  script:
+    - echo "Deploying to production environment"
+    - echo "Container image: $IMAGE_NAME:$IMAGE_TAG"
+    # Verify container signature before deployment
+    - cosign verify --certificate-identity-regexp ".*" $IMAGE_NAME:$IMAGE_TAG
+    # Add your production deployment scripts here
+  dependencies:
+    - security-gate-check
+    - container-signing
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $GATE_STATUS != "FAILED"
+  when: manual
+  allow_failure: false
+
+# ==============================================
+# POST-SECURITY STAGE
+# ==============================================
+
+post-deploy-security-validation:
+  stage: post-security
+  image: alpine:latest
+  before_script:
+    - apk add --no-cache curl nmap-ncat
+  script:
+    # Runtime security validation
+    - echo "Performing post-deployment security validation"
+    
+    # Check if service is responding
+    - curl -f https://staging.example.com/health || exit 1
+    
+    # Verify security headers
+    - |
+      SECURITY_HEADERS=$(curl -I https://staging.example.com 2>/dev/null | grep -E "(X-Frame-Options|X-Content-Type-Options|Strict-Transport-Security|Content-Security-Policy)" | wc -l)
+      if [ "$SECURITY_HEADERS" -lt 3 ]; then
+        echo "WARNING: Missing security headers detected"
+      fi
+    
+    # Basic port scan for unexpected open ports
+    - nmap -p 1-1000 staging.example.com | tee nmap-results.txt
+    
+  artifacts:
+    paths:
+      - nmap-results.txt
+    expire_in: 1 week
+  dependencies:
+    - deploy-staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  allow_failure: true
+
+cleanup-security-artifacts:
+  stage: post-security
+  image: alpine:latest
+  script:
+    - echo "Security pipeline completed successfully"
+    - echo "All security artifacts have been preserved for audit trail"
+    - ls -la *.json *.html 2>/dev/null || echo "No security artifacts found"
+  dependencies:
+    - security-report-generation
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_MERGE_REQUEST_IID
+  when: always

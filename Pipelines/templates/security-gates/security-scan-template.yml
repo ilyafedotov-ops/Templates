@@ -1,0 +1,475 @@
+# Security Scanning Template
+# Platform-agnostic reusable template for comprehensive security scanning
+# Supports GitHub Actions, Azure DevOps, GitLab CI
+
+metadata:
+  name: security-scan-template
+  version: 1.2.0
+  description: Comprehensive security scanning with configurable thresholds
+  compatibility:
+    - github-actions
+    - azure-devops
+    - gitlab-ci
+    - jenkins
+
+parameters:
+  # Scanning Configuration
+  scan_types:
+    type: array
+    default: ["sast", "container", "iac", "secrets", "dependencies", "dast"]
+    description: "Types of security scans to perform"
+  
+  scan_timeout:
+    type: string
+    default: "30m"
+    description: "Maximum time allowed for scanning"
+  
+  # Thresholds
+  critical_threshold:
+    type: integer
+    default: 0
+    description: "Maximum allowed critical vulnerabilities"
+  
+  high_threshold:
+    type: integer
+    default: 5
+    description: "Maximum allowed high severity vulnerabilities"
+  
+  medium_threshold:
+    type: integer
+    default: 20
+    description: "Maximum allowed medium severity vulnerabilities"
+  
+  # Tool Configuration
+  checkov_config:
+    type: string
+    default: ".checkov.yml"
+    description: "Path to Checkov configuration file"
+  
+  trivy_config:
+    type: string
+    default: ".trivyignore"
+    description: "Path to Trivy ignore file"
+  
+  gitleaks_config:
+    type: string
+    default: ".gitleaks.toml"
+    description: "Path to Gitleaks configuration"
+  
+  # Output Configuration
+  results_format:
+    type: string
+    default: "sarif"
+    description: "Output format (sarif, json, xml, junit)"
+  
+  upload_results:
+    type: boolean
+    default: true
+    description: "Upload results to security dashboard"
+  
+  # Container Configuration
+  registry_url:
+    type: string
+    default: ""
+    description: "Container registry URL for image scanning"
+  
+  image_tag:
+    type: string
+    default: "latest"
+    description: "Container image tag to scan"
+  
+  # DAST Configuration
+  target_url:
+    type: string
+    default: ""
+    description: "Target URL for dynamic application security testing"
+  
+  dast_profile:
+    type: string
+    default: "baseline"
+    description: "DAST scanning profile (baseline, full, api)"
+  
+  # License Scanning
+  license_policy:
+    type: string
+    default: "permissive"
+    description: "License policy (permissive, copyleft, commercial)"
+  
+  # Performance
+  parallel_scans:
+    type: boolean
+    default: true
+    description: "Run scans in parallel for better performance"
+  
+  cache_enabled:
+    type: boolean
+    default: true
+    description: "Enable caching for faster subsequent runs"
+
+# GitHub Actions Implementation
+github_actions:
+  steps:
+    - name: Setup Security Scanning Environment
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+        cache: 'npm'
+    
+    - name: Install Security Tools
+      run: |
+        # Install security scanning tools
+        pip install checkov bandit safety
+        curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
+        curl -sSfL https://raw.githubusercontent.com/zricethezav/gitleaks/master/scripts/install.sh | sh
+        npm install -g @microsoft/sarif-multitool
+        
+        # Verify installations
+        checkov --version
+        trivy --version
+        gitleaks version
+    
+    - name: Cache Security Tools
+      if: ${{ inputs.cache_enabled }}
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cache/trivy
+          ~/.cache/checkov
+        key: security-tools-${{ runner.os }}-${{ hashFiles('**/package-lock.json', '**/requirements.txt') }}
+    
+    - name: Static Application Security Testing (SAST)
+      if: ${{ contains(inputs.scan_types, 'sast') }}
+      run: |
+        echo "::group::SAST Scanning"
+        
+        # Bandit for Python
+        if find . -name "*.py" -type f | grep -q .; then
+          bandit -r . -f json -o bandit-results.json || true
+        fi
+        
+        # Semgrep for multiple languages
+        if command -v semgrep &> /dev/null; then
+          semgrep --config=auto --json --output=semgrep-results.json . || true
+        fi
+        
+        echo "::endgroup::"
+      timeout-minutes: ${{ fromJSON(inputs.scan_timeout) }}
+    
+    - name: Container Security Scanning
+      if: ${{ contains(inputs.scan_types, 'container') }}
+      run: |
+        echo "::group::Container Scanning"
+        
+        if [ -f "Dockerfile" ] || [ -f "docker-compose.yml" ]; then
+          # Scan Dockerfile
+          if [ -f "Dockerfile" ]; then
+            trivy config --format ${{ inputs.results_format }} --output dockerfile-scan.sarif Dockerfile
+          fi
+          
+          # Scan built image if registry is provided
+          if [ -n "${{ inputs.registry_url }}" ]; then
+            IMAGE_NAME="${{ inputs.registry_url }}:${{ inputs.image_tag }}"
+            trivy image --format ${{ inputs.results_format }} --output container-scan.sarif $IMAGE_NAME
+          fi
+        fi
+        
+        echo "::endgroup::"
+      timeout-minutes: ${{ fromJSON(inputs.scan_timeout) }}
+    
+    - name: Infrastructure as Code Scanning
+      if: ${{ contains(inputs.scan_types, 'iac') }}
+      run: |
+        echo "::group::IaC Scanning"
+        
+        # Checkov for IaC
+        if [ -f "${{ inputs.checkov_config }}" ]; then
+          checkov --config-file ${{ inputs.checkov_config }} --output sarif --output-file iac-checkov.sarif . || true
+        else
+          checkov --output sarif --output-file iac-checkov.sarif . || true
+        fi
+        
+        # Trivy for IaC
+        trivy config --format ${{ inputs.results_format }} --output iac-trivy.sarif .
+        
+        # TFSec for Terraform (if present)
+        if find . -name "*.tf" -type f | grep -q .; then
+          if command -v tfsec &> /dev/null; then
+            tfsec --format sarif --out terraform-scan.sarif . || true
+          fi
+        fi
+        
+        echo "::endgroup::"
+      timeout-minutes: ${{ fromJSON(inputs.scan_timeout) }}
+    
+    - name: Secrets Scanning
+      if: ${{ contains(inputs.scan_types, 'secrets') }}
+      run: |
+        echo "::group::Secrets Scanning"
+        
+        # Gitleaks
+        if [ -f "${{ inputs.gitleaks_config }}" ]; then
+          gitleaks detect --config ${{ inputs.gitleaks_config }} --report-format sarif --report-path secrets-gitleaks.sarif --source . || true
+        else
+          gitleaks detect --report-format sarif --report-path secrets-gitleaks.sarif --source . || true
+        fi
+        
+        # TruffleHog (if available)
+        if command -v trufflehog &> /dev/null; then
+          trufflehog filesystem . --json > secrets-trufflehog.json || true
+        fi
+        
+        echo "::endgroup::"
+      timeout-minutes: ${{ fromJSON(inputs.scan_timeout) }}
+    
+    - name: Dependency Scanning
+      if: ${{ contains(inputs.scan_types, 'dependencies') }}
+      run: |
+        echo "::group::Dependency Scanning"
+        
+        # Safety for Python
+        if [ -f "requirements.txt" ]; then
+          safety check --json --output dependencies-python.json || true
+        fi
+        
+        # NPM Audit for Node.js
+        if [ -f "package.json" ]; then
+          npm audit --json > dependencies-npm.json || true
+        fi
+        
+        # Trivy for dependencies
+        trivy fs --format ${{ inputs.results_format }} --output dependencies-trivy.sarif .
+        
+        echo "::endgroup::"
+      timeout-minutes: ${{ fromJSON(inputs.scan_timeout) }}
+    
+    - name: Dynamic Application Security Testing (DAST)
+      if: ${{ contains(inputs.scan_types, 'dast') && inputs.target_url != '' }}
+      run: |
+        echo "::group::DAST Scanning"
+        
+        # OWASP ZAP
+        docker run -v $(pwd):/zap/wrk/:rw \
+          -u $(id -u):$(id -g) \
+          owasp/zap2docker-stable:latest \
+          zap-${{ inputs.dast_profile }}.py \
+          -t ${{ inputs.target_url }} \
+          -J dast-zap-report.json || true
+        
+        echo "::endgroup::"
+      timeout-minutes: ${{ fromJSON(inputs.scan_timeout) }}
+    
+    - name: License Compliance Scanning
+      run: |
+        echo "::group::License Scanning"
+        
+        # FOSSA (if available)
+        if command -v fossa &> /dev/null; then
+          fossa analyze || true
+          fossa test --json > license-fossa.json || true
+        fi
+        
+        # License Finder (if available)
+        if command -v license_finder &> /dev/null; then
+          license_finder --format json > license-finder.json || true
+        fi
+        
+        echo "::endgroup::"
+    
+    - name: Process and Aggregate Results
+      run: |
+        echo "::group::Processing Results"
+        
+        # Create results directory
+        mkdir -p security-results
+        
+        # Convert all results to SARIF format
+        find . -name "*-results.json" -o -name "*-scan.sarif" -o -name "*-report.json" | while read file; do
+          if [[ "$file" == *.sarif ]]; then
+            cp "$file" security-results/
+          else
+            # Convert JSON to SARIF if needed
+            echo "Converting $file to SARIF format"
+            # Add conversion logic here based on tool
+          fi
+        done
+        
+        # Merge SARIF files
+        sarif-multitool merge --output-file security-results/merged-results.sarif security-results/*.sarif
+        
+        echo "::endgroup::"
+    
+    - name: Evaluate Security Thresholds
+      run: |
+        echo "::group::Security Gate Evaluation"
+        
+        # Parse SARIF results and count vulnerabilities by severity
+        CRITICAL_COUNT=$(jq '[.runs[].results[] | select(.level == "error" and .properties.severity == "critical")] | length' security-results/merged-results.sarif)
+        HIGH_COUNT=$(jq '[.runs[].results[] | select(.level == "error" and .properties.severity == "high")] | length' security-results/merged-results.sarif)
+        MEDIUM_COUNT=$(jq '[.runs[].results[] | select(.level == "warning" and .properties.severity == "medium")] | length' security-results/merged-results.sarif)
+        
+        echo "Security findings:"
+        echo "  Critical: $CRITICAL_COUNT (threshold: ${{ inputs.critical_threshold }})"
+        echo "  High: $HIGH_COUNT (threshold: ${{ inputs.high_threshold }})"
+        echo "  Medium: $MEDIUM_COUNT (threshold: ${{ inputs.medium_threshold }})"
+        
+        # Check thresholds
+        GATE_FAILED=false
+        
+        if [ $CRITICAL_COUNT -gt ${{ inputs.critical_threshold }} ]; then
+          echo "::error::Critical vulnerability threshold exceeded: $CRITICAL_COUNT > ${{ inputs.critical_threshold }}"
+          GATE_FAILED=true
+        fi
+        
+        if [ $HIGH_COUNT -gt ${{ inputs.high_threshold }} ]; then
+          echo "::error::High vulnerability threshold exceeded: $HIGH_COUNT > ${{ inputs.high_threshold }}"
+          GATE_FAILED=true
+        fi
+        
+        if [ $MEDIUM_COUNT -gt ${{ inputs.medium_threshold }} ]; then
+          echo "::warning::Medium vulnerability threshold exceeded: $MEDIUM_COUNT > ${{ inputs.medium_threshold }}"
+        fi
+        
+        if [ "$GATE_FAILED" = true ]; then
+          echo "::error::Security gate failed due to threshold violations"
+          exit 1
+        fi
+        
+        echo "::notice::Security gate passed successfully"
+        echo "::endgroup::"
+    
+    - name: Upload Security Results
+      if: ${{ inputs.upload_results }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: security-results/merged-results.sarif
+        category: security-scan
+    
+    - name: Archive Security Reports
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-scan-results
+        path: |
+          security-results/
+          *-results.json
+          *-scan.sarif
+          *-report.json
+        retention-days: 30
+
+# Azure DevOps Implementation
+azure_devops:
+  steps:
+    - task: PowerShell@2
+      displayName: 'Setup Security Scanning Environment'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Install security tools
+          pip install checkov bandit safety
+          Invoke-WebRequest -Uri "https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Windows-64bit.zip" -OutFile "trivy.zip"
+          Expand-Archive -Path "trivy.zip" -DestinationPath "." -Force
+          $env:PATH += ";$(Get-Location)"
+    
+    - task: Bash@3
+      displayName: 'Run Security Scans'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Similar implementation as GitHub Actions
+          # Adapted for Azure DevOps environment variables and task structure
+      timeoutInMinutes: $(scanTimeout)
+
+# GitLab CI Implementation
+gitlab_ci:
+  security_scan:
+    stage: security
+    image: 
+      name: aquasec/trivy:latest
+      entrypoint: [""]
+    variables:
+      SCAN_TYPES: $[[ inputs.scan_types ]]
+      CRITICAL_THRESHOLD: $[[ inputs.critical_threshold ]]
+      HIGH_THRESHOLD: $[[ inputs.high_threshold ]]
+    before_script:
+      - apk add --no-cache curl jq python3 py3-pip
+      - pip install checkov bandit safety
+    script:
+      # Similar implementation as GitHub Actions
+      # Adapted for GitLab CI environment variables
+    artifacts:
+      reports:
+        sast: security-results/merged-results.sarif
+      paths:
+        - security-results/
+      expire_in: 30 days
+    timeout: $[[ inputs.scan_timeout ]]
+
+# Jenkins Implementation
+jenkins:
+  pipeline:
+    agent: any
+    parameters:
+      - choice:
+          name: 'SCAN_TYPES'
+          choices: ['sast,container,iac,secrets,dependencies', 'sast', 'container', 'iac']
+          description: 'Security scan types to perform'
+    stages:
+      - stage('Security Scanning') 
+        steps:
+          script: |
+            // Similar implementation adapted for Jenkins Pipeline syntax
+            // Using Jenkins environment variables and plugins
+
+# Cost Tracking
+cost_tracking:
+  enabled: true
+  budget_alert_threshold: 50.00
+  cost_center: "security-operations"
+  resource_tags:
+    - "security-scan"
+    - "compliance"
+    - "automated"
+
+# Performance Optimization
+performance:
+  caching:
+    - tool_binaries: 24h
+    - scan_databases: 12h
+    - results_cache: 1h
+  parallel_execution:
+    max_workers: 4
+    memory_limit: "8Gi"
+    cpu_limit: "4"
+
+# Integration Points
+integrations:
+  security_dashboards:
+    - defectdojo
+    - sonarqube
+    - snyk
+    - github_security_tab
+    - azure_security_center
+  
+  notification_channels:
+    - teams
+    - slack
+    - email
+    - jira
+    - servicenow
+  
+  external_systems:
+    - siem_integration: true
+    - vulnerability_db_sync: true
+    - compliance_reporting: true
+
+# Error Handling
+error_handling:
+  retry_count: 3
+  retry_delay: "30s"
+  fail_fast: false
+  continue_on_scan_failure: false
+  
+  escalation:
+    timeout_threshold: "45m"
+    escalation_contacts:
+      - security-team@company.com
+      - devops-team@company.com

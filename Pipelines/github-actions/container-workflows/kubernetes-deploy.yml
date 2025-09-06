@@ -1,0 +1,596 @@
+name: Kubernetes Deployment
+
+on:
+  workflow_run:
+    workflows: ["Docker Build and Push"]
+    types:
+      - completed
+    branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+      deployment_strategy:
+        description: 'Deployment strategy'
+        required: true
+        default: 'rolling'
+        type: choice
+        options:
+          - rolling
+          - blue-green
+          - canary
+      image_tag:
+        description: 'Image tag to deploy (default: latest for branch)'
+        required: false
+        type: string
+      rollback_on_failure:
+        description: 'Automatically rollback on deployment failure'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  KUBECONFIG_DEV: ${{ secrets.KUBECONFIG_DEV }}
+  KUBECONFIG_STAGING: ${{ secrets.KUBECONFIG_STAGING }}
+  KUBECONFIG_PROD: ${{ secrets.KUBECONFIG_PROD }}
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  DEPLOYMENT_TIMEOUT: 600s
+  ARGOCD_SERVER: ${{ vars.ARGOCD_SERVER }}
+  FLUX_NAMESPACE: flux-system
+
+jobs:
+  validate-prerequisites:
+    name: Validate Deployment Prerequisites
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch'
+    outputs:
+      environment: ${{ steps.set-env.outputs.environment }}
+      image-tag: ${{ steps.set-env.outputs.image-tag }}
+      kubeconfig: ${{ steps.set-env.outputs.kubeconfig }}
+      deployment-strategy: ${{ steps.set-env.outputs.deployment-strategy }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set environment variables
+        id: set-env
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "environment=${{ inputs.environment }}" >> $GITHUB_OUTPUT
+            echo "image-tag=${{ inputs.image_tag || github.sha }}" >> $GITHUB_OUTPUT
+            echo "deployment-strategy=${{ inputs.deployment_strategy }}" >> $GITHUB_OUTPUT
+          else
+            if [ "${{ github.ref_name }}" = "main" ]; then
+              echo "environment=production" >> $GITHUB_OUTPUT
+              echo "deployment-strategy=blue-green" >> $GITHUB_OUTPUT
+            elif [ "${{ github.ref_name }}" = "develop" ]; then
+              echo "environment=staging" >> $GITHUB_OUTPUT
+              echo "deployment-strategy=canary" >> $GITHUB_OUTPUT
+            else
+              echo "environment=dev" >> $GITHUB_OUTPUT
+              echo "deployment-strategy=rolling" >> $GITHUB_OUTPUT
+            fi
+            echo "image-tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
+          
+          case "$environment" in
+            dev)
+              echo "kubeconfig=KUBECONFIG_DEV" >> $GITHUB_OUTPUT
+              ;;
+            staging)
+              echo "kubeconfig=KUBECONFIG_STAGING" >> $GITHUB_OUTPUT
+              ;;
+            production)
+              echo "kubeconfig=KUBECONFIG_PROD" >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Validate image exists
+        run: |
+          docker manifest inspect ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.set-env.outputs.image-tag }}
+
+      - name: Validate Kubernetes manifests
+        run: |
+          if [ ! -f "kubernetes/deployment.yaml" ]; then
+            echo "Error: kubernetes/deployment.yaml not found"
+            exit 1
+          fi
+          
+          kubectl --dry-run=client apply -f kubernetes/ || {
+            echo "Error: Invalid Kubernetes manifests"
+            exit 1
+          }
+
+  security-policy-validation:
+    name: Security Policy Validation
+    runs-on: ubuntu-latest
+    needs: validate-prerequisites
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Polaris
+        run: |
+          curl -L https://github.com/FairwindsOps/polaris/releases/latest/download/polaris_linux_amd64.tar.gz | tar -xz
+          sudo mv polaris /usr/local/bin/
+
+      - name: Run Polaris security validation
+        run: |
+          polaris audit --audit-path kubernetes/ --format json > polaris-results.json
+
+      - name: Install Falco rules checker
+        run: |
+          curl -L https://github.com/falcosecurity/falcoctl/releases/latest/download/falcoctl_linux_amd64.tar.gz | tar -xz
+          sudo mv falcoctl /usr/local/bin/
+
+      - name: Validate against Falco rules
+        run: |
+          falcoctl artifact install falco-rules
+          falcoctl validate kubernetes/
+
+      - name: Run Kubesec security analysis
+        run: |
+          docker run --rm -v $(pwd)/kubernetes:/kubernetes kubesec/kubesec:latest scan /kubernetes/deployment.yaml > kubesec-results.json
+
+      - name: Upload security analysis results
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-analysis-${{ github.sha }}
+          path: |
+            polaris-results.json
+            kubesec-results.json
+          retention-days: 30
+
+      - name: Check security compliance
+        run: |
+          # Fail if critical security issues found
+          if jq -e '.Results[] | select(.Severity == "danger")' polaris-results.json > /dev/null; then
+            echo "Critical security issues found in Kubernetes manifests"
+            jq '.Results[] | select(.Severity == "danger")' polaris-results.json
+            exit 1
+          fi
+
+  deploy-dev:
+    name: Deploy to Development
+    runs-on: ubuntu-latest
+    needs: [validate-prerequisites, security-policy-validation]
+    if: needs.validate-prerequisites.outputs.environment == 'dev'
+    environment:
+      name: development
+      url: https://dev.${{ vars.DOMAIN_NAME }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Install Kustomize
+        run: |
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo mv kustomize /usr/local/bin/
+
+      - name: Deploy with rolling update
+        run: |
+          # Update image tag in kustomization
+          cd kubernetes/overlays/dev
+          kustomize edit set image app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-prerequisites.outputs.image-tag }}
+          
+          # Apply manifests
+          kubectl apply -k .
+          
+          # Wait for rollout
+          kubectl rollout status deployment/app -n dev --timeout=${{ env.DEPLOYMENT_TIMEOUT }}
+
+      - name: Run smoke tests
+        run: |
+          # Wait for service to be ready
+          kubectl wait --for=condition=ready pod -l app=myapp -n dev --timeout=300s
+          
+          # Get service endpoint
+          SERVICE_IP=$(kubectl get service app -n dev -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          
+          # Run basic health check
+          curl -f "http://${SERVICE_IP}/health" || exit 1
+
+  deploy-staging:
+    name: Deploy to Staging (Canary)
+    runs-on: ubuntu-latest
+    needs: [validate-prerequisites, security-policy-validation]
+    if: needs.validate-prerequisites.outputs.environment == 'staging'
+    environment:
+      name: staging
+      url: https://staging.${{ vars.DOMAIN_NAME }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Install Flagger
+        run: |
+          kubectl apply -k github.com/fluxcd/flagger//kustomize/istio
+
+      - name: Deploy canary release
+        run: |
+          # Update canary configuration
+          envsubst < kubernetes/canary-template.yaml > kubernetes/canary.yaml
+          kubectl apply -f kubernetes/canary.yaml
+          
+          # Monitor canary deployment
+          kubectl wait canary/app -n staging --for=condition=Promoted --timeout=600s
+
+      - name: Run integration tests
+        run: |
+          # Run comprehensive integration tests
+          kubectl run test-runner --image=test-runner:latest --rm -i --restart=Never -- \
+            --target-url "https://staging.${{ vars.DOMAIN_NAME }}" \
+            --test-suite integration
+
+  deploy-production:
+    name: Deploy to Production (Blue-Green)
+    runs-on: ubuntu-latest
+    needs: [validate-prerequisites, security-policy-validation]
+    if: needs.validate-prerequisites.outputs.environment == 'production'
+    environment:
+      name: production
+      url: https://prod.${{ vars.DOMAIN_NAME }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Install Argo Rollouts
+        run: |
+          kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f -
+          kubectl apply -n argo-rollouts -f https://github.com/argoproj/argo-rollouts/releases/latest/download/install.yaml
+
+      - name: Deploy blue-green release
+        run: |
+          # Update rollout configuration
+          envsubst < kubernetes/rollout-template.yaml > kubernetes/rollout.yaml
+          kubectl apply -f kubernetes/rollout.yaml
+          
+          # Wait for rollout to complete
+          kubectl argo rollouts wait rollout/app -n production --timeout=600s
+
+      - name: Run production validation
+        run: |
+          # Run production readiness tests
+          kubectl run prod-validator --image=prod-validator:latest --rm -i --restart=Never -- \
+            --target-url "https://prod.${{ vars.DOMAIN_NAME }}" \
+            --test-suite production-readiness
+
+  gitops-sync:
+    name: GitOps Synchronization
+    runs-on: ubuntu-latest
+    needs: [validate-prerequisites]
+    if: vars.GITOPS_ENABLED == 'true'
+    steps:
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Update GitOps manifests
+        run: |
+          cd gitops
+          
+          # Update image tag in environment-specific overlay
+          cd apps/${{ needs.validate-prerequisites.outputs.environment }}
+          
+          # Use kustomize to update image
+          kustomize edit set image app=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-prerequisites.outputs.image-tag }}
+          
+          # Commit and push changes
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Update ${{ github.repository }} to ${{ needs.validate-prerequisites.outputs.image-tag }}"
+          git push
+
+      - name: Sync ArgoCD application (if enabled)
+        if: vars.ARGOCD_ENABLED == 'true'
+        run: |
+          # Install ArgoCD CLI
+          curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
+          
+          # Login to ArgoCD
+          argocd login ${{ env.ARGOCD_SERVER }} --username admin --password ${{ secrets.ARGOCD_PASSWORD }}
+          
+          # Sync application
+          argocd app sync ${{ github.repository }}-${{ needs.validate-prerequisites.outputs.environment }}
+          argocd app wait ${{ github.repository }}-${{ needs.validate-prerequisites.outputs.environment }} --timeout 600
+
+      - name: Sync Flux (if enabled)
+        if: vars.FLUX_ENABLED == 'true'
+        run: |
+          # Install Flux CLI
+          curl -s https://fluxcd.io/install.sh | sudo bash
+          
+          # Force reconciliation
+          flux reconcile source git gitops-repo
+          flux reconcile kustomization ${{ github.repository }}-${{ needs.validate-prerequisites.outputs.environment }}
+
+  service-mesh-integration:
+    name: Service Mesh Integration
+    runs-on: ubuntu-latest
+    needs: [validate-prerequisites]
+    if: vars.SERVICE_MESH_ENABLED == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Configure Istio service mesh
+        if: vars.SERVICE_MESH_TYPE == 'istio'
+        run: |
+          # Apply Istio configurations
+          kubectl apply -f kubernetes/istio/
+          
+          # Wait for sidecars to be injected
+          kubectl rollout restart deployment/app -n ${{ needs.validate-prerequisites.outputs.environment }}
+          kubectl rollout status deployment/app -n ${{ needs.validate-prerequisites.outputs.environment }}
+
+      - name: Configure Linkerd service mesh
+        if: vars.SERVICE_MESH_TYPE == 'linkerd'
+        run: |
+          # Install Linkerd CLI
+          curl -sL https://run.linkerd.io/install | sh
+          export PATH=$PATH:$HOME/.linkerd2/bin
+          
+          # Inject Linkerd proxy
+          kubectl get deploy -n ${{ needs.validate-prerequisites.outputs.environment }} -o yaml | \
+            linkerd inject - | \
+            kubectl apply -f -
+
+      - name: Validate service mesh configuration
+        run: |
+          # Check mesh health
+          if [ "${{ vars.SERVICE_MESH_TYPE }}" = "istio" ]; then
+            istioctl analyze -n ${{ needs.validate-prerequisites.outputs.environment }}
+          elif [ "${{ vars.SERVICE_MESH_TYPE }}" = "linkerd" ]; then
+            linkerd check
+          fi
+
+  network-policy-enforcement:
+    name: Network Policy Enforcement
+    runs-on: ubuntu-latest
+    needs: [validate-prerequisites]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Apply network policies
+        run: |
+          # Apply environment-specific network policies
+          kubectl apply -f kubernetes/network-policies/${{ needs.validate-prerequisites.outputs.environment }}/
+          
+          # Validate network policies are active
+          kubectl get networkpolicies -n ${{ needs.validate-prerequisites.outputs.environment }}
+
+      - name: Test network isolation
+        run: |
+          # Run network policy tests
+          kubectl run network-test --image=nicolaka/netshoot --rm -i --restart=Never -- \
+            /bin/bash -c "
+              # Test allowed connections
+              curl -m 5 app-service.${{ needs.validate-prerequisites.outputs.environment }}.svc.cluster.local/health
+              
+              # Test blocked connections (should fail)
+              ! curl -m 5 database-service.production.svc.cluster.local:5432 || exit 1
+            "
+
+  spot-instance-optimization:
+    name: Spot Instance Cost Optimization
+    runs-on: ubuntu-latest
+    needs: [validate-prerequisites]
+    if: vars.ENABLE_SPOT_INSTANCES == 'true' && needs.validate-prerequisites.outputs.environment != 'production'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Configure spot instance node selectors
+        run: |
+          # Update deployment to prefer spot instances
+          kubectl patch deployment app -n ${{ needs.validate-prerequisites.outputs.environment }} -p '{
+            "spec": {
+              "template": {
+                "spec": {
+                  "nodeSelector": {
+                    "kubernetes.io/arch": "amd64",
+                    "node.kubernetes.io/instance-type": "spot"
+                  },
+                  "tolerations": [{
+                    "key": "spot",
+                    "operator": "Equal",
+                    "value": "true",
+                    "effect": "NoSchedule"
+                  }]
+                }
+              }
+            }
+          }'
+
+      - name: Configure Pod Disruption Budget
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: policy/v1
+          kind: PodDisruptionBudget
+          metadata:
+            name: app-pdb
+            namespace: ${{ needs.validate-prerequisites.outputs.environment }}
+          spec:
+            minAvailable: 2
+            selector:
+              matchLabels:
+                app: myapp
+          EOF
+
+  rollback-on-failure:
+    name: Automatic Rollback on Failure
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, deploy-staging, deploy-production]
+    if: failure() && inputs.rollback_on_failure
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Rollback deployment
+        run: |
+          # Rollback to previous version
+          kubectl rollout undo deployment/app -n ${{ needs.validate-prerequisites.outputs.environment }}
+          
+          # Wait for rollback to complete
+          kubectl rollout status deployment/app -n ${{ needs.validate-prerequisites.outputs.environment }} --timeout=300s
+
+      - name: Verify rollback
+        run: |
+          # Verify service is healthy after rollback
+          kubectl wait --for=condition=ready pod -l app=myapp -n ${{ needs.validate-prerequisites.outputs.environment }} --timeout=300s
+
+  monitoring-setup:
+    name: Setup Monitoring and Alerting
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, deploy-staging, deploy-production]
+    if: always() && (needs.deploy-dev.result == 'success' || needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p ~/.kube
+          echo "${{ secrets[needs.validate-prerequisites.outputs.kubeconfig] }}" | base64 -d > ~/.kube/config
+          chmod 600 ~/.kube/config
+
+      - name: Apply ServiceMonitor for Prometheus
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: monitoring.coreos.com/v1
+          kind: ServiceMonitor
+          metadata:
+            name: app-metrics
+            namespace: ${{ needs.validate-prerequisites.outputs.environment }}
+          spec:
+            selector:
+              matchLabels:
+                app: myapp
+            endpoints:
+            - port: http-metrics
+              path: /metrics
+              interval: 30s
+          EOF
+
+      - name: Configure Grafana dashboard
+        run: |
+          kubectl create configmap app-dashboard \
+            --from-file=kubernetes/monitoring/dashboard.json \
+            -n monitoring \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+  notification:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [deploy-dev, deploy-staging, deploy-production, rollback-on-failure]
+    if: always()
+    steps:
+      - name: Determine deployment status
+        id: status
+        run: |
+          if [ "${{ needs.deploy-dev.result }}" = "success" ] || 
+             [ "${{ needs.deploy-staging.result }}" = "success" ] || 
+             [ "${{ needs.deploy-production.result }}" = "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "color=00FF00" >> $GITHUB_OUTPUT
+          elif [ "${{ needs.rollback-on-failure.result }}" = "success" ]; then
+            echo "status=rolled-back" >> $GITHUB_OUTPUT
+            echo "color=FFA500" >> $GITHUB_OUTPUT
+          else
+            echo "status=failed" >> $GITHUB_OUTPUT
+            echo "color=FF0000" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Teams notification
+        uses: aliencube/microsoft-teams-actions@v0.8.0
+        with:
+          webhook_uri: ${{ secrets.TEAMS_WEBHOOK_URI }}
+          title: "Kubernetes Deployment ${{ steps.status.outputs.status }}"
+          summary: "Application deployment to ${{ needs.validate-prerequisites.outputs.environment }}"
+          text: |
+            **Repository:** ${{ github.repository }}
+            **Environment:** ${{ needs.validate-prerequisites.outputs.environment }}
+            **Strategy:** ${{ needs.validate-prerequisites.outputs.deployment-strategy }}
+            **Image:** ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ needs.validate-prerequisites.outputs.image-tag }}
+            **Status:** ${{ steps.status.outputs.status }}
+            **Build URL:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          theme_color: ${{ steps.status.outputs.color }}

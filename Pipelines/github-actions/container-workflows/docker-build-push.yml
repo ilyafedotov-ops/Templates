@@ -1,0 +1,388 @@
+name: Docker Build and Push
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - 'docker/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - production
+      force_rebuild:
+        description: 'Force rebuild without cache'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY_GHCR: ghcr.io
+  REGISTRY_ACR: ${{ vars.ACR_REGISTRY }}
+  REGISTRY_ECR: ${{ vars.ECR_REGISTRY }}
+  REGISTRY_GCR: ${{ vars.GCR_REGISTRY }}
+  IMAGE_NAME: ${{ github.repository }}
+  COSIGN_EXPERIMENTAL: 1
+
+jobs:
+  security-scan:
+    name: Security and Vulnerability Scanning
+    runs-on: ubuntu-latest
+    outputs:
+      image-digest: ${{ steps.build.outputs.digest }}
+      image-tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Run Checkov IaC scan
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: .
+          framework: dockerfile,kubernetes
+          output_format: sarif
+          output_file_path: checkov-results.sarif
+          quiet: true
+          soft_fail: true
+
+      - name: Upload Checkov results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+          driver-opts: |
+            image=moby/buildkit:master
+            network=host
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY_ACR }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY_ECR }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY_GCR }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix={{branch}}-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=${{ github.repository }}
+            org.opencontainers.image.description=Multi-architecture container image
+            org.opencontainers.image.vendor=${{ github.repository_owner }}
+            maintainer=${{ github.repository_owner }}
+            build.number=${{ github.run_number }}
+            build.id=${{ github.run_id }}
+            build.url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            git.sha=${{ github.sha }}
+            git.branch=${{ github.ref_name }}
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_GHCR }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Azure Container Registry
+        if: vars.ACR_REGISTRY != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_ACR }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Configure AWS credentials
+        if: vars.ECR_REGISTRY != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Log in to Amazon ECR
+        if: vars.ECR_REGISTRY != ''
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Log in to Google Container Registry
+        if: vars.GCR_REGISTRY != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY_GCR }}
+          username: _json_key
+          password: ${{ secrets.GCR_JSON_KEY }}
+
+      - name: Build and push Docker image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          no-cache: ${{ inputs.force_rebuild || false }}
+          provenance: true
+          sbom: true
+          build-args: |
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+            BUILD_VERSION=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.version'] }}
+            BUILD_REVISION=${{ github.sha }}
+            BUILD_NUMBER=${{ github.run_number }}
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Run Snyk to check for vulnerabilities
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          args: --severity-threshold=high --file=docker/Dockerfile
+
+      - name: Generate SBOM with Syft
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom.cyclonedx.json
+          retention-days: 30
+
+  sign-and-attest:
+    name: Sign Container Images and Generate Attestations
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install Rekor CLI
+        run: |
+          curl -sLO "https://github.com/sigstore/rekor/releases/latest/download/rekor-cli-linux-amd64"
+          sudo install rekor-cli-linux-amd64 /usr/local/bin/rekor-cli
+
+      - name: Sign container images with Cosign
+        env:
+          TAGS: ${{ needs.security-scan.outputs.image-tags }}
+          DIGEST: ${{ needs.security-scan.outputs.image-digest }}
+        run: |
+          echo "$TAGS" | while read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Signing $tag"
+            cosign sign --yes "$tag@$DIGEST"
+          done
+
+      - name: Download SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-${{ github.sha }}
+
+      - name: Attest SBOM with Cosign
+        env:
+          TAGS: ${{ needs.security-scan.outputs.image-tags }}
+          DIGEST: ${{ needs.security-scan.outputs.image-digest }}
+        run: |
+          echo "$TAGS" | head -1 | while read -r tag; do
+            [ -z "$tag" ] && continue
+            cosign attest --yes --predicate sbom.cyclonedx.json --type cyclonedx "$tag@$DIGEST"
+          done
+
+      - name: Verify signatures
+        env:
+          TAGS: ${{ needs.security-scan.outputs.image-tags }}
+          DIGEST: ${{ needs.security-scan.outputs.image-digest }}
+        run: |
+          echo "$TAGS" | head -1 | while read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "Verifying $tag@$DIGEST"
+            cosign verify --certificate-identity-regexp ".*" --certificate-oidc-issuer-regexp ".*" "$tag@$DIGEST"
+          done
+
+  image-promotion:
+    name: Promote Images Across Registries
+    runs-on: ubuntu-latest
+    needs: [security-scan, sign-and-attest]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    strategy:
+      matrix:
+        environment: [staging, production]
+        exclude:
+          - environment: production
+    steps:
+      - name: Set up Crane
+        uses: imjasonh/setup-crane@v0.3
+
+      - name: Promote to staging registry
+        if: matrix.environment == 'staging'
+        env:
+          SOURCE_IMAGE: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          TARGET_IMAGE: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:staging
+        run: |
+          crane cp "$SOURCE_IMAGE" "$TARGET_IMAGE"
+
+      - name: Promote to production registry
+        if: matrix.environment == 'production' && github.event_name == 'workflow_dispatch' && inputs.environment == 'production'
+        env:
+          SOURCE_IMAGE: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:staging
+          TARGET_IMAGE: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:production
+        run: |
+          crane cp "$SOURCE_IMAGE" "$TARGET_IMAGE"
+
+  compliance-scan:
+    name: CIS Benchmark and Compliance Validation
+    runs-on: ubuntu-latest
+    needs: security-scan
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Docker Bench for Security
+        run: |
+          git clone https://github.com/docker/docker-bench-security.git
+          cd docker-bench-security
+          sudo sh docker-bench-security.sh
+
+      - name: Run CIS Docker Benchmark
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          format: 'json'
+          output: 'cis-results.json'
+          security-checks: 'config'
+
+      - name: Upload compliance results
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-results-${{ github.sha }}
+          path: |
+            cis-results.json
+            docker-bench-security/
+          retention-days: 30
+
+  cost-analysis:
+    name: Container Cost Analysis
+    runs-on: ubuntu-latest
+    needs: security-scan
+    if: github.event_name != 'pull_request'
+    steps:
+      - name: Analyze container size and layers
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            wagoodman/dive:latest \
+            --ci \
+            --lowestEfficiency=0.95 \
+            --highestWastedBytes=20MB \
+            ${{ env.REGISTRY_GHCR }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Generate size report
+        run: |
+          echo "## Container Size Analysis" > size-report.md
+          echo "" >> size-report.md
+          docker images --format "table {{.Repository}}:{{.Tag}}\t{{.Size}}" | grep "${{ env.IMAGE_NAME }}" >> size-report.md
+          
+      - name: Upload size analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-analysis-${{ github.sha }}
+          path: size-report.md
+          retention-days: 30
+
+  notify:
+    name: Notification
+    runs-on: ubuntu-latest
+    needs: [security-scan, sign-and-attest, image-promotion, compliance-scan]
+    if: always()
+    steps:
+      - name: Notify Teams on Success
+        if: needs.security-scan.result == 'success'
+        uses: aliencube/microsoft-teams-actions@v0.8.0
+        with:
+          webhook_uri: ${{ secrets.TEAMS_WEBHOOK_URI }}
+          title: "Container Build Success"
+          summary: "Container image built and pushed successfully"
+          text: |
+            **Repository:** ${{ github.repository }}
+            **Branch:** ${{ github.ref_name }}
+            **Commit:** ${{ github.sha }}
+            **Images:** ${{ needs.security-scan.outputs.image-tags }}
+            **Build Number:** ${{ github.run_number }}
+            **Build URL:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          theme_color: "00FF00"
+
+      - name: Notify Teams on Failure
+        if: failure()
+        uses: aliencube/microsoft-teams-actions@v0.8.0
+        with:
+          webhook_uri: ${{ secrets.TEAMS_WEBHOOK_URI }}
+          title: "Container Build Failed"
+          summary: "Container image build failed"
+          text: |
+            **Repository:** ${{ github.repository }}
+            **Branch:** ${{ github.ref_name }}
+            **Commit:** ${{ github.sha }}
+            **Build Number:** ${{ github.run_number }}
+            **Build URL:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            **Failure Reason:** Check the build logs for details
+          theme_color: "FF0000"

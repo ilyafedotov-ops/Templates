@@ -1,0 +1,1231 @@
+# Slack Notification Template
+# Platform-agnostic reusable template for Slack integration
+# Supports rich formatting, interactive components, workflow automation, and bot integration
+
+metadata:
+  name: slack-notification-template
+  version: 1.3.0
+  description: Comprehensive Slack notification system with rich formatting and interactive features
+  compatibility:
+    - github-actions
+    - azure-devops
+    - gitlab-ci
+    - jenkins
+
+parameters:
+  # Basic Configuration
+  webhook_url:
+    type: string
+    default: ""
+    description: "Slack webhook URL (required for webhook mode)"
+  
+  bot_token:
+    type: string
+    default: ""
+    description: "Slack bot token (required for bot mode)"
+  
+  channel:
+    type: string
+    default: "#general"
+    description: "Target Slack channel or user (@username)"
+  
+  notification_mode:
+    type: string
+    default: "webhook"
+    description: "Notification mode (webhook, bot, both)"
+    allowed_values:
+      - webhook
+      - bot
+      - both
+  
+  notification_enabled:
+    type: boolean
+    default: true
+    description: "Enable Slack notifications"
+  
+  # Message Configuration
+  message_format:
+    type: string
+    default: "blocks"
+    description: "Message format (blocks, attachments, simple)"
+    allowed_values:
+      - blocks
+      - attachments
+      - simple
+  
+  title:
+    type: string
+    default: "Pipeline Notification"
+    description: "Notification title"
+  
+  message:
+    type: string
+    default: ""
+    description: "Main message content"
+  
+  pretext:
+    type: string
+    default: ""
+    description: "Text that appears above the message"
+  
+  # Styling and Formatting
+  color_scheme:
+    type: string
+    default: "auto"
+    description: "Color scheme (auto, custom, status-based)"
+  
+  status_colors:
+    type: object
+    default:
+      success: "good"
+      failure: "danger"
+      warning: "warning"
+      info: "#36a64f"
+      cancelled: "#808080"
+    description: "Color mapping for different statuses"
+  
+  custom_color:
+    type: string
+    default: "#36a64f"
+    description: "Custom color for messages (hex code)"
+  
+  # Event Context
+  event_type:
+    type: string
+    default: "general"
+    description: "Type of event triggering notification"
+    allowed_values:
+      - deployment
+      - build
+      - security_scan
+      - approval_request
+      - compliance_check
+      - alert
+      - general
+  
+  status:
+    type: string
+    default: "info"
+    description: "Status level"
+    allowed_values:
+      - success
+      - failure
+      - warning
+      - info
+      - cancelled
+  
+  priority:
+    type: string
+    default: "normal"
+    description: "Message priority (low, normal, high, urgent)"
+    allowed_values:
+      - low
+      - normal
+      - high
+      - urgent
+  
+  environment:
+    type: string
+    default: ""
+    description: "Target environment (dev, staging, production)"
+  
+  # Rich Content
+  include_fields:
+    type: boolean
+    default: true
+    description: "Include field sections with key-value pairs"
+  
+  include_actions:
+    type: boolean
+    default: true
+    description: "Include action buttons in notification"
+  
+  include_footer:
+    type: boolean
+    default: true
+    description: "Include footer information"
+  
+  include_timestamp:
+    type: boolean
+    default: true
+    description: "Include timestamp in notification"
+  
+  # Custom Fields
+  custom_fields:
+    type: object
+    default: {}
+    description: "Custom key-value pairs to display as fields"
+  
+  # Interactive Components
+  action_buttons:
+    type: array
+    default: []
+    description: "Interactive action buttons"
+  
+  dropdown_options:
+    type: array
+    default: []
+    description: "Dropdown menu options"
+  
+  interactive_elements:
+    type: boolean
+    default: false
+    description: "Enable interactive message elements"
+  
+  # User Mentions and Notifications
+  mention_users:
+    type: array
+    default: []
+    description: "Users to mention (@username format)"
+  
+  mention_groups:
+    type: array
+    default: []
+    description: "User groups to mention (@team format)"
+  
+  mention_here:
+    type: boolean
+    default: false
+    description: "Use @here mention for channel attention"
+  
+  mention_channel:
+    type: boolean
+    default: false
+    description: "Use @channel mention for all users"
+  
+  # Threading and Replies
+  thread_ts:
+    type: string
+    default: ""
+    description: "Thread timestamp for reply messages"
+  
+  reply_broadcast:
+    type: boolean
+    default: false
+    description: "Broadcast threaded reply to channel"
+  
+  # Conditional Notifications
+  notify_on_success:
+    type: boolean
+    default: true
+    description: "Send notification on successful operations"
+  
+  notify_on_failure:
+    type: boolean
+    default: true
+    description: "Send notification on failed operations"
+  
+  notify_on_start:
+    type: boolean
+    default: false
+    description: "Send notification when operation starts"
+  
+  # Rate Limiting
+  rate_limit_enabled:
+    type: boolean
+    default: true
+    description: "Enable rate limiting to avoid spam"
+  
+  max_notifications_per_hour:
+    type: integer
+    default: 15
+    description: "Maximum notifications per hour per workflow"
+  
+  # Bot Features (when using bot mode)
+  bot_name:
+    type: string
+    default: "CI/CD Bot"
+    description: "Bot display name"
+  
+  bot_emoji:
+    type: string
+    default: ":robot_face:"
+    description: "Bot emoji icon"
+  
+  upload_logs:
+    type: boolean
+    default: false
+    description: "Upload log files as snippets"
+  
+  # Templates
+  use_template:
+    type: boolean
+    default: true
+    description: "Use predefined templates based on event type"
+  
+  custom_template_path:
+    type: string
+    default: ""
+    description: "Path to custom message template file"
+
+# Message Templates
+templates:
+  deployment:
+    success:
+      title: ":white_check_mark: Deployment Successful"
+      color: "good"
+      pretext: "Deployment completed successfully!"
+      fields:
+        - title: "Environment"
+          value: "{environment}"
+          short: true
+        - title: "Duration"
+          value: "{duration}"
+          short: true
+        - title: "Deployed By"
+          value: "{actor}"
+          short: true
+        - title: "Version"
+          value: "{version}"
+          short: true
+      actions:
+        - name: "view_app"
+          text: "View Application"
+          type: "button"
+          url: "{app_url}"
+        - name: "view_logs"
+          text: "View Logs"
+          type: "button"
+          url: "{logs_url}"
+    
+    failure:
+      title: ":x: Deployment Failed"
+      color: "danger"
+      pretext: "Deployment failed and requires attention!"
+      fields:
+        - title: "Environment"
+          value: "{environment}"
+          short: true
+        - title: "Error"
+          value: "{error_message}"
+          short: false
+        - title: "Failed By"
+          value: "{actor}"
+          short: true
+        - title: "Branch"
+          value: "{branch}"
+          short: true
+      actions:
+        - name: "view_logs"
+          text: "View Logs"
+          type: "button"
+          url: "{logs_url}"
+          style: "danger"
+        - name: "retry"
+          text: "Retry Deployment"
+          type: "button"
+          url: "{retry_url}"
+        - name: "rollback"
+          text: "Rollback"
+          type: "button"
+          url: "{rollback_url}"
+          style: "primary"
+  
+  security_scan:
+    findings:
+      title: ":warning: Security Vulnerabilities Found"
+      color: "warning"
+      pretext: "Security scan completed with findings that require attention"
+      fields:
+        - title: "Critical"
+          value: "{critical_count}"
+          short: true
+        - title: "High"
+          value: "{high_count}"
+          short: true
+        - title: "Medium"
+          value: "{medium_count}"
+          short: true
+        - title: "Low"
+          value: "{low_count}"
+          short: true
+      actions:
+        - name: "view_report"
+          text: "View Security Report"
+          type: "button"
+          url: "{report_url}"
+        - name: "security_dashboard"
+          text: "Security Dashboard"
+          type: "button"
+          url: "{dashboard_url}"
+  
+  approval_request:
+    pending:
+      title: ":lock: Approval Required"
+      color: "#36a64f"
+      pretext: "Manual approval needed for deployment"
+      fields:
+        - title: "Environment"
+          value: "{environment}"
+          short: true
+        - title: "Requested By"
+          value: "{actor}"
+          short: true
+        - title: "Risk Level"
+          value: "{risk_level}"
+          short: true
+        - title: "Change Type"
+          value: "{change_type}"
+          short: true
+      actions:
+        - name: "approve"
+          text: "Approve"
+          type: "button"
+          url: "{approval_url}"
+          style: "primary"
+        - name: "review"
+          text: "Review Changes"
+          type: "button"
+          url: "{changes_url}"
+        - name: "reject"
+          text: "Reject"
+          type: "button"
+          url: "{approval_url}"
+          style: "danger"
+
+# GitHub Actions Implementation
+github_actions:
+  steps:
+    - name: Initialize Slack Notification
+      run: |
+        echo "::group::Slack Notification Setup"
+        
+        # Check if webhook URL or bot token is provided
+        if [ -z "${{ inputs.webhook_url }}" ] && [ -z "${{ inputs.bot_token }}" ]; then
+          echo "No Slack webhook URL or bot token provided, skipping notification"
+          echo "SKIP_SLACK_NOTIFICATION=true" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        # Check if notifications are enabled
+        if [ "${{ inputs.notification_enabled }}" = "false" ]; then
+          echo "Slack notifications disabled"
+          echo "SKIP_SLACK_NOTIFICATION=true" >> $GITHUB_ENV
+          exit 0
+        fi
+        
+        # Determine notification mode
+        NOTIFICATION_MODE="${{ inputs.notification_mode }}"
+        if [ -n "${{ inputs.webhook_url }}" ] && [ -n "${{ inputs.bot_token }}" ]; then
+          if [ "$NOTIFICATION_MODE" = "both" ]; then
+            echo "Using both webhook and bot modes"
+          elif [ "$NOTIFICATION_MODE" = "bot" ]; then
+            echo "Using bot mode only"
+          else
+            echo "Using webhook mode only"
+          fi
+        elif [ -n "${{ inputs.webhook_url }}" ]; then
+          echo "Using webhook mode"
+          echo "NOTIFICATION_MODE=webhook" >> $GITHUB_ENV
+        elif [ -n "${{ inputs.bot_token }}" ]; then
+          echo "Using bot mode"
+          echo "NOTIFICATION_MODE=bot" >> $GITHUB_ENV
+        fi
+        
+        # Create notification directory
+        mkdir -p slack-notification
+        
+        # Determine message color
+        STATUS="${{ inputs.status }}"
+        if [ "${{ inputs.color_scheme }}" = "auto" ] || [ "${{ inputs.color_scheme }}" = "status-based" ]; then
+          case $STATUS in
+            success)
+              MESSAGE_COLOR="${{ inputs.status_colors.success }}"
+              ;;
+            failure)
+              MESSAGE_COLOR="${{ inputs.status_colors.failure }}"
+              ;;
+            warning)
+              MESSAGE_COLOR="${{ inputs.status_colors.warning }}"
+              ;;
+            cancelled)
+              MESSAGE_COLOR="${{ inputs.status_colors.cancelled }}"
+              ;;
+            *)
+              MESSAGE_COLOR="${{ inputs.status_colors.info }}"
+              ;;
+          esac
+        else
+          MESSAGE_COLOR="${{ inputs.custom_color }}"
+        fi
+        
+        echo "MESSAGE_COLOR=$MESSAGE_COLOR" >> $GITHUB_ENV
+        echo "Slack notification initialized for status: $STATUS"
+        
+        echo "::endgroup::"
+    
+    - name: Check Rate Limiting
+      if: env.SKIP_SLACK_NOTIFICATION != 'true' && inputs.rate_limit_enabled
+      run: |
+        echo "::group::Rate Limiting Check"
+        
+        # Create rate limiting key based on repository and workflow
+        RATE_LIMIT_KEY="${{ github.repository }}-${{ github.workflow }}"
+        RATE_LIMIT_FILE="slack-notification/rate-limit-${RATE_LIMIT_KEY//\//-}.json"
+        
+        # Check existing rate limit data
+        CURRENT_HOUR=$(date +%Y-%m-%d-%H)
+        MAX_NOTIFICATIONS=${{ inputs.max_notifications_per_hour }}
+        
+        if [ -f "$RATE_LIMIT_FILE" ]; then
+          # Load existing rate limit data
+          STORED_HOUR=$(jq -r '.hour // empty' "$RATE_LIMIT_FILE" 2>/dev/null || echo "")
+          STORED_COUNT=$(jq -r '.count // 0' "$RATE_LIMIT_FILE" 2>/dev/null || echo "0")
+          
+          if [ "$STORED_HOUR" = "$CURRENT_HOUR" ]; then
+            if [ "$STORED_COUNT" -ge "$MAX_NOTIFICATIONS" ]; then
+              echo "Rate limit exceeded: $STORED_COUNT/$MAX_NOTIFICATIONS notifications this hour"
+              echo "SKIP_SLACK_NOTIFICATION=true" >> $GITHUB_ENV
+              echo "::warning::Slack notification rate limit exceeded"
+              exit 0
+            fi
+            NEW_COUNT=$((STORED_COUNT + 1))
+          else
+            NEW_COUNT=1
+          fi
+        else
+          NEW_COUNT=1
+        fi
+        
+        # Update rate limit data
+        cat > "$RATE_LIMIT_FILE" << EOF
+        {
+          "hour": "$CURRENT_HOUR",
+          "count": $NEW_COUNT,
+          "max_notifications": $MAX_NOTIFICATIONS,
+          "updated_at": "$(date -Iseconds)"
+        }
+        EOF
+        
+        echo "Rate limit check passed: $NEW_COUNT/$MAX_NOTIFICATIONS notifications this hour"
+        echo "::endgroup::"
+    
+    - name: Prepare Message Context
+      if: env.SKIP_SLACK_NOTIFICATION != 'true'
+      run: |
+        echo "::group::Message Context Preparation"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        # Build comprehensive context
+        context = {
+          "repository": "${{ github.repository }}",
+          "repository_name": "${{ github.repository }}".split('/')[-1],
+          "owner": "${{ github.repository }}".split('/')[0],
+          "workflow": "${{ github.workflow }}",
+          "run_id": "${{ github.run_id }}",
+          "run_number": "${{ github.run_number }}",
+          "actor": "${{ github.actor }}",
+          "ref": "${{ github.ref_name }}",
+          "sha": "${{ github.sha }}",
+          "sha_short": "${{ github.sha }}"[:8],
+          "environment": "${{ inputs.environment }}",
+          "status": "${{ inputs.status }}",
+          "event_type": "${{ inputs.event_type }}",
+          "priority": "${{ inputs.priority }}",
+          "timestamp": datetime.utcnow().isoformat(),
+          "unix_timestamp": int(datetime.utcnow().timestamp())
+        }
+        
+        # Add URLs
+        server_url = "${{ github.server_url }}"
+        repo_path = "${{ github.repository }}"
+        
+        context.update({
+          "run_url": f"{server_url}/{repo_path}/actions/runs/${{ github.run_id }}",
+          "commit_url": f"{server_url}/{repo_path}/commit/${{ github.sha }}",
+          "repository_url": f"{server_url}/{repo_path}",
+          "workflow_url": f"{server_url}/{repo_path}/actions/workflows/${{ github.workflow }}.yml"
+        })
+        
+        # Add custom fields
+        custom_fields = {}
+        if "${{ inputs.custom_fields }}" and "${{ inputs.custom_fields }}" != "{}":
+          try:
+            custom_fields = json.loads('${{ inputs.custom_fields }}')
+          except:
+            custom_fields = {}
+        
+        context.update(custom_fields)
+        
+        # Prepare mention strings
+        mentions = []
+        
+        # Add user mentions
+        if "${{ inputs.mention_users }}" and "${{ inputs.mention_users }}" != "[]":
+          try:
+            users = json.loads('${{ inputs.mention_users }}')
+            for user in users:
+              if not user.startswith('@'):
+                user = '@' + user
+              mentions.append(user)
+          except:
+            pass
+        
+        # Add group mentions
+        if "${{ inputs.mention_groups }}" and "${{ inputs.mention_groups }}" != "[]":
+          try:
+            groups = json.loads('${{ inputs.mention_groups }}')
+            for group in groups:
+              if not group.startswith('@'):
+                group = '@' + group
+              mentions.append(group)
+          except:
+            pass
+        
+        # Add channel/here mentions
+        if "${{ inputs.mention_here }}" == "true":
+          mentions.append("<!here>")
+        if "${{ inputs.mention_channel }}" == "true":
+          mentions.append("<!channel>")
+        
+        context["mentions"] = mentions
+        context["mentions_text"] = " ".join(mentions) + (" " if mentions else "")
+        
+        # Priority emojis
+        priority_emojis = {
+          "low": ":low_brightness:",
+          "normal": ":information_source:",
+          "high": ":warning:",
+          "urgent": ":rotating_light:"
+        }
+        context["priority_emoji"] = priority_emojis.get(context["priority"], ":information_source:")
+        
+        # Status emojis
+        status_emojis = {
+          "success": ":white_check_mark:",
+          "failure": ":x:",
+          "warning": ":warning:",
+          "info": ":information_source:",
+          "cancelled": ":no_entry_sign:"
+        }
+        context["status_emoji"] = status_emojis.get(context["status"], ":information_source:")
+        
+        # Save context
+        with open('slack-notification/context.json', 'w') as f:
+          json.dump(context, f, indent=2)
+        
+        print("Message context prepared successfully")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Generate Slack Message
+      if: env.SKIP_SLACK_NOTIFICATION != 'true'
+      run: |
+        echo "::group::Message Generation"
+        
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        # Load context
+        with open('slack-notification/context.json', 'r') as f:
+          context = json.load(f)
+        
+        message_format = "${{ inputs.message_format }}"
+        
+        if message_format == "blocks":
+          # Generate Block Kit message
+          blocks = []
+          
+          # Header block
+          header_text = context["mentions_text"] + context["status_emoji"] + " " + "${{ inputs.title }}"
+          blocks.append({
+            "type": "header",
+            "text": {
+              "type": "plain_text",
+              "text": header_text[:150]  # Slack limit
+            }
+          })
+          
+          # Main message block
+          message_text = "${{ inputs.message }}" if "${{ inputs.message }}" else f"Workflow *{context['workflow']}* has *{context['status']}*"
+          
+          # Add pretext if provided
+          if "${{ inputs.pretext }}":
+            message_text = "${{ inputs.pretext }}\n" + message_text
+          
+          blocks.append({
+            "type": "section",
+            "text": {
+              "type": "mrkdwn",
+              "text": message_text
+            }
+          })
+          
+          # Fields block
+          if "${{ inputs.include_fields }}" == "true":
+            fields = []
+            
+            # Standard fields
+            standard_fields = [
+              ("Repository", f"<{context['repository_url']}|{context['repository']}>"),
+              ("Workflow", f"<{context['run_url']}|{context['workflow']}>"),
+              ("Triggered by", context["actor"]),
+              ("Branch", context["ref"]),
+              ("Commit", f"<{context['commit_url']}|{context['sha_short']}>"),
+              ("Status", context["status"].title())
+            ]
+            
+            if context.get("environment"):
+              standard_fields.insert(-1, ("Environment", context["environment"]))
+            
+            # Add custom fields
+            if "${{ inputs.custom_fields }}" and "${{ inputs.custom_fields }}" != "{}":
+              try:
+                custom_fields = json.loads('${{ inputs.custom_fields }}')
+                for key, value in custom_fields.items():
+                  standard_fields.append((str(key), str(value)))
+              except:
+                pass
+            
+            # Convert to Slack field format (max 10 fields)
+            for name, value in standard_fields[:10]:
+              fields.append({
+                "type": "mrkdwn",
+                "text": f"*{name}:*\n{value}"
+              })
+            
+            if fields:
+              blocks.append({
+                "type": "section",
+                "fields": fields
+              })
+          
+          # Actions block
+          if "${{ inputs.include_actions }}" == "true":
+            elements = []
+            
+            # Standard actions
+            elements.append({
+              "type": "button",
+              "text": {
+                "type": "plain_text",
+                "text": "View Workflow Run"
+              },
+              "url": context["run_url"],
+              "action_id": "view_workflow"
+            })
+            
+            elements.append({
+              "type": "button", 
+              "text": {
+                "type": "plain_text",
+                "text": "View Commit"
+              },
+              "url": context["commit_url"],
+              "action_id": "view_commit"
+            })
+            
+            # Custom action buttons
+            if "${{ inputs.action_buttons }}" and "${{ inputs.action_buttons }}" != "[]":
+              try:
+                custom_actions = json.loads('${{ inputs.action_buttons }}')
+                for action in custom_actions[:3]:  # Limit to 3 custom actions
+                  button_style = action.get("style", "default")
+                  button_element = {
+                    "type": "button",
+                    "text": {
+                      "type": "plain_text",
+                      "text": action.get("name", "Action")
+                    },
+                    "url": action.get("url", "#"),
+                    "action_id": action.get("name", "custom_action").lower().replace(" ", "_")
+                  }
+                  
+                  if button_style in ["primary", "danger"]:
+                    button_element["style"] = button_style
+                  
+                  elements.append(button_element)
+              except:
+                pass
+            
+            if elements:
+              blocks.append({
+                "type": "actions",
+                "elements": elements[:5]  # Slack limit: 5 elements per actions block
+              })
+          
+          # Footer block
+          if "${{ inputs.include_footer }}" == "true":
+            footer_text = f"Pipeline run #{context['run_number']}"
+            if "${{ inputs.include_timestamp }}" == "true":
+              footer_block = {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": footer_text
+                  }
+                ]
+              }
+            else:
+              footer_block = {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": footer_text
+                  }
+                ]
+              }
+            
+            blocks.append(footer_block)
+          
+          # Create final message structure
+          slack_message = {
+            "channel": "${{ inputs.channel }}",
+            "blocks": blocks,
+            "username": "${{ inputs.bot_name }}" if "${{ inputs.bot_name }}" else None,
+            "icon_emoji": "${{ inputs.bot_emoji }}" if "${{ inputs.bot_emoji }}" else None
+          }
+          
+          # Add threading if specified
+          if "${{ inputs.thread_ts }}":
+            slack_message["thread_ts"] = "${{ inputs.thread_ts }}"
+            if "${{ inputs.reply_broadcast }}" == "true":
+              slack_message["reply_broadcast"] = True
+        
+        elif message_format == "attachments":
+          # Generate legacy attachment format
+          attachment = {
+            "color": os.environ.get("MESSAGE_COLOR", "${{ inputs.custom_color }}"),
+            "title": "${{ inputs.title }}",
+            "text": "${{ inputs.message }}" if "${{ inputs.message }}" else f"Workflow {context['workflow']} has {context['status']}",
+            "fallback": "${{ inputs.title }}",
+            "ts": context["unix_timestamp"] if "${{ inputs.include_timestamp }}" == "true" else None
+          }
+          
+          # Add pretext
+          if "${{ inputs.pretext }}":
+            attachment["pretext"] = "${{ inputs.pretext }}"
+          
+          # Add fields
+          if "${{ inputs.include_fields }}" == "true":
+            fields = []
+            
+            standard_fields = [
+              {"title": "Repository", "value": context["repository"], "short": True},
+              {"title": "Workflow", "value": context["workflow"], "short": True},
+              {"title": "Triggered by", "value": context["actor"], "short": True},
+              {"title": "Branch", "value": context["ref"], "short": True},
+              {"title": "Status", "value": context["status"].title(), "short": True}
+            ]
+            
+            if context.get("environment"):
+              standard_fields.insert(-1, {"title": "Environment", "value": context["environment"], "short": True})
+            
+            # Add custom fields
+            if "${{ inputs.custom_fields }}" and "${{ inputs.custom_fields }}" != "{}":
+              try:
+                custom_fields = json.loads('${{ inputs.custom_fields }}')
+                for key, value in custom_fields.items():
+                  fields.append({"title": str(key), "value": str(value), "short": True})
+              except:
+                pass
+            
+            attachment["fields"] = standard_fields + fields
+          
+          # Add actions
+          if "${{ inputs.include_actions }}" == "true":
+            actions = []
+            
+            actions.append({
+              "type": "button",
+              "text": "View Workflow Run",
+              "url": context["run_url"],
+              "style": "default"
+            })
+            
+            actions.append({
+              "type": "button",
+              "text": "View Commit", 
+              "url": context["commit_url"],
+              "style": "default"
+            })
+            
+            # Custom actions
+            if "${{ inputs.action_buttons }}" and "${{ inputs.action_buttons }}" != "[]":
+              try:
+                custom_actions = json.loads('${{ inputs.action_buttons }}')
+                for action in custom_actions[:3]:
+                  actions.append({
+                    "type": "button",
+                    "text": action.get("name", "Action"),
+                    "url": action.get("url", "#"),
+                    "style": action.get("style", "default")
+                  })
+              except:
+                pass
+            
+            attachment["actions"] = actions
+          
+          # Footer
+          if "${{ inputs.include_footer }}" == "true":
+            attachment["footer"] = f"Pipeline run #{context['run_number']}"
+            attachment["footer_icon"] = "https://github.com/github.png"
+          
+          slack_message = {
+            "channel": "${{ inputs.channel }}",
+            "attachments": [attachment],
+            "username": "${{ inputs.bot_name }}" if "${{ inputs.bot_name }}" else None,
+            "icon_emoji": "${{ inputs.bot_emoji }}" if "${{ inputs.bot_emoji }}" else None
+          }
+          
+          if "${{ inputs.thread_ts }}":
+            slack_message["thread_ts"] = "${{ inputs.thread_ts }}"
+        
+        else:
+          # Simple text format
+          text_parts = []
+          
+          if context["mentions_text"]:
+            text_parts.append(context["mentions_text"].strip())
+          
+          text_parts.append(context["status_emoji"] + " *" + "${{ inputs.title }}" + "*")
+          
+          if "${{ inputs.pretext }}":
+            text_parts.append("${{ inputs.pretext }}")
+          
+          message_text = "${{ inputs.message }}" if "${{ inputs.message }}" else f"Workflow `{context['workflow']}` has `{context['status']}`"
+          text_parts.append(message_text)
+          
+          # Add key info
+          info_parts = [
+            f"Repository: {context['repository']}",
+            f"Branch: {context['ref']}", 
+            f"Commit: {context['sha_short']}",
+            f"<{context['run_url']}|View Workflow Run>"
+          ]
+          
+          if context.get("environment"):
+            info_parts.insert(-1, f"Environment: {context['environment']}")
+          
+          text_parts.append("\n".join(info_parts))
+          
+          slack_message = {
+            "channel": "${{ inputs.channel }}",
+            "text": "\n\n".join(text_parts),
+            "username": "${{ inputs.bot_name }}" if "${{ inputs.bot_name }}" else None,
+            "icon_emoji": "${{ inputs.bot_emoji }}" if "${{ inputs.bot_emoji }}" else None
+          }
+          
+          if "${{ inputs.thread_ts }}":
+            slack_message["thread_ts"] = "${{ inputs.thread_ts }}"
+        
+        # Clean up None values
+        slack_message = {k: v for k, v in slack_message.items() if v is not None}
+        
+        # Save generated message
+        with open('slack-notification/slack-message.json', 'w') as f:
+          json.dump(slack_message, f, indent=2)
+        
+        print(f"Slack message generated in {message_format} format")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Send Slack Notification (Webhook)
+      if: env.SKIP_SLACK_NOTIFICATION != 'true' && (inputs.notification_mode == 'webhook' || inputs.notification_mode == 'both') && inputs.webhook_url != ''
+      run: |
+        echo "::group::Sending Slack Webhook Notification"
+        
+        # Load generated message
+        SLACK_MESSAGE=$(cat slack-notification/slack-message.json)
+        
+        # Send webhook notification
+        RESPONSE=$(curl -X POST "${{ inputs.webhook_url }}" \
+          -H "Content-Type: application/json" \
+          -d "$SLACK_MESSAGE" \
+          -w "%{http_code}" \
+          -s -o slack-notification/webhook-response.txt)
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "✅ Slack webhook notification sent successfully"
+          WEBHOOK_SUCCESS=true
+        else
+          echo "❌ Slack webhook notification failed with HTTP code: $HTTP_CODE"
+          echo "Response: $(cat slack-notification/webhook-response.txt 2>/dev/null || echo 'No response')"
+          WEBHOOK_SUCCESS=false
+        fi
+        
+        echo "WEBHOOK_SUCCESS=$WEBHOOK_SUCCESS" >> $GITHUB_ENV
+        echo "::endgroup::"
+    
+    - name: Send Slack Notification (Bot API)
+      if: env.SKIP_SLACK_NOTIFICATION != 'true' && (inputs.notification_mode == 'bot' || inputs.notification_mode == 'both') && inputs.bot_token != ''
+      run: |
+        echo "::group::Sending Slack Bot API Notification"
+        
+        # Load generated message
+        SLACK_MESSAGE=$(cat slack-notification/slack-message.json)
+        
+        # Send bot API notification
+        RESPONSE=$(curl -X POST "https://slack.com/api/chat.postMessage" \
+          -H "Authorization: Bearer ${{ inputs.bot_token }}" \
+          -H "Content-Type: application/json" \
+          -d "$SLACK_MESSAGE" \
+          -w "%{http_code}" \
+          -s -o slack-notification/bot-response.json)
+        
+        HTTP_CODE="${RESPONSE: -3}"
+        
+        if [ "$HTTP_CODE" = "200" ]; then
+          # Check API response for success
+          API_SUCCESS=$(jq -r '.ok // false' slack-notification/bot-response.json 2>/dev/null)
+          if [ "$API_SUCCESS" = "true" ]; then
+            echo "✅ Slack bot API notification sent successfully"
+            
+            # Extract thread timestamp for future replies
+            THREAD_TS=$(jq -r '.ts // empty' slack-notification/bot-response.json 2>/dev/null)
+            if [ -n "$THREAD_TS" ]; then
+              echo "SLACK_THREAD_TS=$THREAD_TS" >> $GITHUB_ENV
+              echo "Thread timestamp: $THREAD_TS"
+            fi
+            
+            BOT_SUCCESS=true
+          else
+            API_ERROR=$(jq -r '.error // "Unknown error"' slack-notification/bot-response.json 2>/dev/null)
+            echo "❌ Slack bot API call failed: $API_ERROR"
+            BOT_SUCCESS=false
+          fi
+        else
+          echo "❌ Slack bot API notification failed with HTTP code: $HTTP_CODE"
+          echo "Response: $(cat slack-notification/bot-response.json 2>/dev/null || echo 'No response')"
+          BOT_SUCCESS=false
+        fi
+        
+        echo "BOT_SUCCESS=$BOT_SUCCESS" >> $GITHUB_ENV
+        echo "::endgroup::"
+    
+    - name: Upload Log Files
+      if: env.SKIP_SLACK_NOTIFICATION != 'true' && inputs.upload_logs && env.BOT_SUCCESS == 'true' && inputs.bot_token != ''
+      run: |
+        echo "::group::Uploading Log Files"
+        
+        # Find log files to upload
+        LOG_FILES=""
+        if [ -f "build.log" ]; then
+          LOG_FILES="$LOG_FILES build.log"
+        fi
+        if [ -f "test-results.xml" ]; then
+          LOG_FILES="$LOG_FILES test-results.xml"
+        fi
+        if [ -d "security-results" ]; then
+          LOG_FILES="$LOG_FILES security-results/"
+        fi
+        
+        if [ -n "$LOG_FILES" ]; then
+          for file in $LOG_FILES; do
+            if [ -f "$file" ]; then
+              echo "Uploading log file: $file"
+              
+              curl -F "file=@$file" \
+                   -F "channels=${{ inputs.channel }}" \
+                   -F "title=Log file from ${{ github.workflow }}" \
+                   -F "initial_comment=Log file from workflow run #${{ github.run_number }}" \
+                   -H "Authorization: Bearer ${{ inputs.bot_token }}" \
+                   https://slack.com/api/files.upload || echo "Failed to upload $file"
+            fi
+          done
+        else
+          echo "No log files found to upload"
+        fi
+        
+        echo "::endgroup::"
+    
+    - name: Log Notification Results
+      if: env.SKIP_SLACK_NOTIFICATION != 'true'
+      run: |
+        echo "::group::Notification Results Logging"
+        
+        # Create comprehensive log
+        python3 << 'EOF'
+        import json
+        import os
+        from datetime import datetime
+        
+        log_entry = {
+          "timestamp": datetime.utcnow().isoformat(),
+          "notification_mode": "${{ inputs.notification_mode }}",
+          "webhook_success": os.environ.get("WEBHOOK_SUCCESS") == "true",
+          "bot_success": os.environ.get("BOT_SUCCESS") == "true",
+          "message_format": "${{ inputs.message_format }}",
+          "event_type": "${{ inputs.event_type }}",
+          "status": "${{ inputs.status }}",
+          "channel": "${{ inputs.channel }}",
+          "rate_limited": False,  # Would be set if rate limiting triggered
+          "thread_ts": os.environ.get("SLACK_THREAD_TS", "")
+        }
+        
+        # Overall success determination
+        if "${{ inputs.notification_mode }}" == "webhook":
+          log_entry["overall_success"] = log_entry["webhook_success"]
+        elif "${{ inputs.notification_mode }}" == "bot":
+          log_entry["overall_success"] = log_entry["bot_success"]
+        else:  # both
+          log_entry["overall_success"] = log_entry["webhook_success"] or log_entry["bot_success"]
+        
+        with open('slack-notification/notification-log.json', 'w') as f:
+          json.dump(log_entry, f, indent=2)
+        
+        if log_entry["overall_success"]:
+          print("✅ Slack notification completed successfully")
+        else:
+          print("❌ Slack notification failed")
+          # Non-blocking failure
+          print("::warning::Slack notification failed but continuing workflow")
+        EOF
+        
+        echo "::endgroup::"
+    
+    - name: Upload Notification Artifacts
+      if: env.SKIP_SLACK_NOTIFICATION != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: slack-notification-artifacts
+        path: |
+          slack-notification/
+        retention-days: 7
+
+# Azure DevOps Implementation
+azure_devops:
+  steps:
+    - task: PowerShell@2
+      displayName: 'Send Slack Notification'
+      inputs:
+        targetType: 'inline'
+        script: |
+          # Azure DevOps PowerShell implementation
+          $webhookUrl = "${{ parameters.webhook_url }}"
+          $botToken = "${{ parameters.bot_token }}"
+          $channel = "${{ parameters.channel }}"
+          $title = "${{ parameters.title }}"
+          $message = "${{ parameters.message }}"
+          $status = "${{ parameters.status }}"
+          
+          if (-not [string]::IsNullOrEmpty($webhookUrl)) {
+            # Webhook mode
+            $slackMessage = @{
+              channel = $channel
+              text = "$title`n$message"
+              attachments = @(
+                @{
+                  color = if ($status -eq "success") { "good" } elseif ($status -eq "failure") { "danger" } else { "warning" }
+                  fields = @(
+                    @{ title = "Project"; value = "$(System.TeamProject)"; short = $true }
+                    @{ title = "Pipeline"; value = "$(Build.DefinitionName)"; short = $true }
+                    @{ title = "Status"; value = $status; short = $true }
+                  )
+                }
+              )
+            }
+            
+            $body = $slackMessage | ConvertTo-Json -Depth 10
+            $response = Invoke-RestMethod -Uri $webhookUrl -Method Post -Body $body -ContentType "application/json"
+            Write-Host "Slack webhook notification sent"
+          } elseif (-not [string]::IsNullOrEmpty($botToken)) {
+            # Bot API mode
+            $headers = @{ Authorization = "Bearer $botToken" }
+            $slackMessage = @{
+              channel = $channel
+              text = "$title`n$message"
+            }
+            
+            $body = $slackMessage | ConvertTo-Json -Depth 10
+            $response = Invoke-RestMethod -Uri "https://slack.com/api/chat.postMessage" -Method Post -Body $body -ContentType "application/json" -Headers $headers
+            Write-Host "Slack bot notification sent"
+          } else {
+            Write-Host "No Slack webhook URL or bot token provided"
+          }
+
+# GitLab CI Implementation
+gitlab_ci:
+  slack_notification:
+    stage: notify
+    image: alpine:latest
+    before_script:
+      - apk add --no-cache curl jq
+    script:
+      - |
+        if [ -n "$SLACK_WEBHOOK_URL" ] || [ -n "$SLACK_BOT_TOKEN" ]; then
+          # Generate Slack message
+          if [ -n "$SLACK_WEBHOOK_URL" ]; then
+            # Webhook mode
+            curl -X POST "$SLACK_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "text": "'"$[[ inputs.title ]]"'",
+                "attachments": [{
+                  "color": "'"$(if [ "$[[ inputs.status ]]" = "success" ]; then echo "good"; elif [ "$[[ inputs.status ]]" = "failure" ]; then echo "danger"; else echo "warning"; fi)"'",
+                  "fields": [
+                    {"title": "Project", "value": "'"$CI_PROJECT_NAME"'", "short": true},
+                    {"title": "Pipeline", "value": "'"$CI_PIPELINE_ID"'", "short": true},
+                    {"title": "Branch", "value": "'"$CI_COMMIT_REF_NAME"'", "short": true},
+                    {"title": "Status", "value": "'"$[[ inputs.status ]]"'", "short": true}
+                  ]
+                }]
+              }'
+          fi
+          
+          if [ -n "$SLACK_BOT_TOKEN" ]; then
+            # Bot API mode
+            curl -X POST "https://slack.com/api/chat.postMessage" \
+              -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "channel": "'"$[[ inputs.channel ]]"'",
+                "text": "'"$[[ inputs.title ]]"'\n'"$[[ inputs.message ]]"'"
+              }'
+          fi
+          
+          echo "Slack notification sent"
+        else
+          echo "No Slack configuration provided"
+        fi
+
+# Advanced Features
+advanced_features:
+  interactive_messages:
+    supported: true
+    button_actions: true
+    dropdown_menus: true
+    modal_dialogs: true
+  
+  file_uploads:
+    supported: true
+    formats: ["log", "json", "xml", "txt", "pdf"]
+    max_size: "1GB"
+  
+  threading:
+    supported: true
+    auto_thread: false
+    broadcast_replies: false
+  
+  scheduled_messages:
+    supported: true
+    delay_options: ["immediate", "1m", "5m", "15m", "1h"]
+
+# Error Handling
+error_handling:
+  retry_policy:
+    max_retries: 3
+    retry_delay: 5
+    backoff_multiplier: 2
+    retry_on_rate_limit: true
+  
+  fallback_channels:
+    - email
+    - teams
+    - webhook
+  
+  graceful_degradation:
+    blocks_to_attachments: true
+    attachments_to_simple: true

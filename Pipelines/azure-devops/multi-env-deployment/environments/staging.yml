@@ -1,0 +1,251 @@
+variables:
+  # Environment Configuration
+  environment: 'staging'
+  environmentDisplayName: 'Staging'
+  
+  # Azure Service Connection and Subscription
+  azureServiceConnection: 'Azure-Staging-Service-Connection'
+  subscriptionId: '$(AZURE_STAGING_SUBSCRIPTION_ID)'
+  tenantId: '$(AZURE_TENANT_ID)'
+  
+  # Resource Group and Location
+  resourceGroup: 'rg-multienv-staging'
+  location: 'eastus2'
+  
+  # Naming Convention Variables
+  resourceNamePrefix: 'multienv-staging'
+  environmentSuffix: 'staging'
+  
+  # App Service Configuration
+  appServiceName: 'app-multienv-staging-$(Build.BuildId)'
+  appServicePlan: 'asp-multienv-staging'
+  appServicePlanSku: 'P1v3'
+  
+  # Database Configuration  
+  sqlServerName: 'sql-multienv-staging-$(environmentSuffix)'
+  sqlDatabaseName: 'sqldb-multienv-staging'
+  sqlServerAdminLogin: 'sqladmin'
+  sqlDatabaseSku: 'S1'
+  sqlDatabaseMaxSize: '10GB'
+  
+  # Storage Configuration
+  storageAccountName: 'stmultienvstaging$(Build.BuildId)'
+  storageAccountSku: 'Standard_GRS'
+  storageAccountKind: 'StorageV2'
+  
+  # Azure Kubernetes Service Configuration
+  aksClusterName: 'aks-multienv-staging'
+  aksNodeCount: 2
+  aksNodeVmSize: 'Standard_D2s_v3'
+  aksKubernetesVersion: '1.28.3'
+  
+  # Application Insights and Monitoring
+  appInsightsName: 'ai-multienv-staging'
+  logAnalyticsWorkspace: 'law-multienv-staging'
+  
+  # Container Registry
+  containerRegistry: 'acrmultienvstaging'
+  containerRegistrySku: 'Standard'
+  
+  # Key Vault Configuration
+  keyVaultName: 'kv-multienv-staging-$(Build.BuildId)'
+  keyVaultSku: 'Standard'
+  
+  # Virtual Network Configuration
+  virtualNetworkName: 'vnet-multienv-staging'
+  virtualNetworkAddressSpace: '10.2.0.0/16'
+  subnetName: 'subnet-multienv-staging'
+  subnetAddressPrefix: '10.2.1.0/24'
+  
+  # Feature Flags and Configuration
+  featureFlagConnectionString: '$(STAGING_FEATURE_FLAG_CONNECTION_STRING)'
+  appConfigurationName: 'appconfig-multienv-staging'
+  
+  # Deployment Configuration
+  deploymentSlots: true
+  deploymentSlotName: 'staging'
+  deploymentStrategy: 'blueGreen'
+  healthCheckPath: '/health'
+  healthCheckInterval: 30
+  
+  # Blue-Green Deployment Configuration
+  enableBlueGreen: true
+  blueGreenSlotName: 'production'
+  blueGreenWarmupTime: 300
+  blueGreenValidationTimeout: 600
+  
+  # Canary Deployment Configuration
+  enableCanary: true
+  canaryPercentage: 25
+  canaryDuration: 600
+  canarySuccessThreshold: 95
+  
+  # Security Configuration
+  enableTLS: true
+  minTlsVersion: '1.2'
+  httpsOnly: true
+  enableManagedIdentity: true
+  enablePrivateEndpoints: true
+  
+  # Backup Configuration
+  enableBackup: true
+  backupRetentionDays: 30
+  backupFrequency: 'Daily'
+  
+  # Auto-scaling Configuration
+  enableAutoScale: true
+  minReplicas: 2
+  maxReplicas: 5
+  cpuThreshold: 70
+  memoryThreshold: 80
+  
+  # Performance Configuration
+  enableApplicationInsights: true
+  enableSqlInsights: true
+  enableLogging: true
+  logRetentionDays: 90
+  enableDistributedTracing: true
+  
+  # Cost Management
+  budgetName: 'budget-multienv-staging'
+  budgetAmount: 500
+  budgetAlertThreshold: 80
+  
+  # Testing Configuration
+  runLoadTests: true
+  loadTestDuration: 300
+  loadTestUsers: 50
+  performanceTestThreshold: 2000
+  
+  # Database Migration Configuration
+  runDatabaseMigrations: true
+  databaseMigrationTimeout: 600
+  enableDatabaseBackup: true
+  
+  # Environment-Specific Tags
+  tags: |
+    Environment=Staging
+    Application=MultiEnvApp
+    CostCenter=Engineering
+    Owner=DevOps-Team
+    Project=MultiEnvironment-Pipeline
+    Backup=Required
+    Monitoring=Enhanced
+    Compliance=PreProduction
+    DataClassification=Internal
+    AutoShutdown=Disabled
+    HighAvailability=Enabled
+  
+  # Staging-Specific Environment Variables
+  environmentVariables: |
+    ASPNETCORE_ENVIRONMENT=Staging
+    AZURE_ENVIRONMENT=Staging
+    LOG_LEVEL=Information
+    ENABLE_SWAGGER=false
+    DATABASE_CONNECTION_TIMEOUT=60
+    CACHE_ENABLED=true
+    EXTERNAL_API_TIMEOUT=30000
+    FEATURE_FLAG_REFRESH_INTERVAL=60
+    HEALTH_CHECK_INTERVAL=30
+    METRICS_ENABLED=true
+    DEBUG_MODE=false
+    RATE_LIMITING_ENABLED=true
+    
+  # Performance Monitoring Configuration
+  enableRemoteDebugging: false
+  enableProfiler: true
+  enableNetworkTrace: true
+  enableSyntheticMonitoring: true
+  
+  # Security Scanning Configuration
+  skipSecurityScans: false
+  securityScanTimeout: 600
+  allowHighVulnerabilities: false
+  allowCriticalVulnerabilities: false
+  enablePenetrationTesting: true
+  
+  # Approval and Governance Configuration
+  requireApproval: true
+  approvalTimeout: 240
+  approvers: |
+    - devops-leads@company.com
+    - qa-team@company.com
+  
+  # Notification Configuration
+  slackChannel: '#staging-deployments'
+  teamsWebhook: '$(STAGING_TEAMS_WEBHOOK)'
+  emailNotification: 'staging-notifications@company.com'
+  notifyOnSuccess: true
+  notifyOnFailure: true
+  
+  # Infrastructure as Code Configuration
+  terraformStateStorageAccount: 'stterraformstaging'
+  terraformStateContainer: 'tfstate'
+  terraformStateKey: 'multienv-staging.tfstate'
+  bicepParametersFile: 'parameters.staging.json'
+  
+  # Database Configuration
+  enableSqlAudit: true
+  sqlFirewallRules: |
+    - name: "AllowAllAzureServices"
+      startIpAddress: "0.0.0.0"
+      endIpAddress: "0.0.0.0"
+    - name: "AllowStagingNetwork"
+      startIpAddress: "10.2.0.0"
+      endIpAddress: "10.2.255.255"
+  
+  # Advanced Database Features
+  enableSqlAdvancedThreatProtection: true
+  enableSqlVulnerabilityAssessment: true
+  sqlBackupRetentionDays: 30
+  
+  # Network Security Configuration
+  enableWAF: true
+  wafMode: 'Prevention'
+  enableDDoSProtection: true
+  allowedIpRanges: |
+    - "10.2.0.0/16"
+    - "192.168.1.0/24"
+  
+  # Resource Limits and Performance
+  cpuLimit: '2'
+  memoryLimit: '4Gi'
+  storageLimit: '100Gi'
+  
+  # Disaster Recovery Configuration
+  enableGeoReplication: true
+  backupRegion: 'westus2'
+  rpoTarget: 60
+  rtoTarget: 240
+  
+  # Compliance and Auditing
+  enableAuditLogs: true
+  auditLogRetentionDays: 90
+  enableComplianceScanning: true
+  complianceFrameworks: |
+    - ISO27001
+    - SOC2
+  
+  # Service Level Objectives
+  availabilityTarget: 99.5
+  performanceTarget: 95
+  errorRateThreshold: 1
+  
+  # Integration Testing Configuration
+  enableIntegrationTests: true
+  integrationTestTimeout: 900
+  externalServiceMocks: true
+  
+  # Data Protection Configuration
+  enableDataEncryption: true
+  encryptionKeyRotationDays: 90
+  enableDataMasking: true
+  
+  # Rollback Configuration
+  enableAutomaticRollback: true
+  rollbackThreshold: 90
+  rollbackTimeout: 300
+  rollbackValidationChecks: |
+    - healthCheck
+    - performanceCheck
+    - errorRateCheck

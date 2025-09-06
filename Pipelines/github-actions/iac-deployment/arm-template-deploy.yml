@@ -1,0 +1,737 @@
+name: ARM Template Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - production
+      deployment_mode:
+        description: 'Deployment mode'
+        required: true
+        default: 'Incremental'
+        type: choice
+        options:
+        - Incremental
+        - Complete
+      arm_action:
+        description: 'ARM action to perform'
+        required: true
+        default: 'validate'
+        type: choice
+        options:
+        - validate
+        - what-if
+        - deploy
+        - delete
+      subscription_id:
+        description: 'Azure Subscription ID (optional, uses default if empty)'
+        required: false
+        type: string
+      force_delete:
+        description: 'Force delete resources (for Complete mode)'
+        required: false
+        default: false
+        type: boolean
+  push:
+    branches: [main, develop]
+    paths: ['arm-templates/**', '.github/workflows/arm-template-deploy.yml']
+  pull_request:
+    branches: [main]
+    paths: ['arm-templates/**']
+
+env:
+  AZURE_CLI_VERSION: '2.56.0'
+  ARM_TTK_VERSION: '0.21.0'
+  CHECKOV_VERSION: '3.1.25'
+
+jobs:
+  arm-template-validation:
+    name: ARM Template Validation (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+      id-token: write
+    outputs:
+      deployment-name: ${{ steps.generate.outputs.deployment-name }}
+      resource-group: ${{ steps.generate.outputs.resource-group }}
+      template-validation: ${{ steps.validate.outputs.validation-result }}
+      arm-ttk-results: ${{ steps.arm-ttk.outputs.test-results }}
+      
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Azure CLI
+      uses: azure/CLI@v1
+      with:
+        azcliversion: ${{ env.AZURE_CLI_VERSION }}
+
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup Security Tools
+      run: |
+        # Install Checkov for ARM templates
+        pip install checkov==${{ env.CHECKOV_VERSION }}
+        
+        # Install jq for JSON processing
+        sudo apt-get update && sudo apt-get install -y jq
+
+    - name: Download ARM-TTK
+      run: |
+        echo "📥 Downloading ARM Template Toolkit..."
+        wget https://github.com/Azure/arm-ttk/archive/refs/heads/master.zip -O arm-ttk.zip
+        unzip arm-ttk.zip
+        mv arm-ttk-master arm-ttk
+
+    - name: Generate Deployment Metadata
+      id: generate
+      run: |
+        DEPLOYMENT_NAME="arm-deploy-$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+        ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+        RESOURCE_GROUP="rg-$ENVIRONMENT-arm-$(git rev-parse --short HEAD)"
+        
+        echo "deployment-name=$DEPLOYMENT_NAME" >> $GITHUB_OUTPUT
+        echo "resource-group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+        echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+        
+        echo "🏷️ Generated deployment metadata:"
+        echo "  Deployment Name: $DEPLOYMENT_NAME"
+        echo "  Resource Group: $RESOURCE_GROUP"
+        echo "  Environment: $ENVIRONMENT"
+
+    - name: JSON Schema Validation
+      run: |
+        echo "🔍 Validating ARM template JSON schema..."
+        cd arm-templates
+        
+        for template in *.json; do
+          if [ -f "$template" ] && [[ "$template" != *"parameters"* ]]; then
+            echo "Validating JSON syntax: $template"
+            if ! jq empty "$template"; then
+              echo "❌ Invalid JSON syntax in $template"
+              exit 1
+            else
+              echo "✅ Valid JSON syntax: $template"
+            fi
+          fi
+        done
+
+    - name: ARM Template Toolkit (ARM-TTK) Tests
+      id: arm-ttk
+      run: |
+        echo "🧪 Running ARM Template Toolkit tests..."
+        cd arm-templates
+        
+        # Run ARM-TTK tests
+        pwsh -Command "
+        Import-Module ../arm-ttk/arm-ttk/arm-ttk.psd1
+        \$results = @()
+        Get-ChildItem -Path . -Filter '*.json' | Where-Object { \$_.Name -notlike '*parameters*' } | ForEach-Object {
+          Write-Host \"Testing template: \$(\$_.Name)\"
+          \$testResults = Test-AzTemplate -TemplatePath \$_.FullName
+          \$results += \$testResults
+        }
+        \$results | ConvertTo-Json -Depth 10 | Out-File -FilePath 'arm-ttk-results.json'
+        \$failedTests = (\$results | Where-Object { \$_.Passed -eq \$false }).Count
+        Write-Host \"ARM-TTK Results: \$failedTests failed tests\"
+        if (\$failedTests -gt 0) {
+          \$results | Where-Object { \$_.Passed -eq \$false } | Format-Table -AutoSize
+        }
+        " || true
+        
+        if [ -f "arm-ttk-results.json" ]; then
+          FAILED_TESTS=$(jq '[.[] | select(.Passed == false)] | length' arm-ttk-results.json 2>/dev/null || echo 0)
+          echo "test-results=$FAILED_TESTS" >> $GITHUB_OUTPUT
+          
+          if [ "$FAILED_TESTS" -gt 0 ]; then
+            echo "⚠️ ARM-TTK found $FAILED_TESTS failing tests"
+          else
+            echo "✅ All ARM-TTK tests passed"
+          fi
+        else
+          echo "test-results=0" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Security Scan - Checkov
+      id: checkov
+      run: |
+        cd arm-templates
+        echo "🔒 Running Checkov security scan on ARM templates..."
+        
+        checkov -d . \
+          --framework arm \
+          --output cli \
+          --output json \
+          --output-file-path console,checkov-results.json \
+          --soft-fail \
+          --compact
+        
+        if [ -f "checkov-results.json" ]; then
+          FAILED_CHECKS=$(jq '.results.failed_checks | length' checkov-results.json 2>/dev/null || echo 0)
+          echo "security-issues=$FAILED_CHECKS" >> $GITHUB_OUTPUT
+          
+          if [ "$FAILED_CHECKS" -gt 0 ]; then
+            echo "⚠️ Checkov found $FAILED_CHECKS security issues"
+          else
+            echo "✅ No security issues found by Checkov"
+          fi
+        else
+          echo "security-issues=0" >> $GITHUB_OUTPUT
+        fi
+      continue-on-error: true
+
+    - name: Template Parameter Validation
+      run: |
+        echo "📋 Validating template parameters..."
+        cd arm-templates
+        
+        for template in *.json; do
+          if [ -f "$template" ] && [[ "$template" != *"parameters"* ]]; then
+            echo "Checking parameters for: $template"
+            
+            # Extract required parameters
+            REQUIRED_PARAMS=$(jq -r '.parameters | to_entries[] | select(.value.defaultValue == null) | .key' "$template" 2>/dev/null || echo "")
+            
+            if [ ! -z "$REQUIRED_PARAMS" ]; then
+              echo "Required parameters for $template:"
+              echo "$REQUIRED_PARAMS" | while read -r param; do
+                echo "  - $param"
+              done
+              
+              # Check if parameters file exists
+              PARAM_FILE="${template%.json}.parameters.json"
+              if [ ! -f "$PARAM_FILE" ]; then
+                echo "⚠️ Warning: No parameters file found for $template (expected: $PARAM_FILE)"
+              fi
+            else
+              echo "No required parameters for $template"
+            fi
+          fi
+        done
+
+    - name: Azure Template Validation
+      id: validate
+      run: |
+        cd arm-templates
+        echo "🔍 Running Azure template validation..."
+        
+        # Create resource group if it doesn't exist
+        az group create \
+          --name "${{ steps.generate.outputs.resource-group }}" \
+          --location "East US 2" \
+          --tags environment=${{ steps.generate.outputs.environment }} deployment=arm-template
+
+        VALIDATION_RESULTS=()
+        VALIDATION_SUCCESS=0
+        VALIDATION_TOTAL=0
+        
+        for template in *.json; do
+          if [ -f "$template" ] && [[ "$template" != *"parameters"* ]]; then
+            VALIDATION_TOTAL=$((VALIDATION_TOTAL + 1))
+            echo "Validating template: $template"
+            
+            PARAM_FILE="${template%.json}.parameters.json"
+            if [ -f "$PARAM_FILE" ]; then
+              PARAM_ARG="--parameters @$PARAM_FILE"
+            else
+              PARAM_ARG=""
+            fi
+            
+            if az deployment group validate \
+              --resource-group "${{ steps.generate.outputs.resource-group }}" \
+              --template-file "$template" \
+              $PARAM_ARG \
+              --output json > "${template%.json}.validation.json" 2>&1; then
+              echo "✅ Validation passed for $template"
+              VALIDATION_SUCCESS=$((VALIDATION_SUCCESS + 1))
+            else
+              echo "❌ Validation failed for $template"
+              cat "${template%.json}.validation.json"
+            fi
+          fi
+        done
+        
+        echo "validation-result=$VALIDATION_SUCCESS/$VALIDATION_TOTAL" >> $GITHUB_OUTPUT
+        
+        if [ "$VALIDATION_SUCCESS" -eq "$VALIDATION_TOTAL" ]; then
+          echo "✅ All templates passed Azure validation"
+        else
+          echo "❌ $((VALIDATION_TOTAL - VALIDATION_SUCCESS)) templates failed Azure validation"
+          exit 1
+        fi
+
+    - name: What-If Analysis
+      id: what-if
+      if: github.event.inputs.arm_action == 'what-if' || github.event_name == 'pull_request'
+      run: |
+        cd arm-templates
+        echo "🔍 Running What-If analysis..."
+        
+        for template in *.json; do
+          if [ -f "$template" ] && [[ "$template" != *"parameters"* ]]; then
+            echo "Running What-If for: $template"
+            
+            PARAM_FILE="${template%.json}.parameters.json"
+            if [ -f "$PARAM_FILE" ]; then
+              PARAM_ARG="--parameters @$PARAM_FILE"
+            else
+              PARAM_ARG=""
+            fi
+            
+            az deployment group what-if \
+              --resource-group "${{ steps.generate.outputs.resource-group }}" \
+              --template-file "$template" \
+              $PARAM_ARG \
+              --mode "${{ github.event.inputs.deployment_mode || 'Incremental' }}" \
+              --output yaml > "${template%.json}.what-if.yaml" || true
+            
+            if [ -f "${template%.json}.what-if.yaml" ]; then
+              echo "What-If results for $template:"
+              head -20 "${template%.json}.what-if.yaml"
+            fi
+          fi
+        done
+
+    - name: Cost Estimation
+      id: cost-estimation
+      run: |
+        echo "💰 Estimating deployment costs..."
+        cd arm-templates
+        
+        TOTAL_RESOURCES=0
+        ESTIMATED_COST=0
+        
+        for template in *.json; do
+          if [ -f "$template" ] && [[ "$template" != *"parameters"* ]]; then
+            # Count resources in template
+            RESOURCE_COUNT=$(jq '.resources | length' "$template" 2>/dev/null || echo 0)
+            TOTAL_RESOURCES=$((TOTAL_RESOURCES + RESOURCE_COUNT))
+            
+            # Basic cost estimation (simplified)
+            TEMPLATE_COST=$((RESOURCE_COUNT * 100))
+            ESTIMATED_COST=$((ESTIMATED_COST + TEMPLATE_COST))
+            
+            echo "Template $template: $RESOURCE_COUNT resources, estimated \$$TEMPLATE_COST/month"
+          fi
+        done
+        
+        echo "total-resources=$TOTAL_RESOURCES" >> $GITHUB_OUTPUT
+        echo "estimated-cost=$ESTIMATED_COST" >> $GITHUB_OUTPUT
+        
+        echo "📊 Cost Estimation Summary:"
+        echo "  Total Resources: $TOTAL_RESOURCES"
+        echo "  Estimated Monthly Cost: \$$ESTIMATED_COST"
+
+    - name: Upload Validation Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: arm-validation-${{ steps.generate.outputs.environment }}
+        path: |
+          arm-templates/*.validation.json
+          arm-templates/*.what-if.yaml
+          arm-templates/arm-ttk-results.json
+          arm-templates/checkov-results.json
+        retention-days: 30
+
+    - name: Comment on PR
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          let comment = '## ARM Template Validation Results\n\n';
+          comment += `**Environment:** ${{ steps.generate.outputs.environment }}\n`;
+          comment += `**Resource Group:** ${{ steps.generate.outputs.resource-group }}\n`;
+          comment += `**Template Validation:** ${{ steps.validate.outputs.validation-result }}\n`;
+          comment += `**ARM-TTK Failed Tests:** ${{ steps.arm-ttk.outputs.test-results }}\n`;
+          comment += `**Security Issues:** ${{ steps.checkov.outputs.security-issues }}\n`;
+          comment += `**Estimated Cost:** \$${{ steps.cost-estimation.outputs.estimated-cost }}/month\n`;
+          comment += `**Total Resources:** ${{ steps.cost-estimation.outputs.total-resources }}\n\n`;
+          
+          if ('${{ steps.validate.outputs.validation-result }}'.includes('/')) {
+            const [success, total] = '${{ steps.validate.outputs.validation-result }}'.split('/');
+            if (success === total) {
+              comment += '✅ All templates passed validation\n';
+            } else {
+              comment += '❌ Some templates failed validation\n';
+            }
+          }
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  arm-template-deployment:
+    name: ARM Template Deployment (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    needs: arm-template-validation
+    if: |
+      github.event.inputs.arm_action == 'deploy' || 
+      (github.ref == 'refs/heads/main' && github.event_name == 'push')
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}-deploy
+      url: ${{ steps.deployment.outputs.resource-group-url }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Download Validation Results
+      uses: actions/download-artifact@v4
+      with:
+        name: arm-validation-${{ needs.arm-template-validation.outputs.environment }}
+        path: arm-templates/
+
+    - name: Pre-Deployment Checks
+      run: |
+        echo "🔍 Running pre-deployment checks..."
+        
+        # Check if resource group exists
+        if ! az group show --name "${{ needs.arm-template-validation.outputs.resource-group }}" --output none 2>/dev/null; then
+          echo "Creating resource group..."
+          az group create \
+            --name "${{ needs.arm-template-validation.outputs.resource-group }}" \
+            --location "East US 2" \
+            --tags environment=${{ needs.arm-template-validation.outputs.environment }} deployment=arm-template
+        fi
+        
+        # Check deployment mode warnings
+        if [ "${{ github.event.inputs.deployment_mode }}" == "Complete" ]; then
+          echo "⚠️ WARNING: Using Complete deployment mode - this will delete resources not defined in the template!"
+        fi
+
+    - name: Deploy ARM Templates
+      id: deployment
+      run: |
+        cd arm-templates
+        echo "🚀 Deploying ARM templates..."
+        
+        DEPLOYMENT_RESULTS=()
+        SUCCESSFUL_DEPLOYMENTS=0
+        TOTAL_DEPLOYMENTS=0
+        
+        for template in *.json; do
+          if [ -f "$template" ] && [[ "$template" != *"parameters"* ]]; then
+            TOTAL_DEPLOYMENTS=$((TOTAL_DEPLOYMENTS + 1))
+            TEMPLATE_NAME="${template%.json}"
+            DEPLOYMENT_NAME="${{ needs.arm-template-validation.outputs.deployment-name }}-${TEMPLATE_NAME}"
+            
+            echo "Deploying template: $template"
+            
+            PARAM_FILE="${template%.json}.parameters.json"
+            if [ -f "$PARAM_FILE" ]; then
+              PARAM_ARG="--parameters @$PARAM_FILE"
+            else
+              PARAM_ARG=""
+            fi
+            
+            if az deployment group create \
+              --resource-group "${{ needs.arm-template-validation.outputs.resource-group }}" \
+              --template-file "$template" \
+              $PARAM_ARG \
+              --name "$DEPLOYMENT_NAME" \
+              --mode "${{ github.event.inputs.deployment_mode || 'Incremental' }}" \
+              --output json > "${TEMPLATE_NAME}.deployment.json"; then
+              
+              echo "✅ Successfully deployed $template"
+              SUCCESSFUL_DEPLOYMENTS=$((SUCCESSFUL_DEPLOYMENTS + 1))
+              
+              # Extract deployment outputs
+              OUTPUTS=$(jq -r '.properties.outputs // {}' "${TEMPLATE_NAME}.deployment.json")
+              echo "$OUTPUTS" > "${TEMPLATE_NAME}.outputs.json"
+              
+            else
+              echo "❌ Failed to deploy $template"
+              cat "${TEMPLATE_NAME}.deployment.json" || echo "No deployment result file"
+            fi
+          fi
+        done
+        
+        echo "deployment-summary=$SUCCESSFUL_DEPLOYMENTS/$TOTAL_DEPLOYMENTS" >> $GITHUB_OUTPUT
+        echo "resource-group-url=https://portal.azure.com/#@${{ secrets.AZURE_TENANT_ID }}/resource/subscriptions/${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ needs.arm-template-validation.outputs.resource-group }}/overview" >> $GITHUB_OUTPUT
+        
+        if [ "$SUCCESSFUL_DEPLOYMENTS" -eq "$TOTAL_DEPLOYMENTS" ]; then
+          echo "✅ All templates deployed successfully"
+          echo "deployment-status=success" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Some template deployments failed"
+          echo "deployment-status=partial" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    - name: Post-Deployment Validation
+      id: post-deployment
+      run: |
+        echo "🔍 Running post-deployment validation..."
+        
+        # List deployed resources
+        DEPLOYED_RESOURCES=$(az resource list \
+          --resource-group "${{ needs.arm-template-validation.outputs.resource-group }}" \
+          --query 'length(@)')
+        
+        echo "deployed-resources=$DEPLOYED_RESOURCES" >> $GITHUB_OUTPUT
+        echo "Deployed $DEPLOYED_RESOURCES resources"
+        
+        # Check resource health
+        az resource list \
+          --resource-group "${{ needs.arm-template-validation.outputs.resource-group }}" \
+          --query '[].{Name:name,Type:type,ProvisioningState:properties.provisioningState}' \
+          --output table > deployed-resources.txt
+        
+        cat deployed-resources.txt
+
+    - name: Tag Resources
+      run: |
+        echo "🏷️ Tagging deployed resources..."
+        
+        az group update \
+          --resource-group "${{ needs.arm-template-validation.outputs.resource-group }}" \
+          --set tags.environment=${{ needs.arm-template-validation.outputs.environment }} \
+          --set tags.deployment-date=$(date +%Y-%m-%d) \
+          --set tags.git-commit=${{ github.sha }} \
+          --set tags.deployed-by="${{ github.actor }}" \
+          --set tags.deployment-mode="${{ github.event.inputs.deployment_mode || 'Incremental' }}"
+
+    - name: Generate Deployment Summary
+      run: |
+        cd arm-templates
+        echo "# ARM Template Deployment Summary" > deployment-summary.md
+        echo "" >> deployment-summary.md
+        echo "**Deployment Date:** $(date)" >> deployment-summary.md
+        echo "**Environment:** ${{ needs.arm-template-validation.outputs.environment }}" >> deployment-summary.md
+        echo "**Resource Group:** ${{ needs.arm-template-validation.outputs.resource-group }}" >> deployment-summary.md
+        echo "**Deployment Mode:** ${{ github.event.inputs.deployment_mode || 'Incremental' }}" >> deployment-summary.md
+        echo "**Deployment Status:** ${{ steps.deployment.outputs.deployment-status }}" >> deployment-summary.md
+        echo "**Templates Deployed:** ${{ steps.deployment.outputs.deployment-summary }}" >> deployment-summary.md
+        echo "**Resources Created:** ${{ steps.post-deployment.outputs.deployed-resources }}" >> deployment-summary.md
+        echo "" >> deployment-summary.md
+        
+        if [ -f "deployed-resources.txt" ]; then
+          echo "## Deployed Resources" >> deployment-summary.md
+          echo "" >> deployment-summary.md
+          echo '```' >> deployment-summary.md
+          cat deployed-resources.txt >> deployment-summary.md
+          echo '```' >> deployment-summary.md
+        fi
+
+    - name: Upload Deployment Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: arm-deployment-${{ needs.arm-template-validation.outputs.environment }}
+        path: |
+          arm-templates/*.deployment.json
+          arm-templates/*.outputs.json
+          arm-templates/deployment-summary.md
+          arm-templates/deployed-resources.txt
+        retention-days: 90
+
+  arm-template-cleanup:
+    name: ARM Template Cleanup (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    if: github.event.inputs.arm_action == 'delete'
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}-delete
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: List Resources for Deletion
+      id: list-resources
+      run: |
+        ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+        
+        echo "📋 Listing ARM template resources for deletion in environment: $ENVIRONMENT"
+        
+        # Find resource groups with ARM template tag
+        RESOURCE_GROUPS=$(az group list \
+          --query "[?tags.environment=='$ENVIRONMENT' && tags.deployment=='arm-template'].name" \
+          --output tsv)
+        
+        if [ -z "$RESOURCE_GROUPS" ]; then
+          echo "No ARM template resource groups found for environment: $ENVIRONMENT"
+          exit 0
+        fi
+        
+        echo "Found ARM template resource groups: $RESOURCE_GROUPS"
+        echo "resource-groups<<EOF" >> $GITHUB_OUTPUT
+        echo "$RESOURCE_GROUPS" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Confirm Deletion
+      if: steps.list-resources.outputs.resource-groups != ''
+      run: |
+        echo "⚠️ WARNING: About to delete the following resource groups:"
+        echo "${{ steps.list-resources.outputs.resource-groups }}"
+        
+        if [ "${{ github.event.inputs.force_delete }}" != "true" ]; then
+          echo "❌ Force delete not enabled. Set force_delete to true to proceed with deletion."
+          exit 1
+        fi
+
+    - name: Delete ARM Template Resources
+      if: steps.list-resources.outputs.resource-groups != '' && github.event.inputs.force_delete == 'true'
+      run: |
+        echo "${{ steps.list-resources.outputs.resource-groups }}" | while read -r RG; do
+          if [ ! -z "$RG" ]; then
+            echo "🗑️ Deleting resource group: $RG"
+            
+            # List resources before deletion
+            echo "Resources in $RG:"
+            az resource list \
+              --resource-group "$RG" \
+              --query '[].{Name:name,Type:type}' \
+              --output table
+            
+            # Delete resource group
+            az group delete \
+              --name "$RG" \
+              --yes \
+              --no-wait
+            
+            echo "✅ Deletion initiated for resource group: $RG"
+          fi
+        done
+
+    - name: Verify Deletion
+      if: steps.list-resources.outputs.resource-groups != '' && github.event.inputs.force_delete == 'true'
+      run: |
+        echo "🔍 Monitoring deletion progress..."
+        sleep 30  # Wait for deletion to start
+        
+        echo "${{ steps.list-resources.outputs.resource-groups }}" | while read -r RG; do
+          if [ ! -z "$RG" ]; then
+            if az group show --name "$RG" --output none 2>/dev/null; then
+              echo "⏳ Resource group $RG still exists (deletion in progress)"
+            else
+              echo "✅ Resource group $RG successfully deleted"
+            fi
+          fi
+        done
+
+  notification:
+    name: ARM Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [arm-template-validation, arm-template-deployment, arm-template-cleanup]
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+    - name: Determine Overall Status
+      id: status
+      run: |
+        VALIDATION_STATUS="${{ needs.arm-template-validation.result }}"
+        DEPLOYMENT_STATUS="${{ needs.arm-template-deployment.result }}"
+        CLEANUP_STATUS="${{ needs.arm-template-cleanup.result }}"
+        
+        if [[ "$VALIDATION_STATUS" == "success" && ("$DEPLOYMENT_STATUS" == "success" || "$DEPLOYMENT_STATUS" == "skipped") && ("$CLEANUP_STATUS" == "success" || "$CLEANUP_STATUS" == "skipped") ]]; then
+          echo "overall-status=success" >> $GITHUB_OUTPUT
+          echo "status-color=00FF00" >> $GITHUB_OUTPUT
+        else
+          echo "overall-status=failure" >> $GITHUB_OUTPUT
+          echo "status-color=FF0000" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Notify Teams
+      uses: skitionek/notify-microsoft-teams@master
+      if: always()
+      with:
+        webhook_url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        overwrite: |
+          {
+            "themeColor": "${{ steps.status.outputs.status-color }}",
+            "summary": "ARM Template Deployment ${{ steps.status.outputs.overall-status }}",
+            "sections": [{
+              "activityTitle": "Azure ARM Template Deployment Pipeline",
+              "activitySubtitle": "Environment: ${{ github.event.inputs.environment || 'dev' }}",
+              "activityImage": "https://docs.microsoft.com/en-us/azure/azure-resource-manager/management/media/overview/consistent-management-layer.png",
+              "facts": [{
+                "name": "Overall Status",
+                "value": "${{ steps.status.outputs.overall-status }}"
+              }, {
+                "name": "Validation",
+                "value": "${{ needs.arm-template-validation.result }}"
+              }, {
+                "name": "Deployment",
+                "value": "${{ needs.arm-template-deployment.result }}"
+              }, {
+                "name": "Template Validation",
+                "value": "${{ needs.arm-template-validation.outputs.template-validation || 'N/A' }}"
+              }, {
+                "name": "Resource Group",
+                "value": "${{ needs.arm-template-validation.outputs.resource-group || 'N/A' }}"
+              }, {
+                "name": "Deployment Mode",
+                "value": "${{ github.event.inputs.deployment_mode || 'Incremental' }}"
+              }, {
+                "name": "Repository",
+                "value": "${{ github.repository }}"
+              }, {
+                "name": "Triggered by",
+                "value": "${{ github.actor }}"
+              }],
+              "markdown": true
+            }],
+            "potentialAction": [{
+              "@type": "OpenUri",
+              "name": "View Run",
+              "targets": [{
+                "os": "default",
+                "uri": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }]
+          }
+
+    - name: Update GitHub Status
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const status = '${{ steps.status.outputs.overall-status }}';
+          const state = status === 'success' ? 'success' : 'failure';
+          
+          github.rest.repos.createCommitStatus({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            sha: context.sha,
+            state: state,
+            target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            description: `ARM template deployment ${status}`,
+            context: 'arm-template/deploy'
+          });

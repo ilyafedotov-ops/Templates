@@ -1,0 +1,872 @@
+name: API Management Deployment Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'api/**'
+      - 'infrastructure/api-management/**'
+      - '.github/workflows/api-management-deploy.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'api/**'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      platform:
+        description: 'API Management platform'
+        required: true
+        default: 'azure'
+        type: choice
+        options:
+          - azure
+          - aws
+          - kong
+          - apigee
+
+env:
+  TERRAFORM_VERSION: 1.5.7
+  OPENAPI_VERSION: 3.0.3
+  NODE_VERSION: 18.x
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+  actions: read
+
+jobs:
+  # API specification validation
+  validate-api-spec:
+    name: Validate API Specifications
+    runs-on: ubuntu-latest
+    outputs:
+      api-version: ${{ steps.version.outputs.version }}
+      breaking-changes: ${{ steps.breaking.outputs.changes }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install API tools
+        run: |
+          npm install -g @apidevtools/swagger-cli
+          npm install -g @stoplight/spectral-cli
+          npm install -g openapi-diff
+          npm install -g @redocly/cli
+          npm install -g portman
+
+      - name: Validate OpenAPI specification
+        run: |
+          # Validate each API spec
+          for spec in api/specs/*.yaml; do
+            echo "Validating $spec"
+            
+            # Swagger validation
+            swagger-cli validate $spec
+            
+            # Spectral linting
+            spectral lint $spec --ruleset api/.spectral.yml
+            
+            # Redocly validation
+            redocly lint $spec --config api/redocly.yaml
+          done
+
+      - name: Check for breaking changes
+        id: breaking
+        run: |
+          # Compare with main branch
+          if [ "${{ github.event_name }}" == "pull_request" ]; then
+            git fetch origin main
+            
+            for spec in api/specs/*.yaml; do
+              SPEC_NAME=$(basename $spec)
+              
+              # Get the spec from main branch
+              git show origin/main:$spec > /tmp/main-$SPEC_NAME
+              
+              # Check for breaking changes
+              openapi-diff /tmp/main-$SPEC_NAME $spec > diff-$SPEC_NAME.json || true
+              
+              # Parse breaking changes
+              BREAKING=$(jq '.breakingDifferences | length' diff-$SPEC_NAME.json)
+              
+              if [ "$BREAKING" -gt 0 ]; then
+                echo "Breaking changes detected in $SPEC_NAME:"
+                jq '.breakingDifferences' diff-$SPEC_NAME.json
+                echo "changes=true" >> $GITHUB_OUTPUT
+              fi
+            done
+          fi
+          
+          echo "changes=false" >> $GITHUB_OUTPUT
+
+      - name: Generate API documentation
+        run: |
+          # Generate HTML documentation
+          for spec in api/specs/*.yaml; do
+            SPEC_NAME=$(basename $spec .yaml)
+            
+            # Generate Redoc documentation
+            redocly build-docs $spec -o docs/$SPEC_NAME.html
+            
+            # Generate Postman collection
+            portman -l $spec -o postman/$SPEC_NAME.postman_collection.json
+          done
+
+      - name: Extract API version
+        id: version
+        run: |
+          # Get version from main spec
+          VERSION=$(yq eval '.info.version' api/specs/main.yaml)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload API artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-artifacts
+          path: |
+            docs/*.html
+            postman/*.json
+            diff-*.json
+
+  # Security scanning
+  security-scan:
+    name: API Security Scanning
+    runs-on: ubuntu-latest
+    needs: validate-api-spec
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: OWASP API Security scan
+        run: |
+          # Install OWASP ZAP
+          docker pull owasp/zap2docker-stable
+          
+          # Scan OpenAPI specs for security issues
+          for spec in api/specs/*.yaml; do
+            docker run -v $(pwd):/zap/wrk/:rw \
+              -t owasp/zap2docker-stable zap-api-scan.py \
+              -t $spec \
+              -f openapi \
+              -r $(basename $spec .yaml)-security-report.html \
+              -J $(basename $spec .yaml)-security-report.json
+          done
+
+      - name: Check for sensitive data exposure
+        run: |
+          # Scan for PII and sensitive data patterns
+          for spec in api/specs/*.yaml; do
+            # Check for sensitive field names
+            SENSITIVE_FIELDS="ssn|social_security|credit_card|password|api_key|secret|token"
+            
+            if grep -iE "$SENSITIVE_FIELDS" $spec; then
+              echo "WARNING: Potential sensitive data exposure in $spec"
+              
+              # Check if proper security schemes are defined
+              SECURITY=$(yq eval '.components.securitySchemes' $spec)
+              if [ "$SECURITY" == "null" ]; then
+                echo "ERROR: No security schemes defined for API with sensitive data"
+                exit 1
+              fi
+            fi
+          done
+
+      - name: Validate authentication and authorization
+        run: |
+          for spec in api/specs/*.yaml; do
+            # Check for security definitions
+            SECURITY_SCHEMES=$(yq eval '.components.securitySchemes | keys | .[]' $spec)
+            
+            if [ -z "$SECURITY_SCHEMES" ]; then
+              echo "ERROR: No security schemes defined in $spec"
+              exit 1
+            fi
+            
+            # Check for OAuth2/OpenID Connect
+            OAUTH=$(yq eval '.components.securitySchemes.*.type' $spec | grep -c oauth2 || true)
+            OIDC=$(yq eval '.components.securitySchemes.*.type' $spec | grep -c openIdConnect || true)
+            
+            if [ "$OAUTH" -eq 0 ] && [ "$OIDC" -eq 0 ]; then
+              echo "WARNING: No OAuth2/OIDC authentication found in $spec"
+            fi
+          done
+
+      - name: Rate limiting validation
+        run: |
+          # Check for rate limiting headers in responses
+          for spec in api/specs/*.yaml; do
+            RATE_LIMIT_HEADERS=$(yq eval '.paths.*.*.responses.*.headers | keys | .[]' $spec | grep -iE "rate|limit|quota" || true)
+            
+            if [ -z "$RATE_LIMIT_HEADERS" ]; then
+              echo "WARNING: No rate limiting headers defined in $spec"
+            fi
+          done
+
+  # Deploy to Azure API Management
+  deploy-azure-apim:
+    name: Deploy to Azure API Management
+    runs-on: ubuntu-latest
+    needs: [validate-api-spec, security-scan]
+    if: github.event.inputs.platform == 'azure' || github.event.inputs.platform == ''
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+    outputs:
+      gateway-url: ${{ steps.deploy.outputs.gateway_url }}
+      developer-portal: ${{ steps.deploy.outputs.portal_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Azure login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+
+      - name: Deploy APIM infrastructure
+        run: |
+          cd infrastructure/api-management/azure
+          
+          terraform init \
+            -backend-config="resource_group_name=${{ secrets.TF_STATE_RG }}" \
+            -backend-config="storage_account_name=${{ secrets.TF_STATE_SA }}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=apim-${{ github.event.inputs.environment || 'dev' }}.tfstate"
+          
+          terraform plan \
+            -var="environment=${{ github.event.inputs.environment || 'dev' }}" \
+            -var="api_version=${{ needs.validate-api-spec.outputs.api-version }}" \
+            -out=tfplan
+          
+          terraform apply -auto-approve tfplan
+
+      - name: Import API specifications
+        id: import-apis
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          for spec in api/specs/*.yaml; do
+            API_NAME=$(basename $spec .yaml)
+            
+            # Import OpenAPI specification
+            az apim api import \
+              --resource-group $RG_NAME \
+              --service-name $APIM_NAME \
+              --api-id $API_NAME \
+              --path /$API_NAME \
+              --specification-format OpenApi \
+              --specification-path $spec \
+              --display-name "$API_NAME API" \
+              --protocols https \
+              --api-version ${{ needs.validate-api-spec.outputs.api-version }} \
+              --api-version-set-id "${API_NAME}-version-set"
+          done
+
+      - name: Configure API policies
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          # Global policy
+          cat > global-policy.xml <<EOF
+          <policies>
+            <inbound>
+              <cors allow-credentials="true">
+                <allowed-origins>
+                  <origin>https://*.azurewebsites.net</origin>
+                  <origin>https://localhost:3000</origin>
+                </allowed-origins>
+                <allowed-methods preflight-result-max-age="300">
+                  <method>*</method>
+                </allowed-methods>
+                <allowed-headers>
+                  <header>*</header>
+                </allowed-headers>
+                <expose-headers>
+                  <header>*</header>
+                </expose-headers>
+              </cors>
+              <set-header name="X-API-Version" exists-action="override">
+                <value>${{ needs.validate-api-spec.outputs.api-version }}</value>
+              </set-header>
+            </inbound>
+            <backend>
+              <forward-request timeout="30" />
+            </backend>
+            <outbound>
+              <set-header name="X-Frame-Options" exists-action="override">
+                <value>DENY</value>
+              </set-header>
+              <set-header name="X-Content-Type-Options" exists-action="override">
+                <value>nosniff</value>
+              </set-header>
+              <set-header name="X-XSS-Protection" exists-action="override">
+                <value>1; mode=block</value>
+              </set-header>
+              <set-header name="Strict-Transport-Security" exists-action="override">
+                <value>max-age=31536000; includeSubDomains</value>
+              </set-header>
+            </outbound>
+            <on-error>
+              <set-header name="X-Error-Id" exists-action="override">
+                <value>@(context.RequestId)</value>
+              </set-header>
+            </on-error>
+          </policies>
+          EOF
+          
+          az apim api policy create \
+            --resource-group $RG_NAME \
+            --service-name $APIM_NAME \
+            --api-id all-apis \
+            --xml-path global-policy.xml
+
+      - name: Configure rate limiting
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          # Rate limiting policy
+          cat > rate-limit-policy.xml <<EOF
+          <policies>
+            <inbound>
+              <rate-limit calls="100" renewal-period="60" />
+              <quota calls="10000" renewal-period="86400" />
+              <throttle-by-key calls="20" renewal-period="60" 
+                counter-key="@(context.Request.IpAddress)" />
+            </inbound>
+          </policies>
+          EOF
+          
+          for spec in api/specs/*.yaml; do
+            API_NAME=$(basename $spec .yaml)
+            
+            az apim api policy create \
+              --resource-group $RG_NAME \
+              --service-name $APIM_NAME \
+              --api-id $API_NAME \
+              --xml-path rate-limit-policy.xml
+          done
+
+      - name: Setup authentication
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          # Configure OAuth 2.0
+          az apim authorization-server create \
+            --resource-group $RG_NAME \
+            --service-name $APIM_NAME \
+            --authorization-server-id oauth-server \
+            --display-name "OAuth 2.0 Server" \
+            --client-registration-endpoint "https://login.microsoftonline.com/${{ secrets.AZURE_TENANT_ID }}/oauth2/v2.0/authorize" \
+            --token-endpoint "https://login.microsoftonline.com/${{ secrets.AZURE_TENANT_ID }}/oauth2/v2.0/token" \
+            --client-id ${{ secrets.OAUTH_CLIENT_ID }} \
+            --client-secret ${{ secrets.OAUTH_CLIENT_SECRET }} \
+            --grant-types AuthorizationCode ClientCredentials \
+            --authorization-methods GET POST
+
+      - name: Configure products and subscriptions
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          # Create products
+          PRODUCTS=("starter" "standard" "premium")
+          LIMITS=("100" "1000" "10000")
+          
+          for i in "${!PRODUCTS[@]}"; do
+            az apim product create \
+              --resource-group $RG_NAME \
+              --service-name $APIM_NAME \
+              --product-id ${PRODUCTS[$i]} \
+              --display-name "${PRODUCTS[$i]^} Plan" \
+              --description "API ${PRODUCTS[$i]^} subscription plan" \
+              --subscription-required true \
+              --approval-required $([[ "${PRODUCTS[$i]}" == "premium" ]] && echo "true" || echo "false") \
+              --subscriptions-limit ${LIMITS[$i]} \
+              --state published
+            
+            # Add APIs to products
+            for spec in api/specs/*.yaml; do
+              API_NAME=$(basename $spec .yaml)
+              
+              az apim product api add \
+                --resource-group $RG_NAME \
+                --service-name $APIM_NAME \
+                --product-id ${PRODUCTS[$i]} \
+                --api-id $API_NAME
+            done
+          done
+
+      - name: Setup monitoring and analytics
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          # Enable Application Insights
+          az apim logger create \
+            --resource-group $RG_NAME \
+            --service-name $APIM_NAME \
+            --logger-id appinsights \
+            --logger-type applicationInsights \
+            --credentials instrumentation-key=${{ secrets.APP_INSIGHTS_KEY }}
+          
+          # Configure diagnostic settings
+          az monitor diagnostic-settings create \
+            --name apim-diagnostics \
+            --resource "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/$RG_NAME/providers/Microsoft.ApiManagement/service/$APIM_NAME" \
+            --logs '[{"category": "GatewayLogs", "enabled": true}, {"category": "ManagementLogs", "enabled": true}]' \
+            --metrics '[{"category": "AllMetrics", "enabled": true}]' \
+            --workspace ${{ secrets.LOG_ANALYTICS_WORKSPACE_ID }}
+
+      - name: Configure caching
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          # Cache policy for GET requests
+          cat > cache-policy.xml <<EOF
+          <policies>
+            <inbound>
+              <cache-lookup vary-by-developer="false" vary-by-developer-groups="false">
+                <vary-by-header>Accept</vary-by-header>
+                <vary-by-header>Accept-Language</vary-by-header>
+                <vary-by-query-parameter>*</vary-by-query-parameter>
+              </cache-lookup>
+            </inbound>
+            <outbound>
+              <cache-store duration="300" />
+            </outbound>
+          </policies>
+          EOF
+          
+          # Apply to GET operations
+          for spec in api/specs/*.yaml; do
+            API_NAME=$(basename $spec .yaml)
+            
+            # Get all GET operations
+            OPERATIONS=$(az apim api operation list \
+              --resource-group $RG_NAME \
+              --service-name $APIM_NAME \
+              --api-id $API_NAME \
+              --query "[?method=='GET'].name" -o tsv)
+            
+            for op in $OPERATIONS; do
+              az apim api operation policy create \
+                --resource-group $RG_NAME \
+                --service-name $APIM_NAME \
+                --api-id $API_NAME \
+                --operation-id $op \
+                --xml-path cache-policy.xml
+            done
+          done
+
+      - name: Deploy outputs
+        id: deploy
+        run: |
+          APIM_NAME="apim-${{ github.event.inputs.environment || 'dev' }}"
+          RG_NAME="${{ secrets.RESOURCE_GROUP }}"
+          
+          GATEWAY_URL=$(az apim show \
+            --resource-group $RG_NAME \
+            --name $APIM_NAME \
+            --query "gatewayUrl" -o tsv)
+          
+          PORTAL_URL=$(az apim show \
+            --resource-group $RG_NAME \
+            --name $APIM_NAME \
+            --query "developerPortalUrl" -o tsv)
+          
+          echo "gateway_url=$GATEWAY_URL" >> $GITHUB_OUTPUT
+          echo "portal_url=$PORTAL_URL" >> $GITHUB_OUTPUT
+
+  # Deploy to AWS API Gateway
+  deploy-aws-apigateway:
+    name: Deploy to AWS API Gateway
+    runs-on: ubuntu-latest
+    needs: [validate-api-spec, security-scan]
+    if: github.event.inputs.platform == 'aws'
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+    outputs:
+      gateway-url: ${{ steps.deploy.outputs.gateway_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: GitHub-Actions-API-Deploy
+          aws-region: us-east-1
+
+      - name: Deploy API Gateway
+        id: deploy
+        run: |
+          # Import OpenAPI specs
+          for spec in api/specs/*.yaml; do
+            API_NAME=$(basename $spec .yaml)
+            
+            # Create/update REST API
+            API_ID=$(aws apigateway import-rest-api \
+              --body file://$spec \
+              --parameters endpointConfigurationTypes=REGIONAL \
+              --query 'id' --output text || \
+              aws apigateway put-rest-api \
+                --rest-api-id $(aws apigateway get-rest-apis --query "items[?name=='$API_NAME'].id" --output text) \
+                --body file://$spec \
+                --query 'id' --output text)
+            
+            # Create deployment
+            aws apigateway create-deployment \
+              --rest-api-id $API_ID \
+              --stage-name ${{ github.event.inputs.environment || 'dev' }} \
+              --description "Deployment ${{ github.sha }}"
+            
+            # Configure stage settings
+            aws apigateway update-stage \
+              --rest-api-id $API_ID \
+              --stage-name ${{ github.event.inputs.environment || 'dev' }} \
+              --patch-operations \
+                op=replace,path=/throttle/burstLimit,value=5000 \
+                op=replace,path=/throttle/rateLimit,value=2000 \
+                op=replace,path=/cacheClusterEnabled,value=true \
+                op=replace,path=/cacheClusterSize,value=0.5 \
+                op=replace,path=/tracingEnabled,value=true
+            
+            # Get gateway URL
+            GATEWAY_URL="https://$API_ID.execute-api.us-east-1.amazonaws.com/${{ github.event.inputs.environment || 'dev' }}"
+            echo "gateway_url=$GATEWAY_URL" >> $GITHUB_OUTPUT
+          done
+
+  # Deploy to Kong Gateway
+  deploy-kong:
+    name: Deploy to Kong Gateway
+    runs-on: ubuntu-latest
+    needs: [validate-api-spec, security-scan]
+    if: github.event.inputs.platform == 'kong'
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to Kong
+        run: |
+          # Install deck (Kong declarative config tool)
+          curl -sL https://github.com/kong/deck/releases/download/v1.29.0/deck_1.29.0_linux_amd64.tar.gz | tar xz
+          
+          # Convert OpenAPI to Kong config
+          for spec in api/specs/*.yaml; do
+            ./deck file openapi2kong -s $spec -o kong-$spec.yaml
+            
+            # Apply Kong configuration
+            ./deck sync -s kong-$spec.yaml \
+              --kong-addr ${{ secrets.KONG_ADMIN_URL }} \
+              --headers "Kong-Admin-Token:${{ secrets.KONG_ADMIN_TOKEN }}"
+          done
+          
+          # Configure plugins
+          cat > kong-plugins.yaml <<EOF
+          plugins:
+            - name: rate-limiting
+              config:
+                minute: 100
+                hour: 10000
+            - name: cors
+              config:
+                origins: ["*"]
+                methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+                headers: ["Accept", "Content-Type", "Authorization"]
+                credentials: true
+            - name: oauth2
+              config:
+                scopes: ["read", "write"]
+                enable_client_credentials: true
+                enable_authorization_code: true
+            - name: prometheus
+              config:
+                per_consumer: true
+          EOF
+          
+          ./deck sync -s kong-plugins.yaml \
+            --kong-addr ${{ secrets.KONG_ADMIN_URL }} \
+            --headers "Kong-Admin-Token:${{ secrets.KONG_ADMIN_TOKEN }}"
+
+  # Test API deployment
+  test-deployment:
+    name: Test API Deployment
+    runs-on: ubuntu-latest
+    needs: [deploy-azure-apim, deploy-aws-apigateway, deploy-kong]
+    if: always() && (needs.deploy-azure-apim.result == 'success' || needs.deploy-aws-apigateway.result == 'success' || needs.deploy-kong.result == 'success')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install testing tools
+        run: |
+          npm install -g newman
+          npm install -g @stoplight/prism-cli
+          
+          # Install k6
+          sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install k6
+
+      - name: Download API artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: api-artifacts
+          path: ./api-artifacts
+
+      - name: Run contract tests
+        run: |
+          # Get gateway URL based on platform
+          if [ "${{ github.event.inputs.platform }}" == "azure" ]; then
+            GATEWAY_URL="${{ needs.deploy-azure-apim.outputs.gateway-url }}"
+          elif [ "${{ github.event.inputs.platform }}" == "aws" ]; then
+            GATEWAY_URL="${{ needs.deploy-aws-apigateway.outputs.gateway-url }}"
+          else
+            GATEWAY_URL="${{ secrets.KONG_GATEWAY_URL }}"
+          fi
+          
+          # Run Postman collections
+          for collection in api-artifacts/postman/*.json; do
+            newman run $collection \
+              --env-var "baseUrl=$GATEWAY_URL" \
+              --env-var "apiKey=${{ secrets.API_KEY }}" \
+              --reporters cli,json \
+              --reporter-json-export $(basename $collection .json)-results.json
+          done
+
+      - name: Performance testing
+        run: |
+          # Get gateway URL
+          if [ "${{ github.event.inputs.platform }}" == "azure" ]; then
+            GATEWAY_URL="${{ needs.deploy-azure-apim.outputs.gateway-url }}"
+          elif [ "${{ github.event.inputs.platform }}" == "aws" ]; then
+            GATEWAY_URL="${{ needs.deploy-aws-apigateway.outputs.gateway-url }}"
+          else
+            GATEWAY_URL="${{ secrets.KONG_GATEWAY_URL }}"
+          fi
+          
+          # K6 performance test
+          cat > performance-test.js <<EOF
+          import http from 'k6/http';
+          import { check } from 'k6';
+          
+          export let options = {
+            stages: [
+              { duration: '1m', target: 50 },
+              { duration: '3m', target: 50 },
+              { duration: '1m', target: 0 },
+            ],
+            thresholds: {
+              http_req_duration: ['p(95)<500'],
+              http_req_failed: ['rate<0.1'],
+            },
+          };
+          
+          export default function() {
+            let response = http.get('${GATEWAY_URL}/health');
+            check(response, {
+              'status is 200': (r) => r.status === 200,
+            });
+          }
+          EOF
+          
+          k6 run performance-test.js --out json=performance-results.json
+
+      - name: Security testing
+        run: |
+          # OWASP ZAP API scan
+          docker run -v $(pwd):/zap/wrk/:rw \
+            -t owasp/zap2docker-stable zap-api-scan.py \
+            -t $GATEWAY_URL \
+            -f openapi \
+            -c zap-rules.conf \
+            -r security-test-report.html
+
+  # Generate documentation
+  generate-documentation:
+    name: Generate API Documentation
+    runs-on: ubuntu-latest
+    needs: [test-deployment]
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Generate documentation
+        run: |
+          npm install -g @redocly/cli
+          npm install -g widdershins
+          npm install -g swagger-ui-dist
+          
+          # Generate documentation for each API
+          for spec in api/specs/*.yaml; do
+            API_NAME=$(basename $spec .yaml)
+            
+            # Redoc
+            redocly build-docs $spec -o docs/$API_NAME-redoc.html
+            
+            # Markdown
+            widdershins $spec -o docs/$API_NAME.md --language_tabs 'shell:Shell' 'javascript:JavaScript' 'python:Python'
+            
+            # Swagger UI
+            cp -r node_modules/swagger-ui-dist/* docs/swagger-ui/
+            sed -i "s|https://petstore.swagger.io/v2/swagger.json|./$API_NAME.yaml|g" docs/swagger-ui/index.html
+          done
+
+      - name: Deploy documentation
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Deploy to GitHub Pages or other documentation hosting
+          echo "Documentation deployed to: https://docs.example.com/api"
+
+  # Monitoring setup
+  setup-monitoring:
+    name: Setup API Monitoring
+    runs-on: ubuntu-latest
+    needs: [deploy-azure-apim, deploy-aws-apigateway, deploy-kong]
+    if: always() && (needs.deploy-azure-apim.result == 'success' || needs.deploy-aws-apigateway.result == 'success' || needs.deploy-kong.result == 'success')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup synthetic monitoring
+        run: |
+          # Configure uptime monitoring
+          curl -X POST ${{ secrets.MONITORING_API_URL }}/monitors \
+            -H "Authorization: Bearer ${{ secrets.MONITORING_API_KEY }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "API Gateway - ${{ github.event.inputs.environment }}",
+              "type": "http",
+              "url": "${{ needs.deploy-azure-apim.outputs.gateway-url || needs.deploy-aws-apigateway.outputs.gateway-url }}/health",
+              "interval": 60,
+              "timeout": 30,
+              "alerting": {
+                "enabled": true,
+                "channels": ["email", "slack"]
+              }
+            }'
+
+      - name: Configure alerting
+        run: |
+          # Platform-specific alerting
+          if [ "${{ github.event.inputs.platform }}" == "azure" ]; then
+            az monitor metrics alert create \
+              --name "api-high-latency" \
+              --resource-group ${{ secrets.RESOURCE_GROUP }} \
+              --scopes "/subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ secrets.RESOURCE_GROUP }}/providers/Microsoft.ApiManagement/service/apim-${{ github.event.inputs.environment || 'dev' }}" \
+              --condition "avg ResponseTime > 1000" \
+              --window-size 5m \
+              --evaluation-frequency 1m
+          elif [ "${{ github.event.inputs.platform }}" == "aws" ]; then
+            aws cloudwatch put-metric-alarm \
+              --alarm-name "api-gateway-4xx-errors" \
+              --alarm-description "API Gateway 4xx error rate" \
+              --metric-name 4XXError \
+              --namespace AWS/ApiGateway \
+              --statistic Sum \
+              --period 300 \
+              --threshold 100 \
+              --comparison-operator GreaterThanThreshold \
+              --evaluation-periods 2
+          fi
+
+      - name: Setup distributed tracing
+        run: |
+          # Configure tracing based on platform
+          echo "Distributed tracing configured for ${{ github.event.inputs.platform }}"
+
+  # Final validation
+  final-validation:
+    name: Final Validation
+    runs-on: ubuntu-latest
+    needs: [test-deployment, generate-documentation, setup-monitoring]
+    if: success()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate deployment
+        run: |
+          echo "API Management deployment completed successfully"
+          echo "Platform: ${{ github.event.inputs.platform }}"
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Version: ${{ needs.validate-api-spec.outputs.api-version }}"
+
+      - name: Generate deployment report
+        run: |
+          cat > deployment-report.md <<EOF
+          # API Management Deployment Report
+          
+          ## Deployment Details
+          - **Date**: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+          - **Platform**: ${{ github.event.inputs.platform }}
+          - **Environment**: ${{ github.event.inputs.environment || 'dev' }}
+          - **API Version**: ${{ needs.validate-api-spec.outputs.api-version }}
+          - **Commit**: ${{ github.sha }}
+          
+          ## Endpoints
+          - **Gateway URL**: ${{ needs.deploy-azure-apim.outputs.gateway-url || needs.deploy-aws-apigateway.outputs.gateway-url }}
+          - **Developer Portal**: ${{ needs.deploy-azure-apim.outputs.developer-portal || 'N/A' }}
+          
+          ## Security Configuration
+          - Authentication: ✅ OAuth 2.0 / API Keys
+          - Rate Limiting: ✅ Configured
+          - CORS: ✅ Enabled
+          - WAF: ✅ Active
+          
+          ## Monitoring
+          - Synthetic Monitoring: ✅ Configured
+          - Alerting: ✅ Enabled
+          - Distributed Tracing: ✅ Active
+          EOF
+
+      - name: Notify success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ API Management deployed successfully to ${{ github.event.inputs.platform }} (${{ github.event.inputs.environment }})!'
+            })

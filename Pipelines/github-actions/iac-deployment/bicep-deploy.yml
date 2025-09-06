@@ -1,0 +1,607 @@
+name: Azure Bicep Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - production
+      bicep_action:
+        description: 'Bicep action to perform'
+        required: true
+        default: 'what-if'
+        type: choice
+        options:
+        - what-if
+        - deploy
+        - validate
+        - delete
+      subscription_id:
+        description: 'Azure Subscription ID (optional, uses default if empty)'
+        required: false
+        type: string
+      cost_threshold:
+        description: 'Cost threshold for approval (USD)'
+        required: false
+        default: '500'
+        type: string
+  push:
+    branches: [main, develop]
+    paths: ['bicep/**', '.github/workflows/bicep-deploy.yml']
+  pull_request:
+    branches: [main]
+    paths: ['bicep/**']
+
+env:
+  BICEP_VERSION: '0.24.24'
+  AZURE_CLI_VERSION: '2.56.0'
+  PSRule_VERSION: '2.9.0'
+  CHECKOV_VERSION: '3.1.25'
+
+jobs:
+  bicep-validation:
+    name: Bicep Validation (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment || 'dev' }}
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+      id-token: write
+    outputs:
+      deployment-name: ${{ steps.generate.outputs.deployment-name }}
+      resource-group: ${{ steps.generate.outputs.resource-group }}
+      what-if-changes: ${{ steps.what-if.outputs.changes }}
+      cost-estimate: ${{ steps.cost.outputs.total-cost }}
+      
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Setup Azure CLI
+      uses: azure/CLI@v1
+      with:
+        azcliversion: ${{ env.AZURE_CLI_VERSION }}
+
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup Bicep CLI
+      run: |
+        az bicep install --version v${{ env.BICEP_VERSION }}
+        az bicep version
+
+    - name: Install PSRule for Azure
+      shell: pwsh
+      run: |
+        Install-Module -Name PSRule.Rules.Azure -RequiredVersion ${{ env.PSRule_VERSION }} -Force -Scope CurrentUser
+        Import-Module PSRule.Rules.Azure
+
+    - name: Setup Security Tools
+      run: |
+        # Checkov for Bicep
+        pip install checkov==${{ env.CHECKOV_VERSION }}
+
+    - name: Generate Deployment Metadata
+      id: generate
+      run: |
+        DEPLOYMENT_NAME="bicep-deploy-$(date +%Y%m%d-%H%M%S)-${{ github.run_id }}"
+        ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+        RESOURCE_GROUP="rg-$ENVIRONMENT-$(git rev-parse --short HEAD)"
+        
+        echo "deployment-name=$DEPLOYMENT_NAME" >> $GITHUB_OUTPUT
+        echo "resource-group=$RESOURCE_GROUP" >> $GITHUB_OUTPUT
+        echo "environment=$ENVIRONMENT" >> $GITHUB_OUTPUT
+
+    - name: Bicep Lint
+      run: |
+        cd bicep
+        for file in *.bicep; do
+          if [ -f "$file" ]; then
+            echo "🔍 Linting $file..."
+            az bicep lint --file "$file"
+          fi
+        done
+
+    - name: Bicep Build and Validate
+      id: build
+      run: |
+        cd bicep
+        echo "🔨 Building Bicep templates..."
+        for file in *.bicep; do
+          if [ -f "$file" ]; then
+            echo "Building $file..."
+            az bicep build --file "$file"
+            
+            # Validate ARM template
+            TEMPLATE_FILE="${file%.bicep}.json"
+            if [ -f "$TEMPLATE_FILE" ]; then
+              echo "Validating $TEMPLATE_FILE..."
+              az deployment group validate \
+                --resource-group "${{ steps.generate.outputs.resource-group }}" \
+                --template-file "$TEMPLATE_FILE" \
+                --parameters "@parameters/${{ steps.generate.outputs.environment }}.json" \
+                --no-prompt || true
+            fi
+          fi
+        done
+
+    - name: Security Scan - Checkov
+      id: checkov
+      run: |
+        cd bicep
+        echo "🔒 Running Checkov security scan..."
+        checkov -d . \
+          --framework bicep \
+          --output cli \
+          --output json \
+          --output-file-path console,checkov-results.json \
+          --soft-fail \
+          --compact
+      continue-on-error: true
+
+    - name: Azure Security Analysis - PSRule
+      id: psrule
+      shell: pwsh
+      run: |
+        cd bicep
+        Write-Host "🛡️ Running PSRule for Azure analysis..."
+        
+        $results = Invoke-PSRule -Path . -Module PSRule.Rules.Azure -Format File -OutputFormat Json -OutputPath psrule-results.json
+        
+        if ($results.Count -gt 0) {
+          Write-Host "⚠️ PSRule found $($results.Count) recommendations"
+          $results | ConvertTo-Json -Depth 10 | Out-File -FilePath psrule-summary.json
+        } else {
+          Write-Host "✅ PSRule analysis passed with no issues"
+        }
+      continue-on-error: true
+
+    - name: Cost Estimation - What-If Analysis
+      id: cost
+      run: |
+        cd bicep
+        echo "💰 Estimating deployment costs..."
+        
+        SUBSCRIPTION_ID="${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}"
+        
+        # Create resource group if it doesn't exist
+        az group create \
+          --name "${{ steps.generate.outputs.resource-group }}" \
+          --location "East US 2" \
+          --tags environment=${{ steps.generate.outputs.environment }} deployment=bicep
+
+        # Run what-if analysis for cost estimation
+        WHAT_IF_RESULT=$(az deployment group what-if \
+          --resource-group "${{ steps.generate.outputs.resource-group }}" \
+          --template-file "main.json" \
+          --parameters "@parameters/${{ steps.generate.outputs.environment }}.json" \
+          --query 'changes[].{action:changeType,resource:resourceId}' \
+          --output json)
+        
+        echo "$WHAT_IF_RESULT" > what-if-results.json
+        
+        # Estimate cost based on resources
+        ESTIMATED_COST=0
+        RESOURCE_COUNT=$(echo "$WHAT_IF_RESULT" | jq '. | length')
+        
+        if [ "$RESOURCE_COUNT" -gt 0 ]; then
+          # Basic cost estimation (simplified)
+          ESTIMATED_COST=$(echo "$RESOURCE_COUNT * 50" | bc)
+        fi
+        
+        echo "total-cost=$ESTIMATED_COST" >> $GITHUB_OUTPUT
+        echo "resource-count=$RESOURCE_COUNT" >> $GITHUB_OUTPUT
+        
+        THRESHOLD=${{ github.event.inputs.cost_threshold || '500' }}
+        if [ "$ESTIMATED_COST" -gt "$THRESHOLD" ]; then
+          echo "❌ Estimated cost exceeds threshold: \$$ESTIMATED_COST > \$$THRESHOLD"
+          echo "cost-exceeded=true" >> $GITHUB_OUTPUT
+        else
+          echo "✅ Estimated cost within threshold: \$$ESTIMATED_COST <= \$$THRESHOLD"
+          echo "cost-exceeded=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Azure Policy Compliance Pre-Check
+      id: policy-check
+      run: |
+        echo "📋 Checking Azure Policy compliance..."
+        
+        # Get policy assignments for the subscription
+        az policy assignment list \
+          --scope "/subscriptions/${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}" \
+          --query '[].{name:displayName,policyType:policyDefinitionId}' \
+          --output table > policy-assignments.txt
+        
+        # Check for common policy violations
+        POLICY_VIOLATIONS=0
+        if grep -q "deny" policy-assignments.txt; then
+          echo "⚠️ Found deny policies that may block deployment"
+          POLICY_VIOLATIONS=1
+        fi
+        
+        echo "policy-violations=$POLICY_VIOLATIONS" >> $GITHUB_OUTPUT
+
+    - name: What-If Analysis
+      id: what-if
+      if: github.event.inputs.bicep_action == 'what-if' || github.event_name == 'pull_request'
+      run: |
+        cd bicep
+        echo "🔍 Running What-If analysis..."
+        
+        WHAT_IF_OUTPUT=$(az deployment group what-if \
+          --resource-group "${{ steps.generate.outputs.resource-group }}" \
+          --template-file "main.json" \
+          --parameters "@parameters/${{ steps.generate.outputs.environment }}.json" \
+          --output yaml)
+        
+        echo "$WHAT_IF_OUTPUT" > what-if-output.yaml
+        
+        # Count changes
+        CHANGE_COUNT=$(echo "$WHAT_IF_OUTPUT" | grep -c "changeType:" || echo 0)
+        echo "changes=$CHANGE_COUNT" >> $GITHUB_OUTPUT
+        
+        if [ "$CHANGE_COUNT" -gt 0 ]; then
+          echo "📊 What-If analysis found $CHANGE_COUNT changes"
+        else
+          echo "✅ What-If analysis found no changes"
+        fi
+
+    - name: Upload Analysis Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: bicep-analysis-${{ steps.generate.outputs.environment }}
+        path: |
+          bicep/*.json
+          bicep/*.yaml
+          bicep/*-results.json
+          bicep/policy-assignments.txt
+        retention-days: 30
+
+    - name: Comment on PR
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          const fs = require('fs');
+          
+          let comment = '## Bicep Deployment Analysis\n\n';
+          comment += `**Environment:** ${{ steps.generate.outputs.environment }}\n`;
+          comment += `**Resource Group:** ${{ steps.generate.outputs.resource-group }}\n`;
+          comment += `**Estimated Cost:** \$${{ steps.cost.outputs.total-cost }}\n`;
+          comment += `**Resource Count:** ${{ steps.cost.outputs.resource-count }}\n`;
+          comment += `**What-If Changes:** ${{ steps.what-if.outputs.changes }}\n\n`;
+          
+          if (fs.existsSync('bicep/what-if-output.yaml')) {
+            const whatIfContent = fs.readFileSync('bicep/what-if-output.yaml', 'utf8');
+            comment += '### What-If Analysis Results\n\n';
+            comment += '```yaml\n' + whatIfContent.slice(0, 2000) + '\n```\n\n';
+          }
+          
+          if (fs.existsSync('bicep/checkov-results.json')) {
+            const checkovResults = JSON.parse(fs.readFileSync('bicep/checkov-results.json', 'utf8'));
+            const failedChecks = checkovResults.results?.failed_checks?.length || 0;
+            comment += `### Security Scan Results\n`;
+            comment += `- **Checkov Issues:** ${failedChecks}\n\n`;
+          }
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  bicep-deployment:
+    name: Bicep Deployment (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    needs: bicep-validation
+    if: |
+      (github.event.inputs.bicep_action == 'deploy' || 
+       (github.ref == 'refs/heads/main' && github.event_name == 'push')) &&
+      needs.bicep-validation.outputs.what-if-changes != '0'
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}-deploy
+      url: ${{ steps.deployment.outputs.resource-group-url }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup Bicep CLI
+      run: |
+        az bicep install --version v${{ env.BICEP_VERSION }}
+
+    - name: Download Analysis Results
+      uses: actions/download-artifact@v4
+      with:
+        name: bicep-analysis-${{ needs.bicep-validation.outputs.environment }}
+        path: bicep/
+
+    - name: Pre-Deployment Validation
+      run: |
+        cd bicep
+        echo "🔍 Running pre-deployment validation..."
+        
+        az deployment group validate \
+          --resource-group "${{ needs.bicep-validation.outputs.resource-group }}" \
+          --template-file "main.json" \
+          --parameters "@parameters/${{ needs.bicep-validation.outputs.environment }}.json"
+
+    - name: Deploy Bicep Template
+      id: deployment
+      run: |
+        cd bicep
+        echo "🚀 Deploying Bicep template..."
+        
+        DEPLOYMENT_RESULT=$(az deployment group create \
+          --resource-group "${{ needs.bicep-validation.outputs.resource-group }}" \
+          --template-file "main.json" \
+          --parameters "@parameters/${{ needs.bicep-validation.outputs.environment }}.json" \
+          --name "${{ needs.bicep-validation.outputs.deployment-name }}" \
+          --output json)
+        
+        echo "$DEPLOYMENT_RESULT" > deployment-result.json
+        
+        # Extract outputs
+        PROVISIONING_STATE=$(echo "$DEPLOYMENT_RESULT" | jq -r '.properties.provisioningState')
+        CORRELATION_ID=$(echo "$DEPLOYMENT_RESULT" | jq -r '.properties.correlationId')
+        
+        echo "provisioning-state=$PROVISIONING_STATE" >> $GITHUB_OUTPUT
+        echo "correlation-id=$CORRELATION_ID" >> $GITHUB_OUTPUT
+        echo "resource-group-url=https://portal.azure.com/#@${{ secrets.AZURE_TENANT_ID }}/resource/subscriptions/${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}/resourceGroups/${{ needs.bicep-validation.outputs.resource-group }}/overview" >> $GITHUB_OUTPUT
+        
+        if [ "$PROVISIONING_STATE" != "Succeeded" ]; then
+          echo "❌ Deployment failed with state: $PROVISIONING_STATE"
+          exit 1
+        else
+          echo "✅ Deployment succeeded"
+        fi
+
+    - name: Post-Deployment Validation
+      id: post-deployment
+      run: |
+        echo "🔍 Running post-deployment validation..."
+        
+        # Check resource group exists and has resources
+        RESOURCE_COUNT=$(az resource list \
+          --resource-group "${{ needs.bicep-validation.outputs.resource-group }}" \
+          --query 'length(@)')
+        
+        echo "Deployed $RESOURCE_COUNT resources"
+        echo "resource-count=$RESOURCE_COUNT" >> $GITHUB_OUTPUT
+        
+        if [ "$RESOURCE_COUNT" -eq 0 ]; then
+          echo "⚠️ Warning: No resources found in resource group"
+        fi
+
+    - name: Tag Resources
+      run: |
+        echo "🏷️ Tagging deployed resources..."
+        
+        az group update \
+          --resource-group "${{ needs.bicep-validation.outputs.resource-group }}" \
+          --set tags.environment=${{ needs.bicep-validation.outputs.environment }} \
+          --set tags.deployment-date=$(date +%Y-%m-%d) \
+          --set tags.git-commit=${{ github.sha }} \
+          --set tags.deployed-by="${{ github.actor }}"
+
+    - name: Update Deployment Status
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const deploymentUrl = `https://portal.azure.com/#blade/HubsExtension/DeploymentDetailsBlade/overview/id/%2Fsubscriptions%2F${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}%2FresourceGroups%2F${{ needs.bicep-validation.outputs.resource-group }}%2Fproviders%2FMicrosoft.Resources%2Fdeployments%2F${{ needs.bicep-validation.outputs.deployment-name }}`;
+          
+          github.rest.repos.createCommitStatus({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            sha: context.sha,
+            state: '${{ steps.deployment.outputs.provisioning-state }}' === 'Succeeded' ? 'success' : 'failure',
+            target_url: deploymentUrl,
+            description: 'Bicep deployment ${{ steps.deployment.outputs.provisioning-state }}',
+            context: 'bicep/deploy'
+          });
+
+  bicep-cleanup:
+    name: Resource Cleanup (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    if: github.event.inputs.bicep_action == 'delete'
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}-delete
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: List Resources for Deletion
+      id: list-resources
+      run: |
+        ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+        
+        echo "📋 Listing resources for deletion in environment: $ENVIRONMENT"
+        
+        # Find resource groups matching the environment
+        RESOURCE_GROUPS=$(az group list \
+          --query "[?tags.environment=='$ENVIRONMENT'].name" \
+          --output tsv)
+        
+        if [ -z "$RESOURCE_GROUPS" ]; then
+          echo "No resource groups found for environment: $ENVIRONMENT"
+          exit 0
+        fi
+        
+        echo "Found resource groups: $RESOURCE_GROUPS"
+        echo "resource-groups=$RESOURCE_GROUPS" >> $GITHUB_OUTPUT
+
+    - name: Delete Resources
+      if: steps.list-resources.outputs.resource-groups != ''
+      run: |
+        IFS=$'\n'
+        for RG in ${{ steps.list-resources.outputs.resource-groups }}; do
+          echo "🗑️ Deleting resource group: $RG"
+          
+          az group delete \
+            --name "$RG" \
+            --yes \
+            --no-wait
+        done
+        
+        echo "✅ Deletion initiated for all resource groups"
+
+  azure-policy-compliance:
+    name: Azure Policy Compliance Check
+    runs-on: ubuntu-latest
+    needs: bicep-deployment
+    if: needs.bicep-deployment.result == 'success'
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Check Policy Compliance
+      id: compliance
+      run: |
+        echo "📋 Checking Azure Policy compliance..."
+        
+        # Get policy compliance summary
+        COMPLIANCE_RESULT=$(az policy state summarize \
+          --scope "/subscriptions/${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}" \
+          --query 'results[0].{compliant:resourceDetails.compliantCount,nonCompliant:resourceDetails.nonCompliantCount}' \
+          --output json)
+        
+        echo "$COMPLIANCE_RESULT" > compliance-summary.json
+        
+        NON_COMPLIANT=$(echo "$COMPLIANCE_RESULT" | jq -r '.nonCompliant // 0')
+        COMPLIANT=$(echo "$COMPLIANCE_RESULT" | jq -r '.compliant // 0')
+        
+        echo "non-compliant=$NON_COMPLIANT" >> $GITHUB_OUTPUT
+        echo "compliant=$COMPLIANT" >> $GITHUB_OUTPUT
+        
+        if [ "$NON_COMPLIANT" -gt 0 ]; then
+          echo "⚠️ Found $NON_COMPLIANT non-compliant resources"
+          
+          # Get detailed non-compliance information
+          az policy state list \
+            --scope "/subscriptions/${{ github.event.inputs.subscription_id || secrets.AZURE_SUBSCRIPTION_ID }}" \
+            --filter "ComplianceState eq 'NonCompliant'" \
+            --query '[].{resource:resourceId,policy:policyDefinitionName,reason:complianceReasonCode}' \
+            --output table > non-compliant-resources.txt
+        else
+          echo "✅ All resources are policy compliant"
+        fi
+
+    - name: Upload Compliance Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: compliance-report-${{ github.event.inputs.environment || 'dev' }}
+        path: |
+          compliance-summary.json
+          non-compliant-resources.txt
+        retention-days: 90
+
+  notification:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [bicep-validation, bicep-deployment, azure-policy-compliance]
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+    - name: Determine Overall Status
+      id: status
+      run: |
+        VALIDATION_STATUS="${{ needs.bicep-validation.result }}"
+        DEPLOYMENT_STATUS="${{ needs.bicep-deployment.result }}"
+        COMPLIANCE_STATUS="${{ needs.azure-policy-compliance.result }}"
+        
+        if [[ "$VALIDATION_STATUS" == "success" && ("$DEPLOYMENT_STATUS" == "success" || "$DEPLOYMENT_STATUS" == "skipped") ]]; then
+          echo "overall-status=success" >> $GITHUB_OUTPUT
+          echo "status-color=00FF00" >> $GITHUB_OUTPUT
+        else
+          echo "overall-status=failure" >> $GITHUB_OUTPUT
+          echo "status-color=FF0000" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Notify Teams
+      uses: skitionek/notify-microsoft-teams@master
+      if: always()
+      with:
+        webhook_url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        overwrite: |
+          {
+            "themeColor": "${{ steps.status.outputs.status-color }}",
+            "summary": "Bicep Deployment ${{ steps.status.outputs.overall-status }}",
+            "sections": [{
+              "activityTitle": "Azure Bicep Deployment Pipeline",
+              "activitySubtitle": "Environment: ${{ github.event.inputs.environment || 'dev' }}",
+              "activityImage": "https://docs.microsoft.com/en-us/azure/azure-resource-manager/bicep/media/overview/bicep-overview.png",
+              "facts": [{
+                "name": "Overall Status",
+                "value": "${{ steps.status.outputs.overall-status }}"
+              }, {
+                "name": "Validation",
+                "value": "${{ needs.bicep-validation.result }}"
+              }, {
+                "name": "Deployment",
+                "value": "${{ needs.bicep-deployment.result }}"
+              }, {
+                "name": "Cost Estimate",
+                "value": "${{ needs.bicep-validation.outputs.cost-estimate || 'N/A' }}"
+              }, {
+                "name": "Resource Group",
+                "value": "${{ needs.bicep-validation.outputs.resource-group || 'N/A' }}"
+              }, {
+                "name": "Repository",
+                "value": "${{ github.repository }}"
+              }, {
+                "name": "Triggered by",
+                "value": "${{ github.actor }}"
+              }],
+              "markdown": true
+            }],
+            "potentialAction": [{
+              "@type": "OpenUri",
+              "name": "View Run",
+              "targets": [{
+                "os": "default",
+                "uri": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }]
+          }

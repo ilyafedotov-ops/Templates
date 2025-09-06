@@ -1,0 +1,455 @@
+parameters:
+  - name: environment
+    type: string
+  - name: azureServiceConnection
+    type: string
+  - name: appServiceName
+    type: string
+  - name: aksClusterName
+    type: string
+  - name: deploymentType
+    type: string
+    default: 'standard'
+  - name: canaryPercentage
+    type: number
+    default: 0
+
+steps:
+  - checkout: self
+
+  - download: current
+    artifact: application-artifacts
+    displayName: 'Download Application Artifacts'
+
+  - task: HelmInstaller@0
+    displayName: 'Install Helm'
+    inputs:
+      helmVersion: '3.13.0'
+      installKubectl: true
+      kubectlVersion: '$(kubernetesVersion)'
+
+  - ${{ if eq(parameters.deploymentType, 'standard') }}:
+    - task: AzureWebApp@1
+      displayName: 'Deploy to App Service'
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        appType: 'webApp'
+        appName: ${{ parameters.appServiceName }}
+        package: '$(Pipeline.Workspace)/application-artifacts/**/*.zip'
+        deploymentMethod: 'auto'
+
+    - task: AzureCLI@2
+      displayName: 'Deploy to AKS'
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Deploying to AKS cluster: ${{ parameters.aksClusterName }}"
+          
+          # Get AKS credentials
+          az aks get-credentials \
+            --resource-group $(resourceGroup) \
+            --name ${{ parameters.aksClusterName }} \
+            --overwrite-existing
+          
+          # Create namespace if it doesn't exist
+          kubectl create namespace ${{ parameters.environment }} --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Deploy Helm chart
+          helm upgrade --install multienv-app \
+            $(Pipeline.Workspace)/application-artifacts/multi-env-app-$(Build.BuildId).tgz \
+            --namespace ${{ parameters.environment }} \
+            --values values-${{ parameters.environment }}.yaml \
+            --set image.tag=$(Build.BuildId) \
+            --set environment=${{ parameters.environment }} \
+            --wait --timeout 600s
+
+  - ${{ if eq(parameters.deploymentType, 'blueGreen') }}:
+    - task: AzureCLI@2
+      displayName: 'Blue-Green Deployment to App Service'
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Performing Blue-Green deployment"
+          
+          # Deploy to staging slot first
+          az webapp deployment source config-zip \
+            --resource-group $(resourceGroup) \
+            --name ${{ parameters.appServiceName }} \
+            --slot staging \
+            --src $(Pipeline.Workspace)/application-artifacts/app.zip
+          
+          # Warm up the staging slot
+          echo "Warming up staging slot..."
+          staging_url="https://${{ parameters.appServiceName }}-staging.azurewebsites.net$(healthCheckPath)"
+          max_attempts=20
+          attempt=1
+          
+          while [ $attempt -le $max_attempts ]; do
+            if curl -s -f "$staging_url" > /dev/null; then
+              echo "Staging slot is ready"
+              break
+            fi
+            echo "Attempt $attempt: Staging slot not ready, waiting..."
+            sleep 15
+            attempt=$((attempt + 1))
+          done
+          
+          if [ $attempt -gt $max_attempts ]; then
+            echo "##vso[task.logissue type=error]Staging slot failed to become ready"
+            exit 1
+          fi
+          
+          # Run validation tests on staging slot
+          echo "Running validation tests on staging slot..."
+          response_code=$(curl -s -o /dev/null -w "%{http_code}" "$staging_url")
+          
+          if [ "$response_code" -ne 200 ]; then
+            echo "##vso[task.logissue type=error]Staging slot validation failed with HTTP $response_code"
+            exit 1
+          fi
+          
+          # Perform slot swap
+          echo "Performing slot swap..."
+          az webapp deployment slot swap \
+            --resource-group $(resourceGroup) \
+            --name ${{ parameters.appServiceName }} \
+            --slot staging \
+            --target-slot production
+          
+          # Verify production slot after swap
+          echo "Verifying production slot after swap..."
+          production_url="https://${{ parameters.appServiceName }}.azurewebsites.net$(healthCheckPath)"
+          
+          sleep 30  # Allow time for DNS propagation
+          
+          response_code=$(curl -s -o /dev/null -w "%{http_code}" "$production_url")
+          if [ "$response_code" -ne 200 ]; then
+            echo "##vso[task.logissue type=error]Production verification failed with HTTP $response_code"
+            echo "Initiating rollback..."
+            
+            # Rollback by swapping slots back
+            az webapp deployment slot swap \
+              --resource-group $(resourceGroup) \
+              --name ${{ parameters.appServiceName }} \
+              --slot production \
+              --target-slot staging
+              
+            exit 1
+          fi
+          
+          echo "Blue-Green deployment completed successfully"
+
+    - task: AzureCLI@2
+      displayName: 'Blue-Green Deployment to AKS'
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Performing Blue-Green deployment to AKS"
+          
+          # Get AKS credentials
+          az aks get-credentials \
+            --resource-group $(resourceGroup) \
+            --name ${{ parameters.aksClusterName }} \
+            --overwrite-existing
+          
+          # Deploy to blue environment first
+          kubectl create namespace ${{ parameters.environment }}-blue --dry-run=client -o yaml | kubectl apply -f -
+          
+          helm upgrade --install multienv-app-blue \
+            $(Pipeline.Workspace)/application-artifacts/multi-env-app-$(Build.BuildId).tgz \
+            --namespace ${{ parameters.environment }}-blue \
+            --values values-${{ parameters.environment }}.yaml \
+            --set image.tag=$(Build.BuildId) \
+            --set environment=${{ parameters.environment }} \
+            --set nameOverride=multienv-app-blue \
+            --wait --timeout 600s
+          
+          # Validate blue deployment
+          kubectl wait --for=condition=available --timeout=300s \
+            deployment/multienv-app-blue -n ${{ parameters.environment }}-blue
+          
+          # Update service selector to point to blue deployment
+          kubectl patch service multienv-app-service \
+            -n ${{ parameters.environment }} \
+            -p '{"spec":{"selector":{"app":"multienv-app-blue"}}}'
+          
+          # Clean up old green deployment after successful blue deployment
+          kubectl delete namespace ${{ parameters.environment }}-green --ignore-not-found=true
+          
+          echo "Blue-Green deployment to AKS completed successfully"
+
+  - ${{ if eq(parameters.deploymentType, 'canary') }}:
+    - task: AzureCLI@2
+      displayName: 'Canary Deployment'
+      inputs:
+        azureSubscription: ${{ parameters.azureServiceConnection }}
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          echo "Performing Canary deployment with ${{ parameters.canaryPercentage }}% traffic"
+          
+          # Get AKS credentials
+          az aks get-credentials \
+            --resource-group $(resourceGroup) \
+            --name ${{ parameters.aksClusterName }} \
+            --overwrite-existing
+          
+          # Create canary namespace
+          kubectl create namespace ${{ parameters.environment }}-canary --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Deploy canary version
+          helm upgrade --install multienv-app-canary \
+            $(Pipeline.Workspace)/application-artifacts/multi-env-app-$(Build.BuildId).tgz \
+            --namespace ${{ parameters.environment }}-canary \
+            --values values-${{ parameters.environment }}.yaml \
+            --set image.tag=$(Build.BuildId) \
+            --set environment=${{ parameters.environment }} \
+            --set nameOverride=multienv-app-canary \
+            --set replicaCount=$(echo "scale=0; $(aksNodeCount) * ${{ parameters.canaryPercentage }} / 100" | bc | awk '{print int($1+0.5)}') \
+            --wait --timeout 600s
+          
+          # Configure traffic splitting using Istio (if available) or NGINX ingress
+          if kubectl get crd virtualservices.networking.istio.io > /dev/null 2>&1; then
+            echo "Configuring Istio traffic splitting"
+            cat << EOF | kubectl apply -f -
+          apiVersion: networking.istio.io/v1beta1
+          kind: VirtualService
+          metadata:
+            name: multienv-app-canary
+            namespace: ${{ parameters.environment }}
+          spec:
+            hosts:
+            - multienv-app-service
+            http:
+            - match:
+              - headers:
+                  canary:
+                    exact: "true"
+              route:
+              - destination:
+                  host: multienv-app-service
+                  subset: canary
+                weight: 100
+            - route:
+              - destination:
+                  host: multienv-app-service
+                  subset: stable
+                weight: $((100 - ${{ parameters.canaryPercentage }}))
+              - destination:
+                  host: multienv-app-service
+                  subset: canary
+                weight: ${{ parameters.canaryPercentage }}
+          EOF
+          else
+            echo "##vso[task.logissue type=warning]Istio not found, using basic canary deployment"
+          fi
+          
+          # Monitor canary metrics
+          echo "Monitoring canary deployment for $(canaryDuration) seconds"
+          sleep $(canaryDuration)
+          
+          # Check canary success rate
+          canary_success_rate=$(kubectl top pods -n ${{ parameters.environment }}-canary --no-headers | awk '{print $3}' | head -1 | sed 's/%//')
+          
+          if [ -z "$canary_success_rate" ]; then
+            canary_success_rate=100  # Default if metrics unavailable
+          fi
+          
+          if [ "$canary_success_rate" -ge "$(canarySuccessThreshold)" ]; then
+            echo "Canary deployment successful ($canary_success_rate% success rate)"
+            
+            # Promote canary to production
+            echo "Promoting canary to production"
+            
+            # Scale down stable version
+            kubectl scale deployment multienv-app --replicas=0 -n ${{ parameters.environment }}
+            
+            # Scale up canary to full capacity
+            kubectl scale deployment multienv-app-canary --replicas=$(aksNodeCount) -n ${{ parameters.environment }}-canary
+            
+            # Update main service to point to canary
+            kubectl patch service multienv-app-service \
+              -n ${{ parameters.environment }} \
+              -p '{"spec":{"selector":{"app":"multienv-app-canary"}}}'
+              
+          else
+            echo "##vso[task.logissue type=error]Canary deployment failed ($canary_success_rate% success rate below threshold)"
+            
+            # Rollback canary deployment
+            echo "Rolling back canary deployment"
+            kubectl delete namespace ${{ parameters.environment }}-canary
+            
+            exit 1
+          fi
+
+  - task: AzureCLI@2
+    displayName: 'Update Feature Flags'
+    condition: ne(variables.featureFlagConnectionString, '')
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Updating feature flags for ${{ parameters.environment }}"
+        
+        # Install Azure App Configuration CLI extension
+        az extension add --name appconfig --only-show-errors
+        
+        # Update feature flags based on environment
+        if [ "${{ parameters.environment }}" = "production" ]; then
+          # Enable production features
+          az appconfig feature set \
+            --connection-string "$(featureFlagConnectionString)" \
+            --feature "NewUserInterface" \
+            --yes
+            
+          az appconfig feature set \
+            --connection-string "$(featureFlagConnectionString)" \
+            --feature "EnhancedReporting" \
+            --yes
+            
+        elif [ "${{ parameters.environment }}" = "staging" ]; then
+          # Enable staging features for testing
+          az appconfig feature set \
+            --connection-string "$(featureFlagConnectionString)" \
+            --feature "BetaFeatures" \
+            --yes
+            
+        else
+          # Development environment - enable all experimental features
+          az appconfig feature set \
+            --connection-string "$(featureFlagConnectionString)" \
+            --feature "ExperimentalFeatures" \
+            --yes
+        fi
+        
+        echo "Feature flags updated successfully"
+
+  - task: AzureCLI@2
+    displayName: 'Configure Auto-scaling'
+    condition: eq(variables.enableAutoScale, true)
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Configuring auto-scaling for ${{ parameters.environment }}"
+        
+        # Configure App Service auto-scaling
+        az monitor autoscale create \
+          --resource-group $(resourceGroup) \
+          --resource "/subscriptions/$(subscriptionId)/resourceGroups/$(resourceGroup)/providers/Microsoft.Web/serverfarms/$(appServicePlan)" \
+          --name "autoscale-${{ parameters.appServiceName }}" \
+          --min-count $(minReplicas) \
+          --max-count $(maxReplicas) \
+          --count $(minReplicas)
+        
+        # Add CPU scaling rule
+        az monitor autoscale rule create \
+          --resource-group $(resourceGroup) \
+          --autoscale-name "autoscale-${{ parameters.appServiceName }}" \
+          --condition "Percentage CPU > $(cpuThreshold) avg 5m" \
+          --scale out 1
+        
+        # Add CPU scale-in rule
+        az monitor autoscale rule create \
+          --resource-group $(resourceGroup) \
+          --autoscale-name "autoscale-${{ parameters.appServiceName }}" \
+          --condition "Percentage CPU < $(cpuThreshold) avg 5m" \
+          --scale in 1
+        
+        # Configure AKS Horizontal Pod Autoscaler
+        kubectl apply -f - << EOF
+        apiVersion: autoscaling/v2
+        kind: HorizontalPodAutoscaler
+        metadata:
+          name: multienv-app-hpa
+          namespace: ${{ parameters.environment }}
+        spec:
+          scaleTargetRef:
+            apiVersion: apps/v1
+            kind: Deployment
+            name: multienv-app
+          minReplicas: $(minReplicas)
+          maxReplicas: $(maxReplicas)
+          metrics:
+          - type: Resource
+            resource:
+              name: cpu
+              target:
+                type: Utilization
+                averageUtilization: $(cpuThreshold)
+          - type: Resource
+            resource:
+              name: memory
+              target:
+                type: Utilization
+                averageUtilization: $(memoryThreshold)
+        EOF
+        
+        echo "Auto-scaling configured successfully"
+
+  - task: AzureCLI@2
+    displayName: 'Validate Deployment'
+    inputs:
+      azureSubscription: ${{ parameters.azureServiceConnection }}
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        echo "Validating deployment for ${{ parameters.environment }}"
+        
+        # Validate App Service deployment
+        app_status=$(az webapp show \
+          --resource-group $(resourceGroup) \
+          --name ${{ parameters.appServiceName }} \
+          --query "state" \
+          --output tsv)
+        
+        if [ "$app_status" != "Running" ]; then
+          echo "##vso[task.logissue type=error]App Service is not running: $app_status"
+          exit 1
+        fi
+        
+        # Validate health endpoint
+        max_attempts=30
+        attempt=1
+        health_url="https://${{ parameters.appServiceName }}.azurewebsites.net$(healthCheckPath)"
+        
+        while [ $attempt -le $max_attempts ]; do
+          response_code=$(curl -s -o /dev/null -w "%{http_code}" "$health_url")
+          
+          if [ "$response_code" -eq 200 ]; then
+            echo "Health check passed"
+            break
+          fi
+          
+          echo "Attempt $attempt: Health check returned $response_code, waiting..."
+          sleep 10
+          attempt=$((attempt + 1))
+        done
+        
+        if [ $attempt -gt $max_attempts ]; then
+          echo "##vso[task.logissue type=error]Health check failed after $max_attempts attempts"
+          exit 1
+        fi
+        
+        # Validate AKS deployment
+        kubectl get pods -n ${{ parameters.environment }} -l app=multienv-app
+        
+        # Check if all pods are ready
+        ready_pods=$(kubectl get pods -n ${{ parameters.environment }} -l app=multienv-app -o jsonpath='{.items[*].status.conditions[?(@.type=="Ready")].status}' | grep -c "True")
+        total_pods=$(kubectl get pods -n ${{ parameters.environment }} -l app=multienv-app --no-headers | wc -l)
+        
+        if [ "$ready_pods" -ne "$total_pods" ]; then
+          echo "##vso[task.logissue type=error]Not all pods are ready: $ready_pods/$total_pods"
+          kubectl describe pods -n ${{ parameters.environment }} -l app=multienv-app
+          exit 1
+        fi
+        
+        echo "Deployment validation completed successfully"

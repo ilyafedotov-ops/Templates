@@ -1,0 +1,659 @@
+# Default values for myapp Helm chart
+# This is a comprehensive values file with all configurable options
+
+# Global settings that affect multiple components
+global:
+  # Image registry settings
+  imageRegistry: ghcr.io
+  imagePullSecrets:
+    - name: registry-credentials
+  
+  # Service mesh configuration
+  serviceMesh:
+    enabled: true
+    type: istio  # Options: istio, linkerd, consul
+    mtls:
+      enabled: true
+      mode: STRICT
+  
+  # Security settings
+  security:
+    podSecurityStandards:
+      enabled: true
+      enforce: restricted
+      audit: restricted
+      warn: restricted
+    seccomp:
+      enabled: true
+      profile: RuntimeDefault
+    apparmor:
+      enabled: true
+      profile: runtime/default
+
+# Application image configuration
+image:
+  repository: myapp
+  tag: latest
+  pullPolicy: Always
+  digest: ""  # Optional: specify image digest for immutable deployments
+
+# Deployment configuration
+deployment:
+  replicaCount: 3
+  
+  # Update strategy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  
+  # Pod annotations
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+  
+  # Pod labels
+  podLabels:
+    version: v1
+    environment: production
+  
+  # Security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+    supplementalGroups: [1001]
+  
+  # Container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+      - ALL
+    seccompProfile:
+      type: RuntimeDefault
+  
+  # Resource limits and requests
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+      ephemeral-storage: 1Gi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: 256Mi
+  
+  # Node selection
+  nodeSelector: {}
+  
+  # Tolerations for spot instances and node issues
+  tolerations:
+  - key: "spot"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"
+  - key: "node.kubernetes.io/not-ready"
+    operator: "Exists"
+    effect: "NoExecute"
+    tolerationSeconds: 300
+  - key: "node.kubernetes.io/unreachable"
+    operator: "Exists"
+    effect: "NoExecute"
+    tolerationSeconds: 300
+  
+  # Pod affinity rules
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - myapp
+          topologyKey: kubernetes.io/hostname
+    nodeAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 50
+        preference:
+          matchExpressions:
+          - key: node.kubernetes.io/instance-type
+            operator: In
+            values:
+            - standard
+            - compute
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: http
+  
+  # Additional ports
+  additionalPorts:
+    - name: metrics
+      port: 9090
+      targetPort: http-metrics
+      protocol: TCP
+  
+  # Service annotations
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+  
+  # LoadBalancer specific settings
+  loadBalancer:
+    enabled: false
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "http"
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+    nginx.ingress.kubernetes.io/rate-limit-window: "1m"
+  
+  hosts:
+    - host: myapp.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  
+  tls:
+    - secretName: myapp-tls
+      hosts:
+        - myapp.example.com
+
+# Environment-specific configurations
+environments:
+  dev:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 200m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    ingress:
+      hosts:
+        - host: myapp-dev.example.com
+          paths:
+            - path: /
+              pathType: Prefix
+  
+  staging:
+    replicaCount: 2
+    resources:
+      limits:
+        cpu: 300m
+        memory: 384Mi
+      requests:
+        cpu: 75m
+        memory: 96Mi
+    ingress:
+      hosts:
+        - host: myapp-staging.example.com
+          paths:
+            - path: /
+              pathType: Prefix
+  
+  production:
+    replicaCount: 3
+    resources:
+      limits:
+        cpu: 500m
+        memory: 512Mi
+      requests:
+        cpu: 100m
+        memory: 128Mi
+    ingress:
+      hosts:
+        - host: myapp.example.com
+          paths:
+            - path: /
+              pathType: Prefix
+
+# Health check configuration
+healthChecks:
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 3
+  
+  startupProbe:
+    httpGet:
+      path: /startup
+      port: http
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    successThreshold: 1
+    failureThreshold: 30
+
+# Service account configuration
+serviceAccount:
+  create: true
+  name: ""
+  annotations:
+    # AWS EKS
+    eks.amazonaws.com/role-arn: "arn:aws:iam::ACCOUNT:role/myapp-service-role"
+    # Google GKE
+    iam.gke.io/gcp-service-account: "myapp@PROJECT.iam.gserviceaccount.com"
+    # Azure AKS
+    azure.workload.identity/client-id: "client-id"
+  automountServiceAccountToken: false
+
+# RBAC configuration
+rbac:
+  create: true
+  rules:
+    - apiGroups: [""]
+      resources: ["configmaps", "secrets"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["pods"]
+      verbs: ["get", "list", "watch"]
+
+# ConfigMap configuration
+configMap:
+  create: true
+  data:
+    app.properties: |
+      server.port=8080
+      logging.level.root=INFO
+      management.endpoints.web.exposure.include=health,info,metrics,prometheus
+      management.endpoint.health.show-details=when-authorized
+    
+    nginx.conf: |
+      user nginx;
+      worker_processes auto;
+      error_log /var/log/nginx/error.log warn;
+      pid /tmp/nginx.pid;
+      
+      events {
+          worker_connections 1024;
+      }
+      
+      http {
+          include /etc/nginx/mime.types;
+          default_type application/octet-stream;
+          
+          # Security headers
+          add_header X-Frame-Options SAMEORIGIN always;
+          add_header X-Content-Type-Options nosniff always;
+          add_header X-XSS-Protection "1; mode=block" always;
+          
+          server {
+              listen 8080;
+              server_name _;
+              root /usr/share/nginx/html;
+              index index.html;
+              
+              location / {
+                  try_files $uri $uri/ /index.html;
+              }
+              
+              location /health {
+                  access_log off;
+                  return 200 "healthy\n";
+                  add_header Content-Type text/plain;
+              }
+              
+              location /ready {
+                  access_log off;
+                  return 200 "ready\n";
+                  add_header Content-Type text/plain;
+              }
+              
+              location /startup {
+                  access_log off;
+                  return 200 "started\n";
+                  add_header Content-Type text/plain;
+              }
+          }
+      }
+
+# Secret configuration (values will be base64 encoded)
+secret:
+  create: true
+  type: Opaque
+  data:
+    database-url: "cG9zdGdyZXNxbDovL3VzZXI6cGFzc0BkYi5leGFtcGxlLmNvbTo1NDMyL215YXBw"
+    api-key: "c3VwZXItc2VjcmV0LWFwaS1rZXk="
+
+# Persistent Volume configuration
+persistence:
+  enabled: true
+  storageClass: "fast-ssd"
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  annotations: {}
+  
+  # Additional volumes
+  additionalVolumes:
+    - name: cache-volume
+      emptyDir:
+        sizeLimit: 1Gi
+    - name: tmp-volume
+      emptyDir:
+        sizeLimit: 256Mi
+
+# Autoscaling configuration
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+  
+  # HPA v2 behavior
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 15
+
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+  # maxUnavailable: 1  # Alternative to minAvailable
+
+# Network Policy configuration
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  
+  ingress:
+    # Allow traffic from ingress controller
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: ingress-nginx
+      ports:
+      - protocol: TCP
+        port: 8080
+    
+    # Allow traffic from monitoring namespace
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+      ports:
+      - protocol: TCP
+        port: 9090
+    
+    # Allow traffic from same namespace
+    - from:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/name: myapp
+      ports:
+      - protocol: TCP
+        port: 8080
+  
+  egress:
+    # Allow DNS resolution
+    - to: []
+      ports:
+      - protocol: UDP
+        port: 53
+    
+    # Allow HTTPS traffic
+    - to: []
+      ports:
+      - protocol: TCP
+        port: 443
+    
+    # Allow traffic to database
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            name: database
+      ports:
+      - protocol: TCP
+        port: 5432
+
+# Monitoring and observability
+monitoring:
+  # ServiceMonitor for Prometheus
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    interval: 30s
+    path: /metrics
+    labels:
+      team: platform
+    
+  # Grafana dashboard
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring
+    labels:
+      grafana_dashboard: "true"
+
+# Logging configuration
+logging:
+  # Fluent Bit sidecar
+  fluentBit:
+    enabled: false
+    image: fluent/fluent-bit:2.1.10
+    resources:
+      limits:
+        cpu: 100m
+        memory: 128Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+    config:
+      inputs: |
+        [INPUT]
+            Name tail
+            Path /app/logs/*.log
+            Tag app.*
+            Mem_Buf_Limit 5MB
+      
+      outputs: |
+        [OUTPUT]
+            Name forward
+            Host fluentd.logging.svc.cluster.local
+            Port 24224
+            Tag app.*
+
+# Security scanning and policies
+security:
+  # Pod Security Policy (deprecated, use Pod Security Standards)
+  podSecurityPolicy:
+    enabled: false
+  
+  # Pod Security Standards
+  podSecurityStandards:
+    enabled: true
+    enforce: restricted
+    audit: restricted
+    warn: restricted
+  
+  # Network security
+  networkSecurity:
+    enabled: true
+    denyAll: false
+    allowedNamespaces:
+      - kube-system
+      - monitoring
+      - ingress-nginx
+  
+  # Image security
+  imageSecurity:
+    enabled: true
+    allowedRegistries:
+      - ghcr.io
+      - docker.io
+      - quay.io
+    requireSignedImages: true
+
+# Backup configuration
+backup:
+  enabled: false
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 7  # Keep 7 days of backups
+  storage:
+    type: s3
+    bucket: myapp-backups
+    region: us-east-1
+
+# Blue-Green deployment configuration
+blueGreen:
+  enabled: false
+  autoPromotionEnabled: false
+  scaleDownDelaySeconds: 30
+  prePromotionAnalysis:
+    templates:
+    - templateName: success-rate
+    args:
+    - name: service-name
+      value: myapp
+
+# Canary deployment configuration
+canary:
+  enabled: false
+  maxWeight: 30
+  canaryService:
+    enabled: true
+  stableService:
+    enabled: true
+  trafficRouting:
+    istio:
+      virtualService:
+        name: myapp-vs
+        routes:
+        - primary
+  analysis:
+    templates:
+    - templateName: success-rate
+    args:
+    - name: service-name
+      value: myapp-canary
+    startingStep: 2
+    interval: 5m
+
+# Testing configuration
+testing:
+  enabled: true
+  image: myapp-test:latest
+  
+  # Test suites
+  suites:
+    unit:
+      enabled: true
+      command: ["npm", "test"]
+    
+    integration:
+      enabled: true
+      command: ["npm", "run", "test:integration"]
+    
+    e2e:
+      enabled: false
+      command: ["npm", "run", "test:e2e"]
+
+# External dependencies
+dependencies:
+  database:
+    enabled: true
+    type: postgresql
+    host: postgres.database.svc.cluster.local
+    port: 5432
+    name: myapp
+    
+  redis:
+    enabled: true
+    host: redis.cache.svc.cluster.local
+    port: 6379
+    
+  messageQueue:
+    enabled: false
+    type: rabbitmq
+    host: rabbitmq.messaging.svc.cluster.local
+    port: 5672
+
+# Cost optimization
+costOptimization:
+  # Spot instances
+  spotInstances:
+    enabled: false
+    tolerationSeconds: 300
+  
+  # Vertical Pod Autoscaler
+  vpa:
+    enabled: false
+    updateMode: "Off"  # Options: Off, Initial, Recreation, Auto
+  
+  # Resource recommendations
+  resourceRecommendations:
+    enabled: true
+
+# Compliance and governance
+compliance:
+  # Data classification
+  dataClassification: internal
+  
+  # Compliance frameworks
+  frameworks:
+    - sox
+    - pci
+    - hipaa
+  
+  # Data retention
+  dataRetention:
+    enabled: true
+    days: 365
+  
+  # Audit logging
+  auditLogging:
+    enabled: true
+    destination: s3://compliance-logs/myapp/

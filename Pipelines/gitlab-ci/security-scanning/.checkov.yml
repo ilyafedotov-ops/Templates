@@ -1,0 +1,68 @@
+# Checkov Configuration for Infrastructure as Code Security Scanning
+# This configuration enhances the IaC security scanning in the GitLab CI pipeline
+
+framework:
+  - terraform
+  - cloudformation
+  - kubernetes
+  - dockerfile
+  - helm
+  - arm
+  - bicep
+  - ansible
+
+# Skip specific checks if needed (use sparingly)
+skip-check:
+  # Example: Skip Docker health check requirement in development
+  # - CKV_DOCKER_2
+  
+# Custom policies directory
+external-checks-dir: 
+  - .checkov/policies/
+
+# Baseline file to track current issues
+baseline: .checkov.baseline
+
+# Output configuration
+output:
+  - cli
+  - json
+  - junit
+  - sarif
+
+# Compact output for better readability
+compact: true
+
+# Download external checks
+download-external-modules: true
+
+# Evaluate variables for dynamic content
+evaluate-variables: true
+
+# Directory exclusions
+skip-path:
+  - tests/
+  - test/
+  - spec/
+  - .terraform/
+  - node_modules/
+  - vendor/
+
+# File type exclusions
+skip-file:
+  - "*.example"
+  - "*.template"
+
+# Severity threshold
+soft-fail: false
+hard-fail-on:
+  - HIGH
+  - CRITICAL
+
+# Custom check categories
+check-categories:
+  - IAM
+  - ENCRYPTION
+  - LOGGING
+  - NETWORKING
+  - SECRETS

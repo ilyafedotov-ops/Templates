@@ -1,0 +1,585 @@
+name: Terraform Enterprise Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+        - dev
+        - staging
+        - production
+      terraform_action:
+        description: 'Terraform action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+        - plan
+        - apply
+        - destroy
+        - drift-detect
+      cost_threshold:
+        description: 'Cost threshold for approval (USD)'
+        required: false
+        default: '1000'
+        type: string
+  push:
+    branches: [main, develop]
+    paths: ['terraform/**', '.github/workflows/terraform-deploy.yml']
+  pull_request:
+    branches: [main]
+    paths: ['terraform/**']
+
+env:
+  TF_VERSION: '1.6.4'
+  TERRAGRUNT_VERSION: '0.54.8'
+  CHECKOV_VERSION: '3.1.25'
+  TFSEC_VERSION: '1.28.4'
+  TERRASCAN_VERSION: '1.18.11'
+  OPA_VERSION: '0.58.0'
+  INFRACOST_VERSION: '0.10.33'
+
+jobs:
+  terraform-plan:
+    name: Terraform Plan (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    environment: 
+      name: ${{ github.event.inputs.environment || 'dev' }}
+      url: ${{ steps.terraform-output.outputs.infrastructure_url }}
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+      id-token: write
+    outputs:
+      plan-exitcode: ${{ steps.plan.outputs.exitcode }}
+      cost-estimate: ${{ steps.cost.outputs.total-cost }}
+      security-issues: ${{ steps.security-scan.outputs.issues }}
+      tfplan-file: ${{ steps.plan.outputs.tfplan }}
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: us-east-1
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
+
+    - name: Setup Terragrunt
+      run: |
+        wget -O terragrunt https://github.com/gruntwork-io/terragrunt/releases/download/v${{ env.TERRAGRUNT_VERSION }}/terragrunt_linux_amd64
+        chmod +x terragrunt
+        sudo mv terragrunt /usr/local/bin/
+
+    - name: Setup Security Tools
+      run: |
+        # Checkov
+        pip install checkov==${{ env.CHECKOV_VERSION }}
+        
+        # tfsec
+        wget -O tfsec https://github.com/aquasecurity/tfsec/releases/download/v${{ env.TFSEC_VERSION }}/tfsec-linux-amd64
+        chmod +x tfsec
+        sudo mv tfsec /usr/local/bin/
+        
+        # Terrascan
+        wget https://github.com/tenable/terrascan/releases/download/v${{ env.TERRASCAN_VERSION }}/terrascan_${{ env.TERRASCAN_VERSION }}_Linux_x86_64.tar.gz
+        tar -xzf terrascan_*.tar.gz
+        sudo mv terrascan /usr/local/bin/
+        
+        # OPA
+        wget -O opa https://openpolicyagent.org/downloads/v${{ env.OPA_VERSION }}/opa_linux_amd64_static
+        chmod +x opa
+        sudo mv opa /usr/local/bin/
+
+    - name: Setup Infracost
+      uses: infracost/actions/setup@v2
+      with:
+        api-key: ${{ secrets.INFRACOST_API_KEY }}
+        version: ${{ env.INFRACOST_VERSION }}
+
+    - name: Cache Terraform Modules
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.terraform.d/plugin-cache
+          **/.terraform
+        key: terraform-${{ runner.os }}-${{ hashFiles('**/.terraform.lock.hcl') }}
+        restore-keys: |
+          terraform-${{ runner.os }}-
+
+    - name: Terraform Format Check
+      id: fmt
+      run: |
+        cd terraform
+        terraform fmt -check -recursive
+      continue-on-error: true
+
+    - name: Terraform Init
+      id: init
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        terraform init \
+          -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+          -backend-config="container_name=${{ secrets.TF_STATE_CONTAINER }}" \
+          -backend-config="key=terraform-${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+          -backend-config="resource_group_name=${{ secrets.TF_STATE_RESOURCE_GROUP }}"
+
+    - name: Terraform Validate
+      id: validate
+      run: |
+        cd terraform
+        terraform validate
+
+    - name: Security Scan - Checkov
+      id: checkov
+      run: |
+        cd terraform
+        checkov -d . \
+          --framework terraform \
+          --output cli \
+          --output json \
+          --output-file-path console,checkov-results.json \
+          --soft-fail \
+          --skip-check CKV_AWS_79 \
+          --compact
+      continue-on-error: true
+
+    - name: Security Scan - tfsec
+      id: tfsec
+      run: |
+        cd terraform
+        tfsec . \
+          --format json \
+          --out tfsec-results.json \
+          --soft-fail
+      continue-on-error: true
+
+    - name: Security Scan - Terrascan
+      id: terrascan
+      run: |
+        cd terraform
+        terrascan scan \
+          --iac-type terraform \
+          --output json \
+          --output-file terrascan-results.json \
+          --non-recursive
+      continue-on-error: true
+
+    - name: Policy Validation - OPA
+      id: opa
+      run: |
+        cd terraform
+        if [ -d "../policies" ]; then
+          opa test ../policies/ --format json > opa-results.json || true
+        fi
+      continue-on-error: true
+
+    - name: Aggregate Security Results
+      id: security-scan
+      run: |
+        cd terraform
+        ISSUES=0
+        if [ -f "checkov-results.json" ]; then
+          CHECKOV_ISSUES=$(jq '.results.failed_checks | length' checkov-results.json 2>/dev/null || echo 0)
+          ISSUES=$((ISSUES + CHECKOV_ISSUES))
+        fi
+        if [ -f "tfsec-results.json" ]; then
+          TFSEC_ISSUES=$(jq '.results | length' tfsec-results.json 2>/dev/null || echo 0)
+          ISSUES=$((ISSUES + TFSEC_ISSUES))
+        fi
+        if [ -f "terrascan-results.json" ]; then
+          TERRASCAN_ISSUES=$(jq '.results.violations | length' terrascan-results.json 2>/dev/null || echo 0)
+          ISSUES=$((ISSUES + TERRASCAN_ISSUES))
+        fi
+        echo "issues=$ISSUES" >> $GITHUB_OUTPUT
+        
+        if [ $ISSUES -gt 50 ]; then
+          echo "❌ Security scan failed: $ISSUES critical issues found"
+          exit 1
+        elif [ $ISSUES -gt 0 ]; then
+          echo "⚠️  Security scan completed with $ISSUES issues"
+        else
+          echo "✅ Security scan passed"
+        fi
+
+    - name: Upload Security Results to GitHub Security
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: terraform/checkov-results.sarif
+      continue-on-error: true
+
+    - name: Terraform Plan
+      id: plan
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        
+        terraform plan \
+          -detailed-exitcode \
+          -var-file="environments/${{ github.event.inputs.environment || 'dev' }}.tfvars" \
+          -out=tfplan-${{ github.event.inputs.environment || 'dev' }}.out
+        
+        EXIT_CODE=$?
+        echo "exitcode=$EXIT_CODE" >> $GITHUB_OUTPUT
+        echo "tfplan=tfplan-${{ github.event.inputs.environment || 'dev' }}.out" >> $GITHUB_OUTPUT
+        
+        terraform show -json tfplan-${{ github.event.inputs.environment || 'dev' }}.out > plan.json
+
+    - name: Cost Estimation
+      id: cost
+      run: |
+        cd terraform
+        infracost breakdown \
+          --path plan.json \
+          --format json \
+          --out-file infracost.json
+        
+        TOTAL_COST=$(jq -r '.totalMonthlyCost // "0"' infracost.json)
+        echo "total-cost=$TOTAL_COST" >> $GITHUB_OUTPUT
+        
+        infracost output \
+          --path infracost.json \
+          --format github-comment \
+          --out-file infracost-comment.md
+        
+        THRESHOLD=${{ github.event.inputs.cost_threshold || '1000' }}
+        if (( $(echo "$TOTAL_COST > $THRESHOLD" | bc -l) )); then
+          echo "❌ Cost exceeds threshold: \$$TOTAL_COST > \$$THRESHOLD"
+          echo "cost-exceeded=true" >> $GITHUB_OUTPUT
+        else
+          echo "✅ Cost within threshold: \$$TOTAL_COST <= \$$THRESHOLD"
+          echo "cost-exceeded=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Drift Detection
+      id: drift
+      if: github.event.inputs.terraform_action == 'drift-detect' || github.event_name == 'schedule'
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        
+        terraform plan -detailed-exitcode -refresh-only > drift-report.txt
+        DRIFT_EXIT_CODE=$?
+        
+        if [ $DRIFT_EXIT_CODE -eq 2 ]; then
+          echo "🔍 Configuration drift detected!"
+          echo "drift-detected=true" >> $GITHUB_OUTPUT
+          cat drift-report.txt
+        else
+          echo "✅ No configuration drift detected"
+          echo "drift-detected=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Generate Documentation
+      run: |
+        cd terraform
+        terraform-docs markdown table \
+          --output-file TERRAFORM.md \
+          --output-mode inject \
+          --sort-by required .
+
+    - name: Upload Terraform Plan
+      uses: actions/upload-artifact@v4
+      with:
+        name: terraform-plan-${{ github.event.inputs.environment || 'dev' }}
+        path: |
+          terraform/tfplan-*.out
+          terraform/plan.json
+          terraform/infracost.json
+          terraform/*-results.json
+        retention-days: 30
+
+    - name: Comment on PR
+      uses: actions/github-script@v7
+      if: github.event_name == 'pull_request'
+      with:
+        script: |
+          const fs = require('fs');
+          const path = 'terraform/infracost-comment.md';
+          
+          let comment = '## Terraform Plan Summary\n\n';
+          comment += `**Environment:** ${{ github.event.inputs.environment || 'dev' }}\n`;
+          comment += `**Security Issues:** ${{ steps.security-scan.outputs.issues }}\n`;
+          comment += `**Plan Exit Code:** ${{ steps.plan.outputs.exitcode }}\n\n`;
+          
+          if (fs.existsSync(path)) {
+            const costComment = fs.readFileSync(path, 'utf8');
+            comment += costComment;
+          }
+          
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
+
+  terraform-apply:
+    name: Terraform Apply (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    needs: terraform-plan
+    if: |
+      (github.event.inputs.terraform_action == 'apply' || github.ref == 'refs/heads/main') &&
+      needs.terraform-plan.outputs.plan-exitcode == '2'
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}-apply
+      url: ${{ steps.terraform-output.outputs.infrastructure_url }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: us-east-1
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+        terraform_wrapper: false
+
+    - name: Download Terraform Plan
+      uses: actions/download-artifact@v4
+      with:
+        name: terraform-plan-${{ github.event.inputs.environment || 'dev' }}
+        path: terraform/
+
+    - name: Terraform Init
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        terraform init \
+          -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+          -backend-config="container_name=${{ secrets.TF_STATE_CONTAINER }}" \
+          -backend-config="key=terraform-${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+          -backend-config="resource_group_name=${{ secrets.TF_STATE_RESOURCE_GROUP }}"
+
+    - name: Terraform Apply
+      id: apply
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        
+        terraform apply \
+          -auto-approve \
+          tfplan-${{ github.event.inputs.environment || 'dev' }}.out
+
+    - name: Extract Terraform Outputs
+      id: terraform-output
+      run: |
+        cd terraform
+        terraform output -json > outputs.json
+        
+        INFRASTRUCTURE_URL=$(terraform output -raw infrastructure_url 2>/dev/null || echo "")
+        echo "infrastructure_url=$INFRASTRUCTURE_URL" >> $GITHUB_OUTPUT
+
+    - name: Post-Deploy Validation
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        
+        echo "🔍 Running post-deployment validation..."
+        terraform plan -detailed-exitcode -refresh-only
+        
+        if [ $? -eq 2 ]; then
+          echo "❌ Post-deployment validation failed - drift detected"
+          exit 1
+        else
+          echo "✅ Post-deployment validation passed"
+        fi
+
+    - name: Update State Lock
+      if: failure()
+      run: |
+        cd terraform
+        terraform force-unlock -force $(cat .terraform/terraform.tfstate | jq -r '.serial') || true
+
+  terraform-destroy:
+    name: Terraform Destroy (${{ github.event.inputs.environment || 'dev' }})
+    runs-on: ubuntu-latest
+    if: github.event.inputs.terraform_action == 'destroy'
+    environment:
+      name: ${{ github.event.inputs.environment || 'dev' }}-destroy
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Configure OIDC for Azure
+      uses: azure/login@v1
+      with:
+        client-id: ${{ secrets.AZURE_CLIENT_ID }}
+        tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+        subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+
+    - name: Terraform Init
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        terraform init \
+          -backend-config="storage_account_name=${{ secrets.TF_STATE_STORAGE_ACCOUNT }}" \
+          -backend-config="container_name=${{ secrets.TF_STATE_CONTAINER }}" \
+          -backend-config="key=terraform-${{ github.event.inputs.environment || 'dev' }}.tfstate" \
+          -backend-config="resource_group_name=${{ secrets.TF_STATE_RESOURCE_GROUP }}"
+
+    - name: Terraform Plan Destroy
+      run: |
+        cd terraform
+        export TF_VAR_environment=${{ github.event.inputs.environment || 'dev' }}
+        terraform plan -destroy \
+          -var-file="environments/${{ github.event.inputs.environment || 'dev' }}.tfvars" \
+          -out=destroy-plan.out
+
+    - name: Terraform Destroy
+      run: |
+        cd terraform
+        terraform apply -auto-approve destroy-plan.out
+
+  compliance-check:
+    name: Compliance Validation
+    runs-on: ubuntu-latest
+    needs: terraform-apply
+    if: needs.terraform-apply.result == 'success'
+    permissions:
+      contents: read
+      security-events: write
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Azure Policy Compliance Check
+      uses: azure/policy-compliance-scan@v0
+      with:
+        scopes: |
+          /subscriptions/${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        wait: true
+
+    - name: AWS Config Compliance Check
+      run: |
+        aws configservice get-compliance-summary-by-config-rule \
+          --output table
+
+    - name: Generate Compliance Report
+      run: |
+        echo "# Compliance Report - $(date)" > compliance-report.md
+        echo "## Azure Policy Compliance" >> compliance-report.md
+        echo "## AWS Config Rules Compliance" >> compliance-report.md
+
+    - name: Upload Compliance Report
+      uses: actions/upload-artifact@v4
+      with:
+        name: compliance-report-${{ github.event.inputs.environment || 'dev' }}
+        path: compliance-report.md
+        retention-days: 90
+
+  notification:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [terraform-plan, terraform-apply, compliance-check]
+    if: always()
+    permissions:
+      contents: read
+
+    steps:
+    - name: Notify Teams
+      uses: skitionek/notify-microsoft-teams@master
+      if: always()
+      with:
+        webhook_url: ${{ secrets.TEAMS_WEBHOOK_URL }}
+        overwrite: |
+          {
+            "themeColor": "${{ needs.terraform-apply.result == 'success' && '00FF00' || 'FF0000' }}",
+            "summary": "Terraform Deployment ${{ needs.terraform-apply.result }}",
+            "sections": [{
+              "activityTitle": "Terraform Deployment Pipeline",
+              "activitySubtitle": "Environment: ${{ github.event.inputs.environment || 'dev' }}",
+              "activityImage": "https://www.terraform.io/assets/images/logo-hashicorp-3f10732f.svg",
+              "facts": [{
+                "name": "Status",
+                "value": "${{ needs.terraform-apply.result }}"
+              }, {
+                "name": "Security Issues",
+                "value": "${{ needs.terraform-plan.outputs.security-issues || '0' }}"
+              }, {
+                "name": "Cost Estimate",
+                "value": "${{ needs.terraform-plan.outputs.cost-estimate || 'N/A' }}"
+              }, {
+                "name": "Repository",
+                "value": "${{ github.repository }}"
+              }, {
+                "name": "Triggered by",
+                "value": "${{ github.actor }}"
+              }],
+              "markdown": true
+            }],
+            "potentialAction": [{
+              "@type": "OpenUri",
+              "name": "View Run",
+              "targets": [{
+                "os": "default",
+                "uri": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+              }]
+            }]
+          }
+
+    - name: Update GitHub Status
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const status = '${{ needs.terraform-apply.result }}';
+          const state = status === 'success' ? 'success' : 'failure';
+          
+          github.rest.repos.createCommitStatus({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            sha: context.sha,
+            state: state,
+            target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            description: `Terraform deployment ${status}`,
+            context: 'terraform/deploy'
+          });
