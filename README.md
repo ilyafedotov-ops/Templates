@@ -1,15 +1,17 @@
 # Azure Security Assessment Templates
 
-A comprehensive repository of templates, tools, and automation for conducting enterprise-grade Azure security assessments aligned with ISO/IEC 27001, SOC 2, and Azure security best practices.
+A comprehensive enterprise-grade security assessment and monitoring platform with 186+ files providing templates, tools, and automation for Azure security assessments aligned with ISO/IEC 27001, SOC 2, and Azure security best practices.
 
 ## 🎯 Purpose & Benefits
 
 This repository provides a complete framework for:
 - **Security Assessments**: Structured approach to evaluate Azure cloud security posture
 - **Compliance Alignment**: Pre-mapped controls for ISO 27001, SOC 2, and MCSB
-- **Automated Security**: Deploy Azure Policy, Sentinel rules, and security baselines
+- **Automated Security**: Deploy Azure Policy, Sentinel rules with ML-powered detection
 - **Risk Management**: Identify, track, and remediate security risks systematically
 - **Evidence Collection**: Streamlined process for audit evidence and documentation
+- **Multi-Platform CI/CD**: Support for GitHub Actions, Azure DevOps, GitLab CI
+- **Advanced Threat Detection**: 51+ Sentinel components with MITRE ATT&CK mapping
 
 ## 🚀 Quick Start
 
@@ -37,36 +39,68 @@ For detailed deployment instructions, see [Scripts/README.md](Scripts/README.md)
 
 ## 📂 Repository Structure
 
+### Core Documentation
+| File | Purpose |
+|------|---------|
+| `README.md` | Main repository documentation |
+| `ARCHITECTURE.md` | Solution architecture overview |
+| `CLAUDE.md` | AI-assisted development guidelines |
+| `FAQ.md` | Frequently asked questions |
+| `QUICK-START.md` | Quick start guide for new users |
+
 ### Assessment Components
 | Directory | Purpose | Key Files |
 |-----------|---------|-----------|
-| `Assessment/` | Planning and execution templates | Assessment-Plan.md, Questionnaire.md, Methodology.md |
-| `Roles/` | Role-specific checklists | DevOps.md, Azure-Architect.md, RACI-Matrix.md |
-| `Artifacts/` | Risk and remediation artifacts | Risk-Register.csv, Threat-Model.md, Remediation-Plan.md |
-| `Report/` | Assessment reporting templates | Final-Report.md, Findings-Template.md |
+| `Assessment/` (9 files) | Planning and execution templates | Assessment-Plan.md, Questionnaire.md, Methodology.md, Architecture-Review-Checklist.md, Scoring-Model.md |
+| `Roles/` (3 files) | Role-specific checklists | DevOps.md, Azure-Architect.md, RACI-Matrix.md |
+| `Artifacts/` (6 files) | Risk and remediation artifacts | Risk-Register.csv, Threat-Model.md, Remediation-Plan.md, Evidence-Log.csv, Sampling-Plan.md |
+| `Report/` (2 files) | Assessment reporting templates | Final-Report.md, Findings-Template.md |
 
 ### Compliance & Standards
 | Directory | Purpose | Key Files |
 |-----------|---------|-----------|
-| `Compliance/ISO27001/` | ISO 27001 control mapping | Annex-A-Controls.xlsx, SoA-Template.md |
-| `Compliance/SOC2/` | SOC 2 TSC mapping | TSC-Control-Mapping.xlsx, Evidence-Request-List.md |
-| `BestPractices/` | MCSB alignment | MCSB-Mapping.md |
-| `Standards/` | Security standards documentation | DevSecOps-Standards.md, Data-Protection-Standards.md |
+| `Compliance/ISO27001/` (4 files) | ISO 27001 control mapping | AnnexA-Controls-Full.csv, AnnexA-Mapping.csv, SoA-Template.md, ISMS-Scope-Template.md |
+| `Compliance/SOC2/` (5 files) | SOC 2 TSC mapping | TSC-Controls-Full.csv, TSC-Mapping.csv, Evidence-Request-List.md, Test-Procedures.md, Control-Narrative-Template.md |
+| `BestPractices/` (1 file) | MCSB alignment | MCSB-Mapping.md |
+| `Standards/` (3 files) | Security standards documentation | DevSecOps-Standard.md, Data-Protection-Standard.md, Logging-Monitoring-Standard.md |
 
 ### Security Implementation
-| Directory | Purpose | Key Files |
+| Directory | Purpose | Key Files/Subdirs |
 |-----------|---------|-----------|
-| `Policies/` | Azure Policy definitions | definitions/*.json, initiatives/*.json |
-| `Sentinel/` | Security monitoring | analytics/*.json, playbooks/*.json, workbooks/*.json |
-| `Checklists/` | Technical review checklists | IaC-Review.md, AKS-Hardening-Checklist.md |
-| `Runbooks/` | Operational procedures | Incident-Response-Playbook.md, Key-Management-Procedure.md |
+| `Policies/` (11 files) | Azure Policy definitions | definitions/ (7 policies), initiatives/ (3 initiatives), README.md |
+| `Sentinel/` (51 files) | Advanced security monitoring | See detailed Sentinel structure below |
+| `Checklists/` (2 files) | Technical review checklists | IaC-Review.md, AKS-Hardening-Checklist.md |
+| `Runbooks/` (5 files) | Operational procedures | Incident-Response-Playbook.md, Key-Management-Procedure.md, Vulnerability-Management-Procedure.md, Access-Review-Procedure.md, Change-Management-Procedure.md |
 
-### Automation & CI/CD
+### Sentinel Security Platform (51 files)
+| Component | Purpose | Count |
+|-----------|---------|-------|
+| `analytics-rules/` | ML-powered threat detection rules | 7 files |
+| `threat-scenarios/` | Scenario-based security monitoring | 8 files |
+| `data-connectors/` | Azure, O365, AWS, GCP connectors | 12 files |
+| `deployment/` | IaC with Terraform, ARM, PowerShell | 10 files |
+| `playbooks/` | Automated incident response | 3 files |
+| `automation-rules/` | Intelligent incident classification | 1 file |
+| `monitoring/` | Health, cost, performance monitoring | 4 files |
+| `investigation-workbooks/` | Security dashboards with ML insights | 1 file |
+| `parsers/` | Custom log normalization | 1 file |
+| `watchlists/` | Threat intelligence IOCs | 1 file |
+| Documentation | README.md, SECURITY-MONITORING-FRAMEWORK.md | 2 files |
+
+### Automation & CI/CD (74+ files)
 | Directory | Purpose | Key Files |
 |-----------|---------|-----------|
-| `Scripts/` | Deployment automation | deploy-baseline.sh, validate-policies.sh |
-| `Pipelines/` | Azure DevOps pipelines | azure-pipelines.yml |
-| `.github/workflows/` | GitHub Actions | secure-ci.yml, deploy-gated.yml |
+| `Scripts/` (3 files) | Deployment automation | deploy-baseline.sh, resolve-builtins.sh, README.md |
+| `Pipelines/azure-devops/` (8 files) | Azure DevOps pipelines | Multiple specialized pipelines |
+| `Pipelines/github-actions/` (46 files) | GitHub Actions workflows | Comprehensive security automation |
+| `Pipelines/gitlab-ci/` (6 files) | GitLab CI pipelines | Enterprise CI/CD templates |
+| `Pipelines/templates/` (10 files) | Reusable pipeline templates | Cross-platform components |
+| `.github/workflows/` (4 files) | GitHub Actions | secure-ci.yml, deploy-gated.yml, deploy-verify.yml, policy-gate.yml |
+
+### Additional Components
+| Directory | Purpose | Key Files |
+|-----------|---------|-----------|
+| `Branding/` (2 files) | Branding configuration | branding.yaml, README.md |
 
 ## 🔧 Key Features
 
@@ -83,11 +117,13 @@ For detailed deployment instructions, see [Scripts/README.md](Scripts/README.md)
 - **Compliance Scoring**: Built-in assessment scoring model
 - **Automated Remediation**: Policy effects with remediation tasks
 
-### Security Monitoring (Sentinel)
-- **Analytics Rules**: 10+ detection rules for threats
-- **Automated Playbooks**: Teams notification, ADO work items, AD user disable
-- **Security Workbooks**: Visual dashboards for monitoring
-- **Incident Response**: Integrated IR procedures
+### Advanced Security Monitoring (Sentinel - 51 files)
+- **ML-Powered Analytics**: 7+ advanced detection rules with behavioral analysis
+- **Threat Scenarios**: 8 scenario-based monitoring patterns (identity, data exfiltration, ransomware, insider threats)
+- **Multi-Cloud Integration**: 12 data connectors for Azure, AWS, GCP, O365
+- **Automated Response**: SOAR playbooks with intelligent incident classification
+- **Deployment Automation**: Terraform, ARM templates, PowerShell scripts
+- **Operational Excellence**: Health monitoring, cost optimization, performance baselines
 
 ## 📋 Assessment Workflow
 
@@ -148,11 +184,19 @@ For detailed deployment instructions, see [Scripts/README.md](Scripts/README.md)
 - Role-based access control templates
 - Network segmentation patterns
 
+### Multi-Platform CI/CD Support
+- **GitHub Actions**: 46+ workflow templates with security scanning
+- **Azure DevOps**: 8 specialized pipelines with approval gates
+- **GitLab CI**: 6 enterprise pipeline templates
+- **Jenkins**: Template structure for Jenkins integration
+- **Reusable Templates**: 10 cross-platform pipeline components
+
 ### Integration Capabilities
 - **Azure DevOps**: Work item creation, pipeline integration
 - **Microsoft Teams**: Security alerts and notifications
 - **GitHub**: Actions workflows, security scanning
 - **Azure Monitor**: Log Analytics queries, alerts
+- **Multi-Cloud**: AWS CloudTrail, GCP Audit Log integration
 
 ### Compliance Reporting
 - Automated compliance score calculation
@@ -164,9 +208,16 @@ For detailed deployment instructions, see [Scripts/README.md](Scripts/README.md)
 
 | Document | Description |
 |----------|-------------|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Solution architecture and design patterns |
+| [QUICK-START.md](QUICK-START.md) | Quick start guide for new users |
+| [FAQ.md](FAQ.md) | Frequently asked questions and troubleshooting |
 | [Scripts/README.md](Scripts/README.md) | Deployment script documentation |
-| [Pipelines/README.md](Pipelines/README.md) | CI/CD pipeline configuration |
+| [Pipelines/README.md](Pipelines/README.md) | Multi-platform CI/CD pipeline configuration |
 | [Compliance/README.md](Compliance/README.md) | Compliance framework guidance |
+| [Policies/README.md](Policies/README.md) | Azure Policy implementation guide |
+| [Sentinel/README.md](Sentinel/README.md) | Security monitoring platform documentation |
+| [Sentinel/SECURITY-MONITORING-FRAMEWORK.md](Sentinel/SECURITY-MONITORING-FRAMEWORK.md) | Comprehensive security monitoring framework |
+| [Branding/README.md](Branding/README.md) | Branding and customization guide |
 
 ## 🤝 Contributing
 
